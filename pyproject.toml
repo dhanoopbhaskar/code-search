@@ -1,0 +1,95 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code-search"
+version = "0.1.0"
+description = "In-house AI code context engine for air-gapped, CPU-only enterprise environments"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = [
+    "tree-sitter>=0.21,<1",
+    "tree-sitter-python>=0.21",
+    "tree-sitter-java>=0.21",
+    "tree-sitter-javascript>=0.21",
+    "tree-sitter-typescript>=0.21",
+    "tree-sitter-c-sharp>=0.21",
+    "tree-sitter-cpp>=0.21",
+    "tree-sitter-bash>=0.21",
+    "tree-sitter-yaml>=0.7",
+    "model2vec>=0.2",
+    "rank-bm25>=0.2",
+    "fastmcp>=0.2",
+    "watchdog>=4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-benchmark>=5.0",
+    "hypothesis>=6.100",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+lang = [
+    "tree-sitter-go>=0.21",
+    "tree-sitter-rust>=0.21",
+    "tree-sitter-ruby>=0.21",
+    "tree-sitter-swift>=0.7",
+    "tree-sitter-kotlin>=0.21",
+    "tree-sitter-php>=0.21",
+    "tree-sitter-toml>=0.7",
+    "tree-sitter-cpp>=0.21",
+    "tree-sitter-c-sharp>=0.21",
+]
+prod = [
+    "prometheus-client>=0.20",
+    "presidio-analyzer>=2.2",
+]
+
+[project.scripts]
+code-search = "src.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "ARG", "PTH", "PD", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "ARG001", "ARG002", "ARG003"]
+"tests/fixtures/ambiguous_symbols/**" = ["N802", "I001"]
+"tests/fixtures/boilerplate_merge/**" = ["F401", "F821", "F841", "I001", "RUF022"]
+"tests/fixtures/path_penalty/**" = ["F401", "I001", "RUF022"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["tree_sitter", "tree_sitter_python", "tree_sitter_java", "tree_sitter_javascript", "tree_sitter_typescript", "tree_sitter_c_sharp", "tree_sitter_cpp", "tree_sitter_go", "tree_sitter_rust", "tree_sitter_ruby", "tree_sitter_swift", "tree_sitter_kotlin", "tree_sitter_php", "tree_sitter_bash", "tree_sitter_yaml", "tree_sitter_toml", "model2vec", "rank_bm25", "fastmcp", "watchdog", "presidio_analyzer", "numpy"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "benchmark: marks benchmark tests",
+    "contract: marks contract tests",
+    "integration: marks integration tests",
+    "acceptance: marks acceptance tests (requires --repo-path)",
+    "test_repo: marks tests that require the test-repo submodule (not run on CI)",
+]

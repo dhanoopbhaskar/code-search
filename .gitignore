@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+*.whl
+*.so
+*.pyd
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp
+
+# Context directory (generated index data)
+.context/
+
+# Coverage
+coverage/
+htmlcov/
+.coverage
+*.coverage
+
+# Mypy
+.mypy_cache/
+
+# Pytest
+.pytest_cache/
+
+# Ruff
+.ruff_cache/
+
+# Benchmark
+.benchmarks/
+
+# Dependency wheelhouse (downloaded for offline bundling)
+wheelhouse/
+
+.venv
+.venv*
+
+**/.gradle
+**/*.log

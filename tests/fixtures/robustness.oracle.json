@@ -1,0 +1,23 @@
+{
+  "terms": {
+    "PasswordEncoder": 7,
+    "@PreAuthorize": 2,
+    "hasRole": 1
+  },
+  "indexed_terms": {
+    "PasswordEncoder": 5,
+    "@PreAuthorize": 2,
+    "hasRole": 1
+  },
+  "controllers": [
+    "ArticleController",
+    "AuthController",
+    "CommentController",
+    "FavoriteController",
+    "ProfileController",
+    "SearchController",
+    "TagController",
+    "UserController"
+  ],
+  "notes": "terms = rg line matches (case-sensitive) over the whole fixture; exhaustive mode scans the indexed files from disk, so it matches terms exactly (SC-006). indexed_terms = distinct matching lines present in indexed chunks, retained as the chunk-level oracle for regression visibility. @PreAuthorize and hasRole live inside class chunks, so both oracles agree."
+}

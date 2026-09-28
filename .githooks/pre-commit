@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+echo "Running pre-commit checks..."
+if ! "$ROOT/scripts/check.sh"; then
+  echo "Pre-commit checks failed. Commit aborted."
+  echo "To skip checks (not recommended): git commit --no-verify"
+  exit 1
+fi

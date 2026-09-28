@@ -1,0 +1,11 @@
+{
+  "opencode": {
+    "agent": {
+      "model": "default",
+      "tools": ["search", "grep", "read"]
+    },
+    "context": {
+      "max_tokens": 4000
+    }
+  }
+}

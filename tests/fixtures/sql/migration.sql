@@ -1,0 +1,7 @@
+CREATE TABLE users (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE
+);
+
+ALTER TABLE users ADD COLUMN created_at TIMESTAMP;

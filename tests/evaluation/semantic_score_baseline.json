@@ -1,0 +1,51 @@
+{
+  "corpus": "tests/fixtures/semantic_vector",
+  "feature": "027-fix-zero-vector-scores",
+  "limit": 5,
+  "per_query": {
+    "disconnected-session": {
+      "ground_truth_in_top5": 2,
+      "vector_health": true,
+      "zero_semantic_scores": 0
+    },
+    "email-registered": {
+      "ground_truth_in_top5": 1,
+      "vector_health": true,
+      "zero_semantic_scores": 0
+    },
+    "entity-response": {
+      "ground_truth_in_top5": 1,
+      "vector_health": true,
+      "zero_semantic_scores": 0
+    },
+    "token-expiration": {
+      "ground_truth_in_top5": 2,
+      "vector_health": true,
+      "zero_semantic_scores": 0
+    }
+  },
+  "phase": "pre_change",
+  "ranking_floors_pre_change": {
+    "cases": 12,
+    "corpus": "relevance fixture",
+    "floors": {
+      "definition_above_reference": 1.0,
+      "exact_filename_top1": 0.9,
+      "exact_filename_top3": 1.0,
+      "exact_symbol_top1": 0.9,
+      "exact_symbol_top3": 1.0
+    },
+    "metrics": {
+      "definition_above_reference": true,
+      "exact_filename_top1": 1.0,
+      "exact_filename_top3": 1.0,
+      "exact_symbol_top1": 1.0,
+      "exact_symbol_top3": 1.0,
+      "mrr_at_10": 0.9583333333333334,
+      "precision_at_5": 0.19999999999999998
+    }
+  },
+  "relevant_top_results": 6,
+  "zero_semantic_score_rate": 0.0,
+  "zero_semantic_scores": 0
+}

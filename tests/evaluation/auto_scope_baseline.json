@@ -1,0 +1,69 @@
+{
+  "benchmark_index": {
+    "cases": {
+      "def func": {
+        "content": "code_focused",
+        "result_count": 0,
+        "result_files": []
+      },
+      "notes func 3": {
+        "content": "code_focused",
+        "result_count": 10,
+        "result_files": [
+          "f0.py",
+          "f1.py",
+          "f2.py",
+          "f3.py"
+        ]
+      },
+      "parse config file": {
+        "content": "code_focused",
+        "result_count": 0,
+        "result_files": []
+      },
+      "user login handler": {
+        "content": "code_focused",
+        "result_count": 0,
+        "result_files": []
+      }
+    },
+    "corpus": "synthetic 2000 code-chunk families + 20 docs chunks",
+    "p99_latency_ms": 18.699
+  },
+  "feature": "028-auto-scope-detection",
+  "phase": "pre_change",
+  "relevance_fixture": {
+    "cases": {
+      "how do comments get created": {
+        "content": "code_focused",
+        "result_count": 7,
+        "result_files": [
+          "src/main/java/com/example/article/Article.java",
+          "src/main/java/com/example/article/ArticleController.java",
+          "src/main/java/com/example/article/ArticleService.java",
+          "src/main/java/com/example/article/Comment.java",
+          "src/main/java/com/example/article/CommentService.java",
+          "src/main/java/com/example/article/dto/ArticleResponse.java",
+          "src/main/resources/db/migration/V1__create_articles_table.sql"
+        ]
+      },
+      "save an article comment": {
+        "content": "code_focused",
+        "result_count": 10,
+        "result_files": [
+          "package-lock.json",
+          "src/main/java/com/example/article/Article.java",
+          "src/main/java/com/example/article/ArticleController.java",
+          "src/main/java/com/example/article/ArticleRepository.java",
+          "src/main/java/com/example/article/ArticleService.java",
+          "src/main/java/com/example/article/Comment.java",
+          "src/main/java/com/example/article/CommentService.java",
+          "src/main/java/com/example/article/SecurityConfig.java",
+          "src/main/java/com/example/article/dto/ArticleResponse.java",
+          "src/main/java/com/example/article/exception/ArticleNotFoundException.java"
+        ]
+      }
+    },
+    "corpus": "tests/fixtures/relevance"
+  }
+}

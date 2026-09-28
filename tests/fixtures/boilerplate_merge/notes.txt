@@ -1,0 +1,2 @@
+This is a plain text file with no code grammar attached.
+It documents the user profile domain model for the identity service.
