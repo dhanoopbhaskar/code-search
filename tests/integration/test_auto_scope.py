@@ -22,7 +22,7 @@ MIXED_QUERY = "article documentation"
 EMPTY_INFERRED_QUERY = "definitely-no-match-xyzzy documentation"
 
 DOCS_INTENT_SET = ["readme documentation", "how to deploy", "operations guide"]
-NEUTRAL_QUERY_SET = ["user login handler", "parse config file"]
+NEUTRAL_QUERY_SET = ["user login handler", "iterate over a list of orders"]
 
 
 def _names(results: list[dict[str, Any]]) -> set[str]:

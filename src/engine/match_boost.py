@@ -384,7 +384,7 @@ def filename_candidates(db: Any, context: QueryNameContext, content_scope: str) 
     if content_scope == "all":
         content_clause = ""
     elif content_scope == DEFAULT_CONTENT_SCOPE:
-        content_clause = " AND c.content_type != 'docs'"
+        content_clause = " AND c.content_type = 'code'"
     else:
         content_clause = " AND c.content_type = ?"
     params: list[Any] = [match_expr]

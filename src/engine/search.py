@@ -62,9 +62,10 @@ logger = logging.getLogger(__name__)
 
 # The content-scope vocabulary: the four explicit
 # axes plus the code-focused default. ``code_focused`` resolves to the pool
-# ``content_type != 'docs'`` (code + config); prose is returned only under an
-# explicit ``docs``/``all`` scope. This is the default ranked scope on both
-# surfaces and in the engine.
+# ``content_type = 'code'`` (same predicate as the explicit ``code`` scope);
+# config and prose are returned only under an explicit ``config``/``docs``/
+# ``all`` scope. This is the default ranked scope on both surfaces and in the
+# engine.
 DEFAULT_CONTENT_SCOPE = "code_focused"
 VALID_CONTENT_SCOPES = ("code", "config", "docs", "all", DEFAULT_CONTENT_SCOPE)
 
@@ -677,15 +678,17 @@ class BM25Search:
         result = self._search_topk(query, top_k, count_only=False, content=content)
         return result if isinstance(result, list) else []
 
-    def count(self, query: str) -> int:
+    def count(self, query: str, content: str = "all") -> int:
         """Return the number of FTS5-matching chunks for *query* (uncapped).
 
         The count reflects total distinct matches for the query tokens before
         the top-k pool slice, so a response can report ``total_matches`` and a
-        ``truncated`` flag. Returns ``0`` when the query
-        produces no MATCH expression or the search fails.
+        ``truncated`` flag. *content* narrows the count to the same axis the
+        results themselves were filtered to, so the reported total agrees
+        with what the active scope actually returned. Returns ``0`` when the
+        query produces no MATCH expression or the search fails.
         """
-        result = self._search_topk(query, None, count_only=True)
+        result = self._search_topk(query, None, count_only=True, content=content)
         return result if isinstance(result, int) else 0
 
     def _search_topk(
@@ -705,26 +708,28 @@ class BM25Search:
             fqn_w = self._settings.bm25_fqn_weight
             path_w = self._settings.bm25_path_weight
             rules_w = self._settings.bm25_rules_weight
+            content_clause = (
+                ""
+                if content == "all"
+                else (
+                    " AND c.content_type = 'code'"
+                    if content == DEFAULT_CONTENT_SCOPE
+                    else " AND c.content_type = ?"
+                )
+            )
+            content_params: list[Any] = (
+                [content] if content not in ("all", DEFAULT_CONTENT_SCOPE) else []
+            )
             with self._db.connect() as conn:
                 if count_only:
                     row = conn.execute(
-                        "SELECT COUNT(*) AS n FROM chunks_fts WHERE chunks_fts MATCH ?;",
-                        (fts5_query,),
+                        "SELECT COUNT(*) AS n FROM chunks_fts AS f "
+                        "JOIN code_chunks AS c ON c.id = f.rowid "
+                        "WHERE chunks_fts MATCH ?" + content_clause + ";",
+                        [fts5_query, *content_params],
                     ).fetchone()
                     return cast(int, row["n"]) if row is not None else 0
-                content_clause = (
-                    ""
-                    if content == "all"
-                    else (
-                        " AND c.content_type != 'docs'"
-                        if content == DEFAULT_CONTENT_SCOPE
-                        else " AND c.content_type = ?"
-                    )
-                )
-                params: list[Any] = [fts5_query]
-                if content not in ("all", DEFAULT_CONTENT_SCOPE):
-                    params.append(content)
-                params.append(top_k)
+                params: list[Any] = [fts5_query, *content_params, top_k]
                 rows = conn.execute(
                     f"SELECT f.rowid, bm25(chunks_fts, {content_w}, {subwords_w}, {fqn_w}, "
                     f"{path_w}, {rules_w}) AS score "
@@ -1158,11 +1163,18 @@ class HybridSearch:
         intent = classify_content_intent(query) if inference_enabled else ContentIntent.NEUTRAL
         suggested: str | None = None
 
-        if mode == "ranked" and inference_enabled and not explicit and intent is ContentIntent.DOCS:
-            # Documentation intent with no explicit scope: run the default pass
-            # first. A non-empty result set is returned unchanged with a strong
-            # suggestion; an empty result set (the honest no_match outcome after
-            # the rescue ladder) re-runs the same fused pipeline under ``all``.
+        if (
+            mode == "ranked"
+            and inference_enabled
+            and not explicit
+            and intent in (ContentIntent.DOCS, ContentIntent.CONFIG)
+        ):
+            # Documentation/configuration intent with no explicit scope: run
+            # the default (code-focused) pass first. A non-empty result set is
+            # returned unchanged with a strong suggestion; an empty result set
+            # (the honest no_match outcome after the rescue ladder) re-runs the
+            # same fused pipeline under ``all`` so the intent's content type
+            # (docs or config) is never silently unreachable.
             envelope = self._search_impl(
                 query,
                 limit=limit,
@@ -1207,8 +1219,9 @@ class HybridSearch:
         if origin == "inferred" and not envelope.get("results"):
             # The inferred scope contained no matching content: report the
             # inferred attempt and the honest empty outcome.
+            intent_label = "documentation" if intent is ContentIntent.DOCS else "configuration"
             signal = (
-                "documentation intent detected; searched with content scope all "
+                f"{intent_label} intent detected; searched with content scope all "
                 "inferred from the query; no matching content was found"
             )
         envelope["scope"] = {
@@ -1556,7 +1569,7 @@ class HybridSearch:
             filter_where = " AND content_type = ?"
             filter_params.append(content)
         elif content == DEFAULT_CONTENT_SCOPE:
-            filter_where = " AND content_type != 'docs'"
+            filter_where = " AND content_type = 'code'"
         with self._db.connect() as conn:
             rows = conn.execute(
                 f"SELECT id, fqn, file_path, line_start, line_end, content, language, "
@@ -1807,7 +1820,7 @@ class HybridSearch:
         if results and all(r.get("vector_degraded") for r in results):
             logger.info("Vector search unavailable. Results based on BM25 only.")
 
-        total_matches = self._bm25.count(query)
+        total_matches = self._bm25.count(query, content=content)
         if exact_ids and total_matches == 0:
             total_matches = len(exact_ids)
         return {
@@ -2901,7 +2914,7 @@ class HybridSearch:
             if content == "all":
                 return True
             if content == DEFAULT_CONTENT_SCOPE:
-                return ctype != "docs"
+                return ctype == "code"
             return ctype == content
 
         candidate_chunks = [
@@ -2972,7 +2985,7 @@ class HybridSearch:
                 }
             )
         results = self._apply_file_coherence(results)
-        total_matches = bm25.count(query)
+        total_matches = bm25.count(query, content=content)
         return {
             "results": results[:limit],
             "total_matches": total_matches,
@@ -3019,7 +3032,7 @@ class HybridSearch:
             where.append("content_type = ?")
             params.append(content)
         elif content == DEFAULT_CONTENT_SCOPE:
-            where.append("content_type != 'docs'")
+            where.append("content_type = 'code'")
         if language:
             where.append("language = ?")
             params.append(language)
@@ -3505,7 +3518,7 @@ class HybridSearch:
                 continue
             if (
                 content == DEFAULT_CONTENT_SCOPE
-                and classify_content_type(stored_path).value == "docs"
+                and classify_content_type(stored_path).value != "code"
             ):
                 continue
             resolved = (

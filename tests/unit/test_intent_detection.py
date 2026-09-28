@@ -64,16 +64,17 @@ class TestScopeSignalAccuracy:
         assert build_scope_signal(ContentIntent.DOCS, "all", "explicit", None) is None
 
     def test_no_signal_when_effective_scope_includes_config(self) -> None:
-        for effective in ("code_focused", "config", "all"):
+        for effective in ("config", "all"):
             assert build_scope_signal(ContentIntent.CONFIG, effective, "default", None) is None, (
                 effective
             )
 
     def test_config_signal_when_genuinely_excluded(self) -> None:
-        signal = build_scope_signal(ContentIntent.CONFIG, "code", "explicit", None)
-        assert signal is not None
-        assert "config" in signal.lower()
-        assert "content scope config" in signal
+        for effective in ("code", "code_focused"):
+            signal = build_scope_signal(ContentIntent.CONFIG, effective, "explicit", None)
+            assert signal is not None, effective
+            assert "config" in signal.lower()
+            assert "content scope config" in signal
 
     def test_docs_signal_when_genuinely_excluded(self) -> None:
         signal = build_scope_signal(ContentIntent.DOCS, "code_focused", "explicit", None)

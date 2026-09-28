@@ -33,9 +33,8 @@ def build_response(
 
     When ``scope_signal`` is supplied it is used verbatim (the engine computed
     the surface-neutral message for the effective scope). Only when no engine
-    signal is supplied and ``--content code`` genuinely excludes configuration
-    does the helper derive a config hint — a code-focused scope includes
-    configuration, so it must not claim configuration is excluded.
+    signal is supplied and ``--content code``/``code_focused`` genuinely
+    excludes configuration does the helper derive a config hint.
 
     Args:
         results: Raw search results from the query.
@@ -63,8 +62,13 @@ def build_response(
 
     index_envelope = change_result.get("envelope")
     reload_required = change_result.get("should_reload", False)
-    status = detector.metadata.status if detector.metadata else None
-    index_status = status.value if status is not None else "unknown"
+    if metadata_store is not None:
+        # Source the same lifecycle vocabulary freshness reports, so the
+        # top-level field and freshness never disagree.
+        index_status = metadata_store.get_index_status()
+    else:
+        status = detector.metadata.status if detector.metadata else None
+        index_status = status.value if status is not None else "unknown"
 
     final_envelope: str | None = index_envelope if index_envelope else None
 
@@ -74,10 +78,14 @@ def build_response(
         final_envelope = scope_signal
 
     # Fallback for direct callers without an engine signal: a genuinely
-    # excluding scope (``code``) with a config/DDL-shaped query names the
-    # override. A code-focused scope includes configuration, so it never emits
-    # the "configuration excluded" hint.
-    if final_envelope is None and content_scope == "code" and query:
+    # excluding scope (``code``/``code_focused``) with a config/DDL-shaped
+    # query names the override. Both scopes now exclude configuration
+    # identically, so both emit the same hint.
+    if (
+        final_envelope is None
+        and content_scope in ("code", DEFAULT_CONTENT_SCOPE)
+        and query
+    ):
         scent_result = detect_config_ddl_scent(query)
         if scent_result["has_scent"] and scent_result["scent_type"] in ("config", "ddl"):
             hint_patterns = {

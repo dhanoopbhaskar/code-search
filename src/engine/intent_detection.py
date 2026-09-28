@@ -168,8 +168,20 @@ def build_scope_signal(
         )
 
     # ContentIntent.CONFIG
-    if effective in ("code_focused", "config", "all"):
+    if origin == "inferred":
+        return (
+            "configuration intent detected; searched with content scope all "
+            "inferred from the query; use content scope code_focused to "
+            "restrict to code only"
+        )
+    if effective in ("config", "all"):
         return None
+    if suggested:
+        return (
+            f"configuration intent detected; results from content scope "
+            f"{effective} are shown; use content scope {suggested} to include "
+            f"configuration"
+        )
     return (
         f"configuration intent detected; configuration is excluded by content "
         f"scope {effective}; use content scope config to include it"

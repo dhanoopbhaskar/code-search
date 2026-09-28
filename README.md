@@ -63,17 +63,16 @@ code-search search "public Comment save" --mode exhaustive --matching literal --
 
 `--content {code,config,docs,all,code_focused}` scopes a search to one content
 axis. Omitting `--content` means **no scope preference**: the effective default
-is **code-focused** — prose/docs chunks (markdown/`.rst`/`.txt`) are excluded
-from ranked results, so docs never pollute code answers, while configuration is
-included. On top of that default, **intent inference** runs on the ranked path:
-a documentation-shaped query (for example "readme documentation", "how to
-deploy") whose default search finds nothing is automatically re-run with content
-scope `all`, and a non-empty default result is returned unchanged with a strong
-suggestion instead of a silent empty answer. A configuration-shaped query never
-changes the effective scope (configuration is already included), and its
-guidance is **accurate**: a scope that includes configuration never claims
-configuration is excluded. An explicit `--content` value always overrides
-inference.
+is **code-focused** — prose/docs and configuration chunks are excluded from
+ranked results, so neither pollutes code answers. On top of that default,
+**intent inference** runs on the ranked path: a documentation-shaped query (for
+example "readme documentation", "how to deploy") whose default search finds
+nothing is automatically re-run with content scope `all`, and a non-empty
+default result is returned unchanged with a strong suggestion instead of a
+silent empty answer. A configuration-shaped query under the default scope gets
+the same treatment as a code-scoped one: the response envelope carries an
+accurate hint pointing at `--content config`/`--content all`. An explicit
+`--content` value always overrides inference.
 
 The applied scope is echoed as `content` and in the additive scope object
 (`{effective, origin, intent, suggested, signal, override}`), where `origin` is

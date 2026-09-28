@@ -1078,7 +1078,7 @@ class VectorIndex:
             if content == "code_focused":
                 keep = np.asarray(
                     [
-                        self._metadata[int(idx)].get("content_type", "code") != "docs"
+                        self._metadata[int(idx)].get("content_type", "code") == "code"
                         for idx in alive
                     ],
                     dtype=bool,

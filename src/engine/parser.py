@@ -110,6 +110,17 @@ EXCLUSION_PATTERNS: set[str] = {
     ".benchmarks",
     "htmlcov",
     ".tox",
+    ".opencode",
+    ".mvn",
+    ".nuget",
+    ".idea",
+    ".vscode",
+    ".cache",
+}
+
+# Filenames (not directories) automatically excluded during file discovery.
+EXCLUDED_FILENAMES: set[str] = {
+    ".DS_Store",
 }
 
 # Prose / transient file extensions that are never indexed unless
@@ -425,6 +436,8 @@ class ASTParser:
                 dirnames.clear()
                 continue
             for fname in filenames:
+                if fname in EXCLUDED_FILENAMES:
+                    continue
                 fpath = Path(dirpath) / fname
                 suffix = fpath.suffix.lower()
                 is_prose = suffix in PROSE_EXTENSIONS or _is_lockfile(fpath)
@@ -532,6 +545,8 @@ class ASTParser:
 
     def is_excluded_file(self, file_path: Path, root_path: Path) -> bool:
         """Check whether *file_path* falls under one of the exclusion patterns."""
+        if file_path.name in EXCLUDED_FILENAMES:
+            return True
         try:
             rel = file_path.relative_to(root_path)
             parts = set(rel.parts)

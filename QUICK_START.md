@@ -437,7 +437,7 @@ Rebuild the index after major changes so the vector layer reflects the current c
 
 **Content scope** (`--content` / `content`):
 - `code_focused` (default): Source code only; excludes config/resource/docs
-- `code`: Source code only (stricter than `code_focused`)
+- `code`: Source code only; same filter as `code_focused`
 - `config`: Configuration files (YAML, TOML, JSON, XML, properties, etc.)
 - `docs`: Prose documentation (Markdown, RST, text)
 - `all`: All content types
