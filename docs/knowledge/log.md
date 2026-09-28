@@ -1,0 +1,5 @@
+# Knowledge Base Update Log
+
+## 2026-09-28
+* **Creation**: Generated the initial OKF v0.2 knowledge base for code-search by parsing `src/cli`, `src/engine`, `src/mcp`, and `src/context`. Produced module, type, function, architecture, and config concepts, all `status: draft` and unverified pending human review.
+* **Completion**: Finished full-layout generation. Final counts: 40 module concepts (one per `.py` file across `cli/`, `context/`, `engine/`, `mcp/`), 46 type concepts covering all 48 classes (two `MatchEvidence` classes disambiguated as `MatchEvidence.md` and `ConfidenceMatchEvidence.md`), 96 function concepts (one per public top-level function), 2 architecture concepts (`system-overview`, `design-patterns`), 2 config concepts (`environment`, `build-system`), and index.md files at every directory level (`modules/`, `modules/cli/`, `modules/mcp/`, `modules/context/`, `modules/engine/`, `types/`, `functions/`, `architecture/`, `config/`). All concepts remain `status: draft` / unverified pending human review.
