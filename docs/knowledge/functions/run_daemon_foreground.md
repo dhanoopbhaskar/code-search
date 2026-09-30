@@ -13,22 +13,23 @@ sources:
 
 # Overview
 
-Starts and runs a [`QueryDaemon`](/types/QueryDaemon.md) blocking in the
+Starts and runs a [`QueryDaemon`](../types/QueryDaemon.md) blocking in the
 foreground, writing its pidfile and serving requests until stopped.
-Defined in [`engine.daemon`](/modules/engine/daemon.md); invoked by
-[`cmd_daemon_run`](/functions/cmd_daemon_run.md).
+Defined in [`engine.daemon`](../modules/engine/daemon.md); invoked by
+[`cmd_daemon_run`](cmd_daemon_run.md).
 
 # Signature
 
-`def run_daemon_foreground(context_dir: Path, settings: Settings \| None = None) -> None`
+`def run_daemon_foreground(context_dir: Path, socket_path: Path, verbose: bool) -> int`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
 | `context_dir` | `Path` | The index/context directory to serve. |
-| `settings` | `Settings \| None` | Optional configuration override. |
+| `socket_path` | `Path` | The Unix socket path the daemon serves on. |
+| `verbose` | `bool` | Whether to enable verbose logging. |
 
 # Returns
 
-None (blocks until the daemon is stopped).
+Process exit code (`0` on clean shutdown); blocks until the daemon is stopped.

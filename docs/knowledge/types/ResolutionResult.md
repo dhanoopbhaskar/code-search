@@ -15,13 +15,13 @@ sources:
 
 Represents the outcome of resolving a name query to a symbol: an exact
 match, an ambiguous set of candidates, or a not-found result. Defined in
-[`engine.symbol_resolution`](/modules/engine/symbol_resolution.md);
-consumed by [`SymbolStore.resolve_name`](/types/SymbolStore.md).
+[`engine.symbol_resolution`](../modules/engine/symbol_resolution.md);
+consumed by [`SymbolStore.resolve_name`](SymbolStore.md).
 
 # Schema
 
 | Field | Type | Description |
 |---|---|---|
-| `outcome` | `str` | One of `"resolved"`, `"ambiguous"`, `"not_found"`. |
-| `symbol` | `dict \| None` | The resolved symbol, if `outcome == "resolved"`. |
-| `candidates` | `list[dict]` | Candidate matches when ambiguous. |
+| `symbol` | `dict[str, Any] \| None` | The resolved declaration, or `None`. |
+| `candidates` | `list[dict[str, Any]]` | Ordered candidate rows (evidence/deprecated attached) when not resolved; the fallback suggestion rows when `kind` is `suggestion`. |
+| `kind` | `str` | `exact` \| `ambiguous` \| `suggestion` \| `not_found`. |

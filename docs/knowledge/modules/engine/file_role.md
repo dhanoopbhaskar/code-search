@@ -21,4 +21,4 @@ and inferred file extensions for each role.
 
 # Key Functions
 
-- [`classify_file_role`](/functions/classify_file_role.md) — classify a file's role for ranking adjustment, with evidence-based overrides.
+- [`classify_file_role`](../../functions/classify_file_role.md) — classify a file's role for ranking adjustment, with evidence-based overrides.

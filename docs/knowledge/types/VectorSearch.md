@@ -14,11 +14,11 @@ sources:
 # Overview
 
 Semantic search using the vector index. Defined in
-[`engine.search`](/modules/engine/search.md).
+[`engine.search`](../modules/engine/search.md).
 
 # Methods
 
 | Method | Description |
 |---|---|
-| `__init__(self, vector_index: VectorIndex, embedding_generator: EmbeddingGenerator) -> None` | Initialize semantic search over the vector index and embedding generator. |
-| `search(self, query: str, top_k: int = 10, content: str = "all") -> list[tuple[int, float]]` | Embed *query* and return `(chunk_id, cosine_score)` matches, scoped by content axis. |
+| `__init__(vector_index: VectorIndex, embedding_generator: EmbeddingGenerator) -> None` | Initialize semantic search over the vector index. |
+| `search(query: str, top_k: int = 10, content: str = 'all') -> list[tuple[int, float]]` | Embed *query* and return `(chunk_id, cosine_score)` matches. |

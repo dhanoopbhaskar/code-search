@@ -14,17 +14,18 @@ sources:
 # Overview
 
 Classifies a chunk as code, boilerplate, or resource for ranking-tier
-purposes. Defined in [`engine.search`](/modules/engine/search.md).
+purposes. Defined in [`engine.search`](../modules/engine/search.md).
 
 # Signature
 
-`def chunk_rank_class(chunk: dict[str, Any]) -> str`
+`def chunk_rank_class(chunk_type: str \| None, chunk_node_type: str \| None) -> str`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `chunk` | `dict[str, Any]` | The chunk record to classify. |
+| `chunk_type` | `str \| None` | The indexer-assigned chunk type (`code`/`resource`/...), or `None`. |
+| `chunk_node_type` | `str \| None` | The tree-sitter node type, or `None`. |
 
 # Returns
 

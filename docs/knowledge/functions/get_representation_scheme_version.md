@@ -16,18 +16,18 @@ sources:
 Reads the stored chunk-representation scheme version
 (`REPRESENTATION_SCHEME_VERSION`) from index metadata, used to detect
 stale embeddings. Defined in
-[`engine.embeddings`](/modules/engine/embeddings.md).
+[`engine.embeddings`](../modules/engine/embeddings.md).
 
 # Signature
 
-`def get_representation_scheme_version(metadata_store: IndexMetadataStore) -> int \| None`
+`def get_representation_scheme_version(metadata_store: Any) -> int \| None`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `metadata_store` | `IndexMetadataStore` | Metadata store to read from. |
+| `metadata_store` | `Any` | The index metadata store, or `None` when unavailable. |
 
 # Returns
 
-The stored scheme version, or `None` if never set.
+The stored scheme version, or `None` when the marker is absent.

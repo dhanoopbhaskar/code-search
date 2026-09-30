@@ -13,22 +13,24 @@ sources:
 
 # Overview
 
-Fuses [`SemanticSignals`](/types/SemanticSignals.md) with the candidate's
+Fuses [`SemanticSignals`](../types/SemanticSignals.md) with the candidate's
 vector similarity score to produce the final
-[`RelevanceScore`](/types/RelevanceScore.md). Defined in
-[`engine.semantic_signals`](/modules/engine/semantic_signals.md).
+[`RelevanceScore`](../types/RelevanceScore.md). Defined in
+[`engine.semantic_signals`](../modules/engine/semantic_signals.md).
 
 # Signature
 
-`def compute_final_score(signals: SemanticSignals, cosine_similarity: float) -> RelevanceScore`
+`def compute_final_score(semantic_signals: SemanticSignals, vector_similarity: float, weights: dict[str, float], semantic_blend: float) -> RelevanceScore`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `signals` | `SemanticSignals` | The computed semantic signal bundle. |
-| `cosine_similarity` | `float` | The candidate's vector-search cosine similarity. |
+| `semantic_signals` | `SemanticSignals` | Computed semantic signals |
+| `vector_similarity` | `float` | Cosine similarity from vector search [0.0, 1.0] |
+| `weights` | `dict[str, float]` | Dict with keys 'package', 'type', 'call_graph' |
+| `semantic_blend` | `float` | Alpha parameter in [0.0, 1.0] |
 
 # Returns
 
-The final [`RelevanceScore`](/types/RelevanceScore.md).
+RelevanceScore with semantic, vector, and final scores

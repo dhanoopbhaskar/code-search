@@ -15,17 +15,17 @@ sources:
 
 Name-shape helper: returns the trailing (leaf) segment of a dotted or
 qualified symbol name (e.g. `pkg.Class.method` → `method`). Defined in
-[`engine.symbol_resolution`](/modules/engine/symbol_resolution.md).
+[`engine.symbol_resolution`](../modules/engine/symbol_resolution.md).
 
 # Signature
 
-`def symbol_leaf(fqn: str) -> str`
+`def symbol_leaf(query: str) -> str`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `fqn` | `str` | A fully- or partially-qualified symbol name. |
+| `query` | `str` | The raw symbol query (dotted, param, or path form). |
 
 # Returns
 

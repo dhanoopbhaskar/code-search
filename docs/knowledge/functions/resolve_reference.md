@@ -13,22 +13,27 @@ sources:
 
 # Overview
 
-Applies a tiered resolution strategy (exact FQN > exact symbol name >
-suffix/leaf match) to rank candidate symbols for a
-[`SymbolReference`](/types/SymbolReference.md). Defined in
-[`engine.symbol_resolution`](/modules/engine/symbol_resolution.md).
+Applies a tiered resolution strategy to rank candidates for a
+[`SymbolReference`](../types/SymbolReference.md). Identity tiers resolve
+only when exactly one declaration matches: `exact_fqn` →
+`exact_conventional_fqn` → `unique_leaf` (bare references) →
+`exact_parent_scope` (qualified references); when several declarations
+match, the result is a ranked candidate list and never an auto-selected
+declaration. Defined in
+[`engine.symbol_resolution`](../modules/engine/symbol_resolution.md).
 
 # Signature
 
-`def resolve_reference(reference: SymbolReference, symbol_store: SymbolStore) -> ResolutionResult`
+`def resolve_reference(reference: SymbolReference, candidates: list[dict[str, Any]], *, max_candidates: int) -> ResolutionResult`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `reference` | `SymbolReference` | The parsed symbol reference. |
-| `symbol_store` | `SymbolStore` | Store used to look up candidate symbols. |
+| `reference` | `SymbolReference` | The parsed caller reference. |
+| `candidates` | `list[dict[str, Any]]` | Raw candidate rows (with `parent_name` and `signature`). |
+| `max_candidates` | `int` | The bound applied to the ambiguous candidate list. |
 
 # Returns
 
-The [`ResolutionResult`](/types/ResolutionResult.md).
+A `ResolutionResult`.

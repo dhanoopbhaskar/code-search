@@ -14,8 +14,8 @@ sources:
 # Overview
 
 Handles the `index` subcommand, invoking
-[`IndexOrchestrator`](/types/IndexOrchestrator.md) to run a full or
-incremental index build. Defined in [`cli.main`](/modules/cli/main.md).
+[`IndexOrchestrator`](../types/IndexOrchestrator.md) to run a full or
+incremental index build. Defined in [`cli.main`](../modules/cli/main.md).
 
 # Signature
 
@@ -25,8 +25,8 @@ incremental index build. Defined in [`cli.main`](/modules/cli/main.md).
 
 | Name | Type | Description |
 |---|---|---|
-| `args` | `argparse.Namespace` | Parsed CLI arguments for the `index` subcommand. |
+| `args` | `argparse.Namespace` | Parsed arguments; `path`, `context_dir`, `force`, `incremental`, `watch`, `exclude`, `prune_stale`, and the include/exclude toggles are honoured. |
 
 # Returns
 
-Process exit code.
+A process exit code: `0` on success, `2` for user/in-progress errors, `1` for unexpected failures.

@@ -14,21 +14,22 @@ sources:
 # Overview
 
 Convenience factory returning a fully-configured
-[`FileWatcher`](/types/FileWatcher.md) for a repo path. Defined in
-[`engine.watcher`](/modules/engine/watcher.md).
+[`FileWatcher`](../types/FileWatcher.md) for a repo path. Defined in
+[`engine.watcher`](../modules/engine/watcher.md).
 
 # Signature
 
-`def create_watcher(repo_path: Path, callback: Callable, settings: Settings \| None = None) -> FileWatcher`
+`def create_watcher(root_path: Path, index_callback: Callable[[list[Path]], None], exclusion_patterns: set[str] \| None = None, settings: Settings \| None = None) -> FileWatcher`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `repo_path` | `Path` | Directory to watch. |
-| `callback` | `Callable` | Callback invoked with the set of changed files after debounce. |
-| `settings` | `Settings \| None` | Optional configuration override. |
+| `root_path` | `Path` | The directory to watch recursively. |
+| `index_callback` | `Callable[[list[Path]], None]` | Callback invoked with changed files after the debounce window; typically triggers an incremental reindex. |
+| `exclusion_patterns` | `set[str] \| None` | Directory/file-name parts to skip during scans. |
+| `settings` | `Settings \| None` | Runtime settings; defaults to `from_env` when omitted. |
 
 # Returns
 
-A configured [`FileWatcher`](/types/FileWatcher.md) instance (not yet started).
+A configured `FileWatcher` instance.

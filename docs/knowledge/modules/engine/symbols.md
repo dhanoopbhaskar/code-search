@@ -22,12 +22,12 @@ TypeScript, Rust, C++, C#).
 
 # Key Classes
 
-- [`SymbolExtractor`](/types/SymbolExtractor.md) — extracts symbols and edges (calls, imports, inheritance) from tree-sitter ASTs.
-- [`SymbolStore`](/types/SymbolStore.md) — SQLite-backed CRUD, resolution, and lookup for symbol records.
+- [`SymbolExtractor`](../../types/SymbolExtractor.md) — extracts symbols and edges (calls, imports, inheritance) from tree-sitter ASTs.
+- [`SymbolStore`](../../types/SymbolStore.md) — SQLite-backed CRUD, resolution, and lookup for symbol records.
 
 # Key Functions
 
-- [`build_symbol_fqn`](/functions/build_symbol_fqn.md) — construct a symbol's fully-qualified name.
+- [`build_symbol_fqn`](../../functions/build_symbol_fqn.md) — construct a symbol's fully-qualified name.
 
 # Internal Helpers
 

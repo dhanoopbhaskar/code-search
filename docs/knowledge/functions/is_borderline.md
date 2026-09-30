@@ -1,7 +1,7 @@
 ---
 type: Function
 title: "is_borderline"
-description: "Whether a confidence score falls in the borderline zone between bands."
+description: "Whether a confidence band is borderline (low)."
 resource: src/engine/confidence.py#is_borderline
 tags: [confidence, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
@@ -13,20 +13,20 @@ sources:
 
 # Overview
 
-Returns whether a confidence score falls in the borderline zone between
-two bands, used to decide whether to widen the rescue tier. Defined in
-[`engine.confidence`](/modules/engine/confidence.md).
+Returns whether a confidence band is borderline — i.e. `"low"` — so
+consumers can flag such results for verification. Defined in
+[`engine.confidence`](../modules/engine/confidence.md).
 
 # Signature
 
-`def is_borderline(score: float) -> bool`
+`def is_borderline(band: str) -> bool`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `score` | `float` | A calibrated confidence score. |
+| `band` | `str` | One of `"high"`, `"medium"`, or `"low"`. |
 
 # Returns
 
-`True` if the score is near a band boundary.
+`True` when *band* is `"low"`.

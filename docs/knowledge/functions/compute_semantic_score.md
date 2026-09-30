@@ -15,21 +15,23 @@ sources:
 
 Computes all three semantic signals — package overlap, type sharing, call
 proximity — for a candidate, bundling them into a
-[`SemanticSignals`](/types/SemanticSignals.md) instance. Defined in
-[`engine.semantic_signals`](/modules/engine/semantic_signals.md).
+[`SemanticSignals`](../types/SemanticSignals.md) instance. Defined in
+[`engine.semantic_signals`](../modules/engine/semantic_signals.md).
 
 # Signature
 
-`def compute_semantic_score(edge_store: EdgeStore, source: dict[str, Any], candidate: dict[str, Any]) -> SemanticSignals`
+`def compute_semantic_score(anchor: dict[str, Any], candidate: dict[str, Any], db: GraphDatabase, max_call_depth: int = 3, call_depths: dict[int, int] \| None = None) -> SemanticSignals`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `edge_store` | `EdgeStore` | Graph edge store for call-proximity lookups. |
-| `source` | `dict[str, Any]` | The source/reference symbol. |
-| `candidate` | `dict[str, Any]` | The candidate symbol being scored. |
+| `anchor` | `dict[str, Any]` | Anchor symbol dict with fqn, file_path, symbol_id |
+| `candidate` | `dict[str, Any]` | Candidate symbol dict with fqn, file_path, symbol_id |
+| `db` | `GraphDatabase` | Graph database |
+| `max_call_depth` | `int` | Maximum call graph traversal depth |
+| `call_depths` | `dict[int, int] \| None` | Optional precomputed {symbol_id: depth} map for the anchor (avoids one CTE pair per candidate during reranking) |
 
 # Returns
 
-A populated [`SemanticSignals`](/types/SemanticSignals.md) instance.
+SemanticSignals with all three scores

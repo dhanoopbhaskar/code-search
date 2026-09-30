@@ -19,8 +19,8 @@ CLI schema, surfacing per-request latency breakdown and model state
 
 # Key Classes
 
-- [`ModelState`](/types/ModelState.md) — `StrEnum` for the current model state (`WARM`, `COLD`, `INITIALIZING`).
+- [`ModelState`](../../types/ModelState.md) — `StrEnum` for the current model state (`WARM`, `COLD`, `INITIALIZING`).
 
 # Key Functions
 
-- [`report_model_status`](/functions/report_model_status.md) — generate the model warm/cold status report with latency breakdown.
+- [`report_model_status`](../../functions/report_model_status.md) — generate the model warm/cold status report with latency breakdown.

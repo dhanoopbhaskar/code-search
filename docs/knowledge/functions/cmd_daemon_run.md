@@ -13,11 +13,11 @@ sources:
 
 # Overview
 
-Runs the [`QueryDaemon`](/types/QueryDaemon.md) blocking in the
+Runs the [`QueryDaemon`](../types/QueryDaemon.md) blocking in the
 foreground via
-[`run_daemon_foreground`](/functions/run_daemon_foreground.md); typically
+[`run_daemon_foreground`](run_daemon_foreground.md); typically
 invoked as a detached subprocess by `cmd_daemon`. Defined in
-[`cli.main`](/modules/cli/main.md).
+[`cli.main`](../modules/cli/main.md).
 
 # Signature
 

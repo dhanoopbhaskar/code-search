@@ -15,18 +15,15 @@ sources:
 
 FastMCP server exposing search, symbol-definition, call-neighbor,
 implementation, and `find_related` tools over stdio for AI agent
-consumption. Defined in [`mcp.server`](/modules/mcp/server.md); wraps
-[`HybridSearch`](/types/HybridSearch.md), [`EdgeStore`](/types/EdgeStore.md),
-and [`SymbolStore`](/types/SymbolStore.md).
+consumption. Defined in [`mcp.server`](../modules/mcp/server.md); wraps
+[`HybridSearch`](HybridSearch.md), [`EdgeStore`](EdgeStore.md),
+and [`SymbolStore`](SymbolStore.md).
 
 # Methods
 
 | Method | Description |
 |---|---|
-| `__init__(self, index_path: Path, settings: Settings \| None = None) -> None` | Load index components and register MCP tools. |
-| `search(self, query: str, top_k: int = 10, ...) -> dict[str, Any]` | MCP tool: run hybrid search and return a response envelope. |
-| `get_symbol_definition(self, fqn: str) -> dict[str, Any]` | MCP tool: resolve and return a symbol's definition + source. |
-| `get_call_neighbors(self, fqn: str, direction: str = "both", max_depth: int = 1) -> dict[str, Any]` | MCP tool: return callers/callees of a symbol. |
-| `get_implementations(self, fqn: str, kind: str = "subtypes") -> dict[str, Any]` | MCP tool: return subtypes or ancestors of a symbol. |
-| `find_related(self, file_path: str, ...) -> dict[str, Any]` | MCP tool: return chunks related to a given file. |
-| `run() -> None` | Start the FastMCP stdio event loop. |
+| `__init__(components: dict[str, Any]) -> None` | Create an MCP server wired to the shared component registry. |
+| `register_tool(name: str, handler: object) -> None` | Register a tool *handler* under *name*. |
+| `build_fastmcp() -> Any` | Build the FastMCP server with the five MCP tools registered. |
+| `run(transport: str = 'stdio') -> None` | Serve the MCP tools over the requested transport. |

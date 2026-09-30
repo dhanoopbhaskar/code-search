@@ -15,20 +15,20 @@ sources:
 
 Extracts symbol short names embedded within a natural-language query
 (e.g. `HybridSearch` mentioned inside a prose question) and resolves them
-against the [`SymbolStore`](/types/SymbolStore.md). Defined in
-[`engine.language`](/modules/engine/language.md).
+against the [`SymbolStore`](../types/SymbolStore.md). Defined in
+[`engine.language`](../modules/engine/language.md).
 
 # Signature
 
-`def embedded_symbols(query: str, symbol_store: SymbolStore) -> list[str]`
+`def embedded_symbols(query: str, symbol_store: Any \| None = None) -> list[str]`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `query` | `str` | The raw query text. |
-| `symbol_store` | `SymbolStore` | Store used to resolve candidate symbol names. |
+| `query` | `str` | The raw user query (case preserved, so `StateManager` in prose resolves while `statemanager` does not). |
+| `symbol_store` | `Any \| None` | An optional symbol store used for exact resolution; `None` returns an empty list (the caller owns the gate). |
 
 # Returns
 
-List of resolved symbol short names found in the query.
+The sorted unique resolved symbol names.

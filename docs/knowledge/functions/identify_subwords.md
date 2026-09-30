@@ -15,17 +15,17 @@ sources:
 
 Splits identifier-style tokens (camelCase, snake_case, PascalCase) into
 their constituent sub-words. Defined in
-[`engine.search`](/modules/engine/search.md).
+[`engine.search`](../modules/engine/search.md).
 
 # Signature
 
-`def identify_subwords(token: str) -> list[str]`
+`def identify_subwords(text: str) -> list[str]`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `token` | `str` | A single identifier-like token. |
+| `text` | `str` | The identifier-bearing text to decompose. |
 
 # Returns
 

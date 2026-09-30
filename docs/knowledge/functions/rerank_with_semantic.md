@@ -14,23 +14,25 @@ sources:
 # Overview
 
 Reranks a list of vector-search results using
-[`compute_semantic_score`](/functions/compute_semantic_score.md) and
-[`compute_final_score`](/functions/compute_final_score.md) for each
+[`compute_semantic_score`](compute_semantic_score.md) and
+[`compute_final_score`](compute_final_score.md) for each
 candidate. Defined in
-[`engine.semantic_signals`](/modules/engine/semantic_signals.md).
+[`engine.semantic_signals`](../modules/engine/semantic_signals.md).
 
 # Signature
 
-`def rerank_with_semantic(edge_store: EdgeStore, source: dict[str, Any], results: list[tuple[int, float]]) -> list[RelevanceScore]`
+`def rerank_with_semantic(vector_results: list[tuple[int, float]], anchor: dict[str, Any], db: GraphDatabase, settings: Settings, limit: int) -> list[dict[str, Any]]`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `edge_store` | `EdgeStore` | Graph edge store for call-proximity lookups. |
-| `source` | `dict[str, Any]` | The source/reference symbol. |
-| `results` | `list[tuple[int, float]]` | `(chunk_id, cosine_score)` pairs from vector search. |
+| `vector_results` | `list[tuple[int, float]]` | List of (chunk_id, vector_similarity) from vector search |
+| `anchor` | `dict[str, Any]` | Anchor symbol dict with fqn, file_path, symbol_id |
+| `db` | `GraphDatabase` | Graph database |
+| `settings` | `Settings` | Engine settings with semantic weights |
+| `limit` | `int` | Maximum results to return |
 
 # Returns
 
-List of [`RelevanceScore`](/types/RelevanceScore.md) entries, reranked.
+List of result dicts with final_score and semantic_signals, sorted by final_score desc

@@ -20,4 +20,4 @@ provides both bulk path lookup and individual key-based retrieval.
 
 # Key Classes
 
-- [`ContextManager`](/types/ContextManager.md) — ensures the context directory structure exists and exposes cached paths for `graph.db`, `session.db`, `audit.db`, `vectors.bin`, `vectors.meta.json`, and `index.lock`.
+- [`ContextManager`](../../types/ContextManager.md) — ensures the context directory structure exists and exposes cached paths for `graph.db`, `chunks.db`, `session.db`, `audit.db`, `vectors.bin`, `vectors.meta.json`, and `index.lock`.

@@ -13,22 +13,23 @@ sources:
 
 # Overview
 
-Resolves static implementations of an interface member or type using the
-call/inheritance graph. Defined in
-[`engine.implementations`](/modules/engine/implementations.md).
+Resolves static implementations of an interface member or type by
+walking the inheritance (`INHERITS`) graph. Defined in
+[`engine.implementations`](../modules/engine/implementations.md).
 
 # Signature
 
-`def find_implementations(edge_store: EdgeStore, fqn: str, kind: str = "subtypes") -> list[dict[str, Any]]`
+`def find_implementations(symbol_store: SymbolStore, edge_store: EdgeStore, reference: str, max_depth: int \| None = None) -> dict[str, Any]`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `edge_store` | `EdgeStore` | Graph edge store to query. |
-| `fqn` | `str` | Fully-qualified name of the interface/type/member. |
-| `kind` | `str` | `"subtypes"` or `"ancestors"`. |
+| `symbol_store` | `SymbolStore` | The symbol store used to resolve the reference and read member declarations. |
+| `edge_store` | `EdgeStore` | The edge store used for the reverse (subtype) and forward (ancestor) `INHERITS` walks. |
+| `reference` | `str` | An FQN, conventional FQN, partial, or bare member name. |
+| `max_depth` | `int \| None` | Optional reverse-traversal bound; defaults to `max_graph_depth` so indirect (sub-interface) implementations are reached like every other surface. |
 
 # Returns
 
-List of implementation records.
+The shared `ImplementationResult` envelope: `outcome`, `symbol`, `declaring_type`, `implementations`, `candidates`, and `explanation`.

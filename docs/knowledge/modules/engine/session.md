@@ -20,4 +20,4 @@ reranking via `get_weights_for_files()`.
 
 # Key Classes
 
-- [`SessionDatabase`](/types/SessionDatabase.md) — tracks code navigation events to enable session-based personalised reranking with exponential decay.
+- [`SessionDatabase`](../../types/SessionDatabase.md) — tracks code navigation events to enable session-based personalised reranking with exponential decay.

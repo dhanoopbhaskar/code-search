@@ -15,6 +15,14 @@ sources:
 
 `StrEnum` for the content axis a query lexically targets: `DOCS`,
 `CONFIG`, or `NEUTRAL`. Defined in
-[`engine.intent_detection`](/modules/engine/intent_detection.md);
+[`engine.intent_detection`](../modules/engine/intent_detection.md);
 produced by
-[`classify_content_intent`](/functions/classify_content_intent.md).
+[`classify_content_intent`](../functions/classify_content_intent.md).
+
+# Values
+
+| Value | Description |
+|---|---|
+| `DOCS` | Query asks about documentation. |
+| `CONFIG` | Query asks about configuration or schema. |
+| `NEUTRAL` | No documentation or configuration intent. |

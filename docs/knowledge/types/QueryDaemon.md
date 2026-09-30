@@ -16,14 +16,13 @@ sources:
 Background daemon process that keeps the search index and embedding
 model warm in memory, serving queries over a local Unix socket to avoid
 per-invocation cold-start cost. Defined in
-[`engine.daemon`](/modules/engine/daemon.md).
+[`engine.daemon`](../modules/engine/daemon.md).
 
 # Methods
 
 | Method | Description |
 |---|---|
-| `__init__(self, index_path: Path, socket_path: Path, settings: Settings \| None = None) -> None` | Initialize the daemon over an index and socket path. |
-| `start() -> None` | Load the index/model and begin accepting connections. |
-| `stop() -> None` | Gracefully shut down the daemon and close the socket. |
-| `handle_request(self, request: dict[str, Any]) -> dict[str, Any]` | Dispatch a single incoming request to the appropriate handler. |
-| `is_running() -> bool` | Return whether the daemon's socket is currently accepting connections. |
+| `__init__(socket_path: Path, context_dir: Path, verbose: bool = False) -> None` | Create a daemon that will serve on *socket_path*. |
+| `start() -> None` | Initialise components, bind the socket, and serve connections forever. |
+| `stop() -> None` | Stop servicing requests, close the socket, and remove its path. |
+| `is_running: bool` (property) | Return whether the daemon's accept loop is active. |

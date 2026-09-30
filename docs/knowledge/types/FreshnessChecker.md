@@ -16,12 +16,13 @@ sources:
 Computes whether the working tree is ahead of the index using a stat
 fast-path (size/mtime match skips rehashing) with self-healing re-hash on
 change. Defined in
-[`engine.freshness`](/modules/engine/freshness.md); consumed by
-[`IndexOrchestrator.run_incremental_index`](/types/IndexOrchestrator.md).
+[`engine.freshness`](../modules/engine/freshness.md); consumed by
+[`IndexOrchestrator.index_codebase`](IndexOrchestrator.md).
 
 # Methods
 
 | Method | Description |
 |---|---|
-| `__init__(self, metadata_store: IndexMetadataStore, ttl_seconds: float = 300.0) -> None` | Initialize the checker over an index metadata store with a cache TTL. |
-| `check(self, repo_path: Path) -> dict[str, list[str]]` | Return `{deleted, new, modified}` file lists relative to the last index. |
+| `__init__(db: GraphDatabase, metadata: IndexMetadataStore, parser: ASTParser, context_dir: Path, settings: Settings \| None = None) -> None` | Create a freshness checker for *context_dir*. |
+| `signal() -> dict[str, Any]` | Return the current freshness signal, TTL-cached per metadata. |
+| `mark_clean() -> None` | Seed a current (non-stale) cached signal after a successful index. |

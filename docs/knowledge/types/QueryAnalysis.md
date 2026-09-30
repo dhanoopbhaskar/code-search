@@ -14,17 +14,19 @@ sources:
 # Overview
 
 The query-time trust-signal entity produced by
-[`analyze_query`](/functions/analyze_query.md) and consumed throughout
-the search/rerank pipeline. Defined in
-[`engine.language`](/modules/engine/language.md).
+[`analyze_query`](../functions/analyze_query.md) — expanded text,
+exact-vocabulary tokens, coverage, inferred language, and definition
+intent — consumed throughout the search/rerank pipeline. Defined in
+[`engine.language`](../modules/engine/language.md).
 
 # Schema
 
 | Field | Type | Description |
 |---|---|---|
-| `expanded_text` | `str` | Query text after applying [`ExpansionTable`](/types/ExpansionTable.md) expansion. |
-| `exact_tokens` | `list[str]` | Exact corpus-vocabulary sub-words matched in the query. |
-| `coverage` | `float` | Fraction of expanded tokens matched against corpus vocabulary. |
-| `inferred_language` | `str \| None` | Inferred programming language (explicit > symbol > vocab priority). |
-| `definition_intent` | `bool` | Whether the query expresses definition-seeking phrasing. |
-| `definition_target` | `str \| None` | The resolved symbol target when `definition_intent` is true. |
+| `query` | `str` | The raw query as received. |
+| `expanded_text` | `str` | The query after synonym/expansion resolution. |
+| `exact_tokens` | `list[str]` | Corpus-vocabulary sub-words present in the expanded text (exact matches only, never prefix). |
+| `coverage` | `float` | The fraction of concept sub-words that appear exactly in the vocabulary — computed after expansion and gating ordering. |
+| `inferred_language` | `str \| None` | The language inferred for the query, or `None` to keep search unscoped. |
+| `definition_intent` | `bool` | Whether the query asks for a definition. |
+| `definition_target` | `str \| None` | The resolved symbol FQN when definition intent is detected and the target resolves, else `None`. |

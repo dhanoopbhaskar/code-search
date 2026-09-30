@@ -16,18 +16,19 @@ sources:
 Returns the neutral `content` scope token that would include the given
 intent's content type, used to suggest a corrective scope override.
 Defined in
-[`engine.intent_detection`](/modules/engine/intent_detection.md).
+[`engine.intent_detection`](../modules/engine/intent_detection.md).
 
 # Signature
 
-`def scope_override(intent: ContentIntent) -> str`
+`def scope_override(intent: ContentIntent, effective: str) -> str`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `intent` | `ContentIntent` | The detected content intent. |
+| `intent` | `ContentIntent` | The classified query intent. |
+| `effective` | `str` | The effective scope applied to the search. |
 
 # Returns
 
-The scope token string (e.g. `"docs"`, `"config"`, `"all"`).
+`all` for documentation intent, `config` for configuration intent, and the effective scope itself for neutral intent (no override due).

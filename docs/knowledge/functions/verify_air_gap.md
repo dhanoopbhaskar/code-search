@@ -13,10 +13,12 @@ sources:
 
 # Overview
 
-Verifies that [`air_gap_enforcement`](/functions/air_gap_enforcement.md)
-is currently active by attempting a benign outbound connection and
-confirming it is blocked. Defined in
-[`engine.redactor`](/modules/engine/redactor.md).
+Verifies that [`air_gap_enforcement`](air_gap_enforcement.md)
+is currently active by running one loopback connection attempt
+(`127.0.0.1:1`) inside the enforcement context and suppressing the expected
+`RuntimeError`; a `True` result confirms the blocking socket patch is
+installed. Defined in
+[`engine.redactor`](../modules/engine/redactor.md).
 
 # Signature
 
@@ -24,4 +26,4 @@ confirming it is blocked. Defined in
 
 # Returns
 
-`True` if outbound connections are currently blocked.
+`True` when the enforcement context activates without error, `False` otherwise.

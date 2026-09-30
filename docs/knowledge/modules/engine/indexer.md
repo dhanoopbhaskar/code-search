@@ -19,7 +19,7 @@ embedding generation, and persistence to the graph database and vector
 index. The pipeline runs in four phases: (1) serial file discovery with
 content-hash diffing, (2) parallel AST parsing via a process pool, (3)
 serial symbol/edge/chunk persistence with cross-file edge resolution, and
-(4) parallel embedding generation.
+(4) serial, in-process embedding generation.
 
 # Key Constants
 
@@ -29,8 +29,8 @@ type declarations for fallback resolution.
 
 # Key Classes
 
-- [`IndexLock`](/types/IndexLock.md) — filesystem-based exclusive lock (`O_CREAT|O_EXCL`) with stale-lock detection.
-- [`IndexOrchestrator`](/types/IndexOrchestrator.md) — top-level coordinator for the four-phase indexing pipeline.
+- [`IndexLock`](../../types/IndexLock.md) — filesystem-based exclusive lock (`O_CREAT|O_EXCL`) with stale-lock detection.
+- [`IndexOrchestrator`](../../types/IndexOrchestrator.md) — top-level coordinator for the four-phase indexing pipeline.
 
 # Internal Helpers
 

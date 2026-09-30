@@ -13,21 +13,20 @@ sources:
 
 # Overview
 
-Factory constructing an [`MCPServer`](/types/MCPServer.md) instance,
+Factory constructing an [`MCPServer`](../types/MCPServer.md) instance,
 wiring up its search/graph/symbol/embedding components. Defined in
-[`mcp.server`](/modules/mcp/server.md).
+[`mcp.server`](../modules/mcp/server.md).
 
 # Signature
 
-`def create_server(index_path: Path, settings: Settings \| None = None) -> MCPServer`
+`def create_server(components: dict[str, Any]) -> MCPServer`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `index_path` | `Path` | Path to the built index directory. |
-| `settings` | `Settings \| None` | Optional configuration override. |
+| `components` | `dict[str, Any]` | The component registry from `_initialize_components`. |
 
 # Returns
 
-A ready-to-run [`MCPServer`](/types/MCPServer.md) instance.
+A configured `MCPServer` ready to serve.

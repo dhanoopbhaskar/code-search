@@ -16,19 +16,19 @@ sources:
 Raises an error when the loaded index's recorded embedding model
 identifier does not match the currently configured model, preventing
 mixing incompatible vector spaces. Defined in
-[`engine.embeddings`](/modules/engine/embeddings.md).
+[`engine.embeddings`](../modules/engine/embeddings.md).
 
 # Signature
 
-`def check_index_model_compatibility(metadata_store: IndexMetadataStore, current_model_name: str) -> None`
+`def check_index_model_compatibility(settings: Settings, metadata_store: Any) -> None`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `metadata_store` | `IndexMetadataStore` | Metadata store recording the index's build-time model. |
-| `current_model_name` | `str` | The currently configured embedding model name. |
+| `settings` | `Settings` | Active settings; its model profile resolves the active model. |
+| `metadata_store` | `Any` | The index metadata store, or `None` when unavailable. |
 
 # Raises
 
-`RuntimeError` when the models differ.
+ValueError: When the recorded model differs from the active model.

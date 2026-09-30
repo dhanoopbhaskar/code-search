@@ -15,18 +15,18 @@ sources:
 
 Maps each indexed language to its exact sub-word vocabulary set, built
 from the corpus, used for language inference and coverage computation.
-Defined in [`engine.language`](/modules/engine/language.md).
+Defined in [`engine.language`](../modules/engine/language.md).
 
 # Signature
 
-`def language_vocabularies(db: GraphDatabase) -> dict[str, set[str]]`
+`def language_vocabularies(db: Any) -> dict[str, set[str]]`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `db` | `GraphDatabase` | The graph database to scan for corpus vocabulary. |
+| `db` | `Any` | A database exposing a `connect()` context manager whose `code_chunks` table has `language` and `subwords` columns. |
 
 # Returns
 
-Mapping of language name to its exact sub-word set.
+A mapping of language name to the set of sub-words observed in that language's chunks; empty when the lookup fails or no rows exist.

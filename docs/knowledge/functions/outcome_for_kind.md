@@ -15,7 +15,7 @@ sources:
 
 Maps a resolution envelope's `kind` to a user-visible outcome string.
 Defined in
-[`engine.symbol_resolution`](/modules/engine/symbol_resolution.md).
+[`engine.symbol_resolution`](../modules/engine/symbol_resolution.md).
 
 # Signature
 
@@ -25,8 +25,8 @@ Defined in
 
 | Name | Type | Description |
 |---|---|---|
-| `kind` | `str` | The envelope kind produced by [`SymbolStore.resolve_name`](/types/SymbolStore.md). |
+| `kind` | `str` | One of `exact`, `ambiguous`, `suggestion`, `not_found`. |
 
 # Returns
 
-The user-visible outcome label.
+`resolved`, `ambiguous`, or `not_found`.

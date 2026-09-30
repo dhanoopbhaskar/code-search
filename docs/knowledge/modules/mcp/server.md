@@ -33,11 +33,11 @@ redaction, and index-freshness signals.
 
 # Key Classes
 
-- [`MCPServer`](/types/MCPServer.md) — serves the code-search engine to MCP clients over stdio.
+- [`MCPServer`](../../types/MCPServer.md) — serves the code-search engine to MCP clients over stdio.
 
 # Key Functions
 
-- [`create_server`](/functions/create_server.md) — create an `MCPServer` around a component registry.
+- [`create_server`](../../functions/create_server.md) — create an `MCPServer` around a component registry.
 
 # Internal Helpers
 

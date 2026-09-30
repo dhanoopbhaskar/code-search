@@ -16,11 +16,11 @@ sources:
 Detects concrete literal, annotation, or identifier patterns in a query
 (e.g. quoted strings, `@Annotation`) that warrant an exact-match search
 path ahead of the general hybrid pipeline. Defined in
-[`engine.search`](/modules/engine/search.md).
+[`engine.search`](../modules/engine/search.md).
 
 # Signature
 
-`def exact_precheck(query: str) -> str \| None`
+`def exact_precheck(query: str) -> dict[str, Any] \| None`
 
 # Parameters
 
@@ -30,4 +30,6 @@ path ahead of the general hybrid pipeline. Defined in
 
 # Returns
 
-The detected literal pattern, or `None` if none found.
+A descriptor dict with `annotations`, `quotes`, `literals`, and `identifier`
+keys when the query triggers the exact-match arm, or `None` for plain prose
+(no concrete token form).

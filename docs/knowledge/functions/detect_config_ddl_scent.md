@@ -15,20 +15,20 @@ sources:
 
 Detects configuration or schema (DDL) intent signals in a query string
 via lexical keyword/phrase patterns, feeding
-[`compute_scent_adjustment`](/functions/compute_scent_adjustment.md).
+[`compute_scent_adjustment`](compute_scent_adjustment.md).
 Defined in
-[`engine.scent_detection`](/modules/engine/scent_detection.md).
+[`engine.scent_detection`](../modules/engine/scent_detection.md).
 
 # Signature
 
-`def detect_config_ddl_scent(query: str) -> str \| None`
+`def detect_config_ddl_scent(query: str) -> dict[str, Any]`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `query` | `str` | The raw query text. |
+| `query` | `str` | The full user query string. |
 
 # Returns
 
-The detected scent label, or `None` if no scent signal is present.
+dict with keys: has_scent (bool), scent_type (str: `config`, `ddl`, or `neutral`), boost_factor (float), deprioritize_patterns (set), boost_patterns (set)

@@ -15,15 +15,23 @@ sources:
 
 Wraps the Model2Vec `potion-code-16m-32d` model to generate text
 embeddings, with lazy loading and warm-up-state tracking (see
-[`WarmupState`](/types/WarmupState.md)). Defined in
-[`engine.embeddings`](/modules/engine/embeddings.md).
+[`WarmupState`](WarmupState.md)). Defined in
+[`engine.embeddings`](../modules/engine/embeddings.md).
 
 # Methods
 
 | Method | Description |
 |---|---|
-| `__init__(self, model_path: Path, settings: Settings \| None = None) -> None` | Initialize generator; model is loaded lazily on first use. |
-| `embed(self, text: str) -> list[float]` | Return the embedding vector for a single string. |
-| `embed_batch(self, texts: list[str]) -> list[list[float]]` | Return embedding vectors for a batch of strings. |
-| `is_loaded() -> bool` | Return whether the underlying model has been loaded into memory. |
-| `warmup() -> None` | Run a throwaway inference call to force model load and JIT warm-up. |
+| `__init__(settings: Settings \| None = None, disabled: bool = False) -> None` | Initialize the generator with the settings governing model/dimension. |
+| `is_available() -> bool` | Return whether the embedding model is loaded (or loadable). |
+| `model_load_was_warm() -> bool` | Return whether a real model was already loaded before this request. |
+| `warm_start() -> bool` | Eagerly load the vector model so the daemon holds it warm. |
+| `begin_warmup() -> None` | Start loading the model in the background; safe to call repeatedly. |
+| `is_warm() -> bool` | Return whether a real model is in memory; never blocks. |
+| `warm_state() -> WarmupState` | Return the model lifecycle state; never blocks. |
+| `wait_warm(timeout: float \| None = None) -> bool` | Wait up to *timeout* seconds for warmup to finish. |
+| `reset_model() -> None` | Reset the model state to force a reload on next use. |
+| `encode(text: str) -> np.ndarray \| None` | Encode a single text string into a normalised embedding vector. |
+| `encode_batch(texts: list[str]) -> list[np.ndarray \| None]` | Encode a list of texts with one batched `model.encode` call. |
+| `embedding_to_bytes(embedding: np.ndarray) -> bytes` | Serialise an embedding array to raw `float32` bytes. |
+| `bytes_to_embedding(data: bytes) -> np.ndarray` | Deserialise raw `float32` bytes back into an embedding array. |

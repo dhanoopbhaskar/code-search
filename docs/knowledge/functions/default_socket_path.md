@@ -15,7 +15,7 @@ sources:
 
 Returns the daemon's conventional Unix socket path for a given context
 (index) directory. Defined in
-[`engine.daemon`](/modules/engine/daemon.md).
+[`engine.daemon`](../modules/engine/daemon.md).
 
 # Signature
 
@@ -25,8 +25,8 @@ Returns the daemon's conventional Unix socket path for a given context
 
 | Name | Type | Description |
 |---|---|---|
-| `context_dir` | `Path` | The index/context directory. |
+| `context_dir` | `Path` | The daemon's context directory (`.context/`). |
 
 # Returns
 
-The conventional socket path for that context.
+The convention `context_dir / "code-search.sock"` path.

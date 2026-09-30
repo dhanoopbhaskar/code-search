@@ -14,8 +14,8 @@ sources:
 # Overview
 
 Handles the `list-languages` subcommand, printing all
-[`LanguageConfig`](/types/LanguageConfig.md) entries the parser supports.
-Defined in [`cli.main`](/modules/cli/main.md).
+[`LanguageConfig`](../types/LanguageConfig.md) entries the parser supports.
+Defined in [`cli.main`](../modules/cli/main.md).
 
 # Signature
 

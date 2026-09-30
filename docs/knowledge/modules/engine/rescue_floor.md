@@ -25,4 +25,4 @@ True`, `DEFAULT_BORDERLINE_REAL_ALLOWED = True`.
 
 # Key Functions
 
-- [`evaluate_rescue_floor`](/functions/evaluate_rescue_floor.md) — evaluate whether the rescue tier should return results.
+- [`evaluate_rescue_floor`](../../functions/evaluate_rescue_floor.md) — evaluate whether the rescue tier should return results.

@@ -15,19 +15,20 @@ sources:
 
 Constructs a symbol's fully-qualified name from its module path and
 enclosing-type chain. Defined in
-[`engine.symbols`](/modules/engine/symbols.md).
+[`engine.symbols`](../modules/engine/symbols.md).
 
 # Signature
 
-`def build_symbol_fqn(module_path: str, ancestor_names: list[str], symbol_name: str) -> str`
+`def build_symbol_fqn(file_path: str, parent_fqn: str \| None, name: str, param_types: list[str] \| None = None) -> str`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `module_path` | `str` | Dotted module path. |
-| `ancestor_names` | `list[str]` | Chain of enclosing type/function names. |
-| `symbol_name` | `str` | The symbol's own short name. |
+| `file_path` | `str` | The symbol's file path (the FQN prefix). |
+| `parent_fqn` | `str \| None` | The enclosing parent FQN, or `None` for a top-level symbol. |
+| `name` | `str` | The symbol's short name. |
+| `param_types` | `list[str] \| None` | Parameter type names appended as a `(params)` suffix, or `None`. |
 
 # Returns
 

@@ -21,4 +21,4 @@ does not supply its own scope signal.
 
 # Key Functions
 
-- [`build_response`](/functions/build_response.md) — build a search response, checking for the index-change envelope and code-scoped config hints.
+- [`build_response`](../../functions/build_response.md) — build a search response, checking for the index-change envelope and code-scoped config hints.

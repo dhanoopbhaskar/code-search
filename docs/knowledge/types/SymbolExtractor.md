@@ -15,12 +15,12 @@ sources:
 
 Extracts symbols (definitions) and edges (calls, imports, inheritance)
 from tree-sitter ASTs. Defined in
-[`engine.symbols`](/modules/engine/symbols.md).
+[`engine.symbols`](../modules/engine/symbols.md).
 
 # Methods
 
 | Method | Description |
 |---|---|
-| `__init__(self, parser: ASTParser) -> None` | Initialize extractor with an AST parser. |
-| `extract_symbols(self, file_path: Path, source_bytes: bytes) -> list[dict[str, Any]]` | Extract all symbol definitions from a source file. |
-| `extract_edges(self, file_path: Path, source_bytes: bytes, symbol_catalog: dict[str, int] \| None = None) -> list[dict[str, Any]]` | Extract call, import, and inheritance edges in two-pass mode (imports first, then calls/inheritance). |
+| `__init__(parser: ASTParser) -> None` | Initialize the extractor with the parser used to build ASTs. |
+| `extract_symbols(file_path: Path, source_bytes: bytes) -> list[dict[str, Any]]` | Return all symbol definitions found in *file_path*. |
+| `extract_edges(file_path: Path, source_bytes: bytes, symbol_catalog: dict[str, int] \| None = None) -> list[dict[str, Any]]` | Extract call, import, and inheritance edges from *file_path*. |

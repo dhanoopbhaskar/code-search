@@ -14,20 +14,20 @@ sources:
 # Overview
 
 Classifies how strongly a candidate's file name matches the query,
-returning a [`MatchTier`](/types/MatchTier.md). Defined in
-[`engine.match_boost`](/modules/engine/match_boost.md).
+returning a [`MatchTier`](../types/MatchTier.md). Defined in
+[`engine.match_boost`](../modules/engine/match_boost.md).
 
 # Signature
 
-`def classify_filename_match(file_name: str, query_tokens: list[str]) -> MatchTier`
+`def classify_filename_match(context: QueryNameContext, file_path: str) -> MatchTier`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `file_name` | `str` | The candidate's file name. |
-| `query_tokens` | `list[str]` | Named tokens extracted from the query. |
+| `context` | `QueryNameContext` | The request-scoped name context. |
+| `file_path` | `str` | The candidate chunk's file path. |
 
 # Returns
 
-The classified [`MatchTier`](/types/MatchTier.md).
+`exact_filename` or `none`.

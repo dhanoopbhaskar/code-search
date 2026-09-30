@@ -16,19 +16,19 @@ sources:
 Returns the exact stored `code_chunks.file_path` spelling matching a
 candidate path, resolving discrepancies between filesystem paths and the
 spelling recorded at index time. Defined in
-[`engine.paths`](/modules/engine/paths.md); used by the `find_related`
+[`engine.paths`](../modules/engine/paths.md); used by the `find_related`
 MCP tool.
 
 # Signature
 
-`def resolve_stored_path(db: GraphDatabase, candidate: Path) -> str \| None`
+`def resolve_stored_path(candidate: Path, conn: IndexConnection) -> str \| None`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `db` | `GraphDatabase` | Graph database to query. |
 | `candidate` | `Path` | The normalized candidate path. |
+| `conn` | `IndexConnection` | An open index database connection. |
 
 # Returns
 

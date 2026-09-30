@@ -16,13 +16,15 @@ sources:
 Tracks index metadata (version, mtime, status) and decides whether a
 reload is needed or an "index changed — restart required" envelope
 should be generated. Defined in
-[`engine.index_service`](/modules/engine/index_service.md); consumed by
-[`build_response`](/functions/build_response.md).
+[`engine.index_service`](../modules/engine/index_service.md); consumed by
+[`build_response`](../functions/build_response.md).
 
 # Methods
 
 | Method | Description |
 |---|---|
-| `__init__(self, metadata_store: IndexMetadataStore) -> None` | Initialize over an index metadata store. |
-| `has_changed() -> bool` | Return whether the index's `last_indexed_at` mtime has changed since load. |
-| `refresh() -> None` | Re-read the current mtime baseline after a reload. |
+| `__init__(metadata: IndexMetadata \| None = None) -> None` | Create a change detector, optionally seeded with existing metadata. |
+| `from_metadata_store(metadata_store: Any) -> IndexChangeDetector` | Build a detector seeded with the index state the process loaded. |
+| `metadata: IndexMetadata` (property) | Get current index metadata. |
+| `detect_index_change(new_mtime: Any) -> dict[str, Any]` | Detect if the index has changed based on new mtime. |
+| `mark_reload_complete(metadata_store: Any \| None = None) -> IndexMetadata` | Mark the reload as complete and update status. |

@@ -15,18 +15,19 @@ sources:
 
 Detects definition-seeking phrasing in a query (e.g. "where is X
 defined") and resolves the referenced symbol target. Defined in
-[`engine.language`](/modules/engine/language.md).
+[`engine.language`](../modules/engine/language.md).
 
 # Signature
 
-`def detect_definition_intent(query: str) -> tuple[bool, str \| None]`
+`def detect_definition_intent(query: str, symbol_store: Any \| None = None) -> tuple[bool, str \| None]`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `query` | `str` | The raw query text. |
+| `query` | `str` | The raw user query. |
+| `symbol_store` | `Any \| None` | Optional symbol store used to resolve the captured definition target to a canonical FQN. |
 
 # Returns
 
-Tuple of `(has_definition_intent, definition_target)`.
+A tuple of `(definition_intent, definition_target)` where *definition_target* is the resolved FQN or `None` when no target was captured or resolved.

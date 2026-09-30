@@ -15,12 +15,12 @@ sources:
 
 Context manager that temporarily lifts air-gap enforcement to allow
 outbound socket connections, used for model downloads. Defined in
-[`engine.redactor`](/modules/engine/redactor.md); used by
-[`cmd_download_models`](/functions/cmd_download_models.md).
+[`engine.redactor`](../modules/engine/redactor.md); used by
+[`cmd_download_models`](cmd_download_models.md).
 
 # Signature
 
-`def allow_downloads() -> Generator[None, Any, None]`
+`def allow_downloads() -> Generator[None, None, None]`
 
 # Returns
 

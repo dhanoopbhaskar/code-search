@@ -16,19 +16,19 @@ sources:
 Raises an error when the index's stored embeddings were generated under
 an older `REPRESENTATION_SCHEME_VERSION` than the one currently running,
 signalling that a re-index is required. Defined in
-[`engine.embeddings`](/modules/engine/embeddings.md).
+[`engine.embeddings`](../modules/engine/embeddings.md).
 
 # Signature
 
-`def check_index_representation_compatibility(metadata_store: IndexMetadataStore, current_version: int) -> None`
+`def check_index_representation_compatibility(metadata_store: Any, *, has_vectors: bool = False) -> None`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `metadata_store` | `IndexMetadataStore` | Metadata store recording the index's build-time scheme version. |
-| `current_version` | `int` | The currently running `REPRESENTATION_SCHEME_VERSION`. |
+| `metadata_store` | `Any` | The index metadata store, or `None` when unavailable. |
+| `has_vectors` | `bool` | Whether the vector index currently holds any vectors. |
 
 # Raises
 
-`RuntimeError` when the stored version is older than *current_version*.
+ValueError: When the stored scheme differs from the running code, or the marker is absent on an engine-built vector-bearing index.

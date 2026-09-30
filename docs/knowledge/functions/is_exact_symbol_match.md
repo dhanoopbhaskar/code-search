@@ -15,19 +15,20 @@ sources:
 
 Evidence classifier: returns whether a candidate's short symbol name
 exactly matches a query token. Defined in
-[`engine.confidence`](/modules/engine/confidence.md).
+[`engine.confidence`](../modules/engine/confidence.md).
 
 # Signature
 
-`def is_exact_symbol_match(symbol_name: str, query: str) -> bool`
+`def is_exact_symbol_match(query_identifier: str \| None, fqn: str, ambiguous: bool) -> bool`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `symbol_name` | `str` | The candidate's short symbol name. |
-| `query` | `str` | The raw query text. |
+| `query_identifier` | `str \| None` | The query's bare identifier, or `None`. |
+| `fqn` | `str` | The candidate chunk's fully qualified name. |
+| `ambiguous` | `bool` | Whether the identifier resolves to multiple candidates. |
 
 # Returns
 
-`True` if a query token exactly equals the symbol name.
+`True` when the unqualified query equals the candidate's short name.

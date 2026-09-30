@@ -14,20 +14,15 @@ sources:
 # Overview
 
 CLI entry point: parses `sys.argv` via
-[`build_parser`](/functions/build_parser.md) and dispatches to the
+[`build_parser`](build_parser.md) and dispatches to the
 matching `cmd_*` handler. Defined in
-[`cli.main`](/modules/cli/main.md).
+[`cli.main`](../modules/cli/main.md).
 
 # Signature
 
-`def main(argv: list[str] \| None = None) -> int`
-
-# Parameters
-
-| Name | Type | Description |
-|---|---|---|
-| `argv` | `list[str] \| None` | Argument vector to parse; defaults to `sys.argv[1:]`. |
+`def main() -> None`
 
 # Returns
 
-Process exit code.
+`None`. The process exits with the chosen handler's exit code, or `1` on an
+unexpected exception.

@@ -1,7 +1,7 @@
 ---
 type: Class
 title: "ContextManager"
-description: "Manages contextual state for the engine's context-assembly layer."
+description: "Manages the on-disk context directory holding all persistent index data."
 resource: src/context/__init__.py#ContextManager
 tags: [context, state]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
@@ -13,13 +13,25 @@ sources:
 
 # Overview
 
-Manages contextual state used by the context-assembly layer, coordinating
-retrieval of surrounding code context for search results. Defined in
-[`context`](/modules/context/__init__.md).
+Manages the context directory structure that holds all persistent data
+(SQLite databases, vector index files, and the lock). Ensures the
+directory and sub-directories exist, caches paths for programmatic
+access, and provides both bulk path lookup and individual key-based
+retrieval. Defined in
+[`context`](../modules/context/__init__.md).
+
+# Class Attributes
+
+| Attribute | Type | Description |
+|---|---|---|
+| `SUB_DATABASES` | `ClassVar[dict[str, str]]` | Mapping of logical database name (`graph`, `chunks`, `session`, `audit`) to its file name relative to the context directory. |
 
 # Methods
 
 | Method | Description |
 |---|---|
-| `__init__(self, ...) -> None` | Initialize the context manager over its backing stores. |
-| `get_context(self, ...) -> dict[str, Any]` | Assemble contextual information for a given chunk or symbol. |
+| `__init__(settings: Settings \| None = None) -> None` | Create a context manager backed by the given settings. |
+| `ensure() -> Path` | Create the context directory and all sub-directories, then cache paths. |
+| `context_dir: Path` (property) | The resolved context directory path. |
+| `paths: dict[str, Path]` (property) | A copy of the cached path mapping (name to file path). |
+| `get_path(key: str) -> Path` | Return the cached path for the given logical name. |

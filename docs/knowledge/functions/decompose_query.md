@@ -13,21 +13,23 @@ sources:
 
 # Overview
 
-Tokenizes a full query via [`tokenize`](/functions/tokenize.md) and
-decomposes each token into sub-words via
-[`identify_subwords`](/functions/identify_subwords.md), producing the
-full sub-word set used for FTS5 query construction. Defined in
-[`engine.search`](/modules/engine/search.md).
+Extracts identifier-like tokens from the query with an inline pattern
+(`[a-zA-Z_][a-zA-Z0-9_]*`) and decomposes each token into sub-words via
+[`identify_subwords`](identify_subwords.md), producing the
+deduplicated, order-preserving sub-word set used for FTS5 query
+construction. Defined in
+[`engine.search`](../modules/engine/search.md).
 
 # Signature
 
-`def decompose_query(query: str) -> list[str]`
+`def decompose_query(query: str, filter_stopwords: bool = False) -> list[str]`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
 | `query` | `str` | The raw query text. |
+| `filter_stopwords` | `bool` | Whether to drop stopwords from the result. |
 
 # Returns
 

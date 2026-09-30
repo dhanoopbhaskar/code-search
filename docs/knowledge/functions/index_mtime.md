@@ -14,19 +14,19 @@ sources:
 # Overview
 
 Extracts the index's last build time from the metadata store, used by
-[`IndexChangeDetector`](/types/IndexChangeDetector.md). Defined in
-[`engine.index_service`](/modules/engine/index_service.md).
+[`IndexChangeDetector`](../types/IndexChangeDetector.md). Defined in
+[`engine.index_service`](../modules/engine/index_service.md).
 
 # Signature
 
-`def index_mtime(metadata_store: IndexMetadataStore) -> float \| None`
+`def index_mtime(metadata_store: Any) -> datetime \| None`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `metadata_store` | `IndexMetadataStore` | Metadata store to read from. |
+| `metadata_store` | `Any` | The `IndexMetadataStore` exposing `get`. |
 
 # Returns
 
-The index's last-build mtime, or `None` if unset.
+The parsed build time, or `None` when unset/unparseable.

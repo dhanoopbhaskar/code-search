@@ -19,4 +19,4 @@ enabling verification against a grep ground-truth oracle.
 
 # Key Functions
 
-- [`count_occurrences_per_line`](/functions/count_occurrences_per_line.md) — count occurrences of a pattern per line in text.
+- [`count_occurrences_per_line`](../../functions/count_occurrences_per_line.md) — count occurrences of a pattern per line in text.

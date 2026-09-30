@@ -14,19 +14,20 @@ sources:
 # Overview
 
 Builds a SQLite FTS5 `MATCH` expression from decomposed sub-words (see
-[`decompose_query`](/functions/decompose_query.md)), used by
-[`BM25Search.search`](/types/BM25Search.md). Defined in
-[`engine.search`](/modules/engine/search.md).
+[`decompose_query`](decompose_query.md)), used by
+[`BM25Search.search`](../types/BM25Search.md). Defined in
+[`engine.search`](../modules/engine/search.md).
 
 # Signature
 
-`def build_fts_query(subwords: list[str]) -> str`
+`def build_fts_query(subwords: list[str], exact_terms: set[str] \| None = None) -> str`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
 | `subwords` | `list[str]` | Decomposed query sub-words. |
+| `exact_terms` | `set[str] \| None` | Corpus subword vocabulary; sub-words present here are emitted verbatim. |
 
 # Returns
 

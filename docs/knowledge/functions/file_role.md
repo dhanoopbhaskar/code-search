@@ -15,18 +15,19 @@ sources:
 
 Resolves a file's structural role from path/filename signals alone,
 without inspecting file content. Defined in
-[`engine.classification`](/modules/engine/classification.md).
+[`engine.classification`](../modules/engine/classification.md).
 
 # Signature
 
-`def file_role(file_path: str) -> FileRole`
+`def file_role(file_path: str \| Path, analysis_paths: set[str] \| None = None) -> FileRole`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `file_path` | `str` | Path of the file to classify. |
+| `file_path` | `str \| Path` | The stored file path of the candidate chunk. |
+| `analysis_paths` | `set[str] \| None` | Optional extension of the built-in analysis artifact path-segment set (`CODE_SEARCH_ANALYSIS_ARTIFACT_PATHS`); when `None`, only the built-in conventions apply. |
 
 # Returns
 
-The [`FileRole`](/types/FileRole.md) for the file.
+The resolved `FileRole`.

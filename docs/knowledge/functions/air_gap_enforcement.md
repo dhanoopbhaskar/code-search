@@ -15,11 +15,11 @@ sources:
 
 Context manager that monkey-patches `socket` to block all outbound
 connections for the duration of the block, enforcing air-gap compliance.
-Defined in [`engine.redactor`](/modules/engine/redactor.md).
+Defined in [`engine.redactor`](../modules/engine/redactor.md).
 
 # Signature
 
-`def air_gap_enforcement() -> Generator[None, Any, None]`
+`def air_gap_enforcement() -> Generator[None, None, None]`
 
 # Returns
 

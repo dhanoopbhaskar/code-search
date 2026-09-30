@@ -13,9 +13,9 @@ sources:
 
 # Overview
 
-Reports whether a [`QueryDaemon`](/types/QueryDaemon.md) is running for a
+Reports whether a [`QueryDaemon`](../types/QueryDaemon.md) is running for a
 given context directory, along with its warm state, socket path, and
-pid. Defined in [`engine.daemon`](/modules/engine/daemon.md).
+pid. Defined in [`engine.daemon`](../modules/engine/daemon.md).
 
 # Signature
 

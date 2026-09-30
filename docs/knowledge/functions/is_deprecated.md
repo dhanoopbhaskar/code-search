@@ -15,18 +15,18 @@ sources:
 
 Returns whether a symbol's `declared_rules` metadata carries a
 deprecation marker (e.g. `@Deprecated` annotation). Defined in
-[`engine.symbol_resolution`](/modules/engine/symbol_resolution.md).
+[`engine.symbol_resolution`](../modules/engine/symbol_resolution.md).
 
 # Signature
 
-`def is_deprecated(symbol: dict[str, Any]) -> bool`
+`def is_deprecated(declared_rules: str \| None) -> bool`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `symbol` | `dict[str, Any]` | The symbol record to check. |
+| `declared_rules` | `str \| None` | The stored rule text, or `None`. |
 
 # Returns
 
-`True` if the symbol is marked deprecated.
+`True` when a deprecation marker is present.

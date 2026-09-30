@@ -15,7 +15,7 @@ sources:
 
 Extracts a candidate symbol identifier from a query when the query looks
 like a bare identifier rather than natural language. Defined in
-[`engine.search`](/modules/engine/search.md).
+[`engine.search`](../modules/engine/search.md).
 
 # Signature
 

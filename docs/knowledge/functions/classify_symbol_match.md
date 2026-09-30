@@ -14,20 +14,21 @@ sources:
 # Overview
 
 Classifies how strongly a candidate's symbol name matches the query,
-returning a [`MatchTier`](/types/MatchTier.md). Defined in
-[`engine.match_boost`](/modules/engine/match_boost.md).
+returning a [`MatchTier`](../types/MatchTier.md). Defined in
+[`engine.match_boost`](../modules/engine/match_boost.md).
 
 # Signature
 
-`def classify_symbol_match(symbol_name: str, query_tokens: list[str]) -> MatchTier`
+`def classify_symbol_match(context: QueryNameContext, fqn: str, is_definition: bool) -> MatchTier`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `symbol_name` | `str` | The candidate's short symbol name. |
-| `query_tokens` | `list[str]` | Named tokens extracted from the query. |
+| `context` | `QueryNameContext` | The request-scoped name context. |
+| `fqn` | `str` | The candidate chunk's fully qualified name. |
+| `is_definition` | `bool` | Whether the chunk is the symbol's definition site. |
 
 # Returns
 
-The classified [`MatchTier`](/types/MatchTier.md).
+`exact_fqn`, `exact_symbol`, or `none`.

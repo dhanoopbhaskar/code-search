@@ -14,12 +14,12 @@ sources:
 # Overview
 
 Per-result facts used to compute a confidence score, paired with
-[`QueryMatchContext`](/types/QueryMatchContext.md). Defined in
-[`engine.confidence`](/modules/engine/confidence.md) as `MatchEvidence`.
+[`QueryMatchContext`](QueryMatchContext.md). Defined in
+[`engine.confidence`](../modules/engine/confidence.md) as `MatchEvidence`.
 
 > **Naming note:** The source class is named `MatchEvidence`, identical to
 > an unrelated class in `match_boost.py` (see
-> [`MatchEvidence`](/types/MatchEvidence.md)). This concept file is named
+> [`MatchEvidence`](MatchEvidence.md)). This concept file is named
 > `ConfidenceMatchEvidence` only to avoid a filename collision in this flat
 > `types/` directory; the class itself is still called `MatchEvidence` in
 > code.
@@ -28,6 +28,11 @@ Per-result facts used to compute a confidence score, paired with
 
 | Field | Type | Description |
 |---|---|---|
-| `bm25_score` | `float` | Raw BM25 score for this result. |
-| `vector_score` | `float` | Raw vector similarity score for this result. |
-| `coverage` | `float` | Query-token coverage for this result. |
+| `query_subwords` | `list[str]` | The query's decomposed sub-words. |
+| `chunk_subwords` | `list[str]` | The candidate chunk's indexed sub-words. |
+| `vector_score` | `float` | The raw cosine in `[0, 1]`; `0.0` when the vector arm produced no hit. |
+| `fqn` | `str` | The candidate's fully qualified name. |
+| `is_definition` | `bool` | Whether the chunk is the symbol's definition site. |
+| `content` | `str` | The chunk source. |
+| `file_path` | `str` | The containing file path (controller filename fallback). |
+| `query_identifier` | `str \| None` | Optional copy of the query's bare identifier. |

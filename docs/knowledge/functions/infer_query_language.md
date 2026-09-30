@@ -13,22 +13,23 @@ sources:
 
 # Overview
 
-Infers a query's programming language using explicit-flag, symbol, then
-vocabulary priority. Defined in
-[`engine.language`](/modules/engine/language.md).
+Infers a query's programming language using symbol, then single-language
+vocabulary priority (an explicit language argument is handled by the
+caller and never overridden here). Defined in
+[`engine.language`](../modules/engine/language.md).
 
 # Signature
 
-`def infer_query_language(query: str, vocabularies: dict[str, set[str]], explicit_language: str \| None = None) -> str \| None`
+`def infer_query_language(query: str, symbol_store: Any \| None = None, vocab_by_language: dict[str, set[str]] \| None = None) -> str \| None`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `query` | `str` | The raw query text. |
-| `vocabularies` | `dict[str, set[str]]` | Per-language vocabulary sets from [`language_vocabularies`](/functions/language_vocabularies.md). |
-| `explicit_language` | `str \| None` | A caller-supplied language filter, given highest priority. |
+| `query` | `str` | The raw user query. |
+| `symbol_store` | `Any \| None` | Optional symbol store used to resolve single-token queries to an exact symbol with a known language. |
+| `vocab_by_language` | `dict[str, set[str]] \| None` | Per-language exact sub-word vocabularies, as returned by `language_vocabularies`. |
 
 # Returns
 
-The inferred language name, or `None` if undetermined.
+The inferred language name, or `None` when the language is ambiguous or undeterminable.

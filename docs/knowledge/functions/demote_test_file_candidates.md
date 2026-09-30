@@ -13,22 +13,24 @@ sources:
 
 # Overview
 
-Demotes test-file chunks inside the candidate pool before RRF fusion,
-unless `include_tests` is requested. Defined in
-[`engine.reranking`](/modules/engine/reranking.md); invoked from
-[`HybridSearch`](/types/HybridSearch.md)'s internal pipeline.
+Demotes test-file chunks inside the candidate pool before RRF fusion.
+Defined in [`engine.reranking`](../modules/engine/reranking.md); applied
+by [`HybridSearch`](../types/HybridSearch.md)'s internal pipeline for
+natural-language queries.
 
 # Signature
 
-`def demote_test_file_candidates(candidates: list[dict[str, Any]], include_tests: bool) -> list[dict[str, Any]]`
+`def demote_test_file_candidates(bm25_results: list[tuple[int, float]], vector_results: list[tuple[int, float]], test_chunk_ids: set[int], penalty: float) -> tuple[list[tuple[int, float]], list[tuple[int, float]]]`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `candidates` | `list[dict[str, Any]]` | The candidate pool prior to fusion. |
-| `include_tests` | `bool` | Whether test files should be included without demotion. |
+| `bm25_results` | `list[tuple[int, float]]` | `(chunk_rowid, score)` pairs from the lexical arm. |
+| `vector_results` | `list[tuple[int, float]]` | `(chunk_rowid, score)` pairs from the dense arm. |
+| `test_chunk_ids` | `set[int]` | Row ids of chunks living in test/spec files. |
+| `penalty` | `float` | Multiplicative demotion (`noise_penalty`). |
 
 # Returns
 
-The candidate pool with test-file chunks demoted (if applicable).
+The two ranked lists with test-file scores scaled by *penalty*.

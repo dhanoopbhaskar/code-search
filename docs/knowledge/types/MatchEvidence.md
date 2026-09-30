@@ -14,17 +14,20 @@ sources:
 # Overview
 
 Per-result evidence describing how a candidate's symbol name matched the
-query's named tokens (see [`QueryNameContext`](/types/QueryNameContext.md)),
-consumed to compute a [`BoostVerdict`](/types/BoostVerdict.md). Defined in
-[`engine.match_boost`](/modules/engine/match_boost.md).
+query's named tokens (see [`QueryNameContext`](QueryNameContext.md)),
+consumed to compute a [`BoostVerdict`](BoostVerdict.md). Defined in
+[`engine.match_boost`](../modules/engine/match_boost.md).
 
 > **Note:** A distinct class also named `MatchEvidence` exists in
-> `confidence.py` — see [`ConfidenceMatchEvidence`](/types/ConfidenceMatchEvidence.md).
+> `confidence.py` — see [`ConfidenceMatchEvidence`](ConfidenceMatchEvidence.md).
 > The two are unrelated; this concept documents the `match_boost.py` class.
 
 # Schema
 
 | Field | Type | Description |
 |---|---|---|
-| `tier` | `MatchTier` | Strength of the name match. |
-| `matched_token` | `str \| None` | The query token that matched, if any. |
+| `chunk_id` | `int` | The candidate chunk id. |
+| `tier` | `MatchTier` | The strongest applicable match tier. |
+| `match_ratio` | `float` | Fraction of significant terms matched for the proportional tiers; `1.0` for the exact tiers and `0.0` for `none`. |
+| `is_demoted_role` | `bool` | Whether the chunk is a test/non-canonical/infra/ resource/analysis chunk. |
+| `has_independent_evidence` | `bool` | Whether the chunk already carries a non-zero lexical or vector contribution in the fused pool. |

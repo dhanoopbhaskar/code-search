@@ -23,5 +23,5 @@ file-extension matching: under config scent, `.properties`/`.sql`
 
 # Key Functions
 
-- [`compute_scent_adjustment`](/functions/compute_scent_adjustment.md) — multiplicative ranking adjustment for a file under config/DDL scent.
-- [`detect_config_ddl_scent`](/functions/detect_config_ddl_scent.md) — detect config/DDL scent signals in a query string.
+- [`compute_scent_adjustment`](../../functions/compute_scent_adjustment.md) — multiplicative ranking adjustment for a file under config/DDL scent.
+- [`detect_config_ddl_scent`](../../functions/detect_config_ddl_scent.md) — detect config/DDL scent signals in a query string.

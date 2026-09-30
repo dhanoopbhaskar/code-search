@@ -14,9 +14,9 @@ sources:
 # Overview
 
 Handles the `daemon` subcommand, dispatching start/stop/status actions
-against [`QueryDaemon`](/types/QueryDaemon.md) via
-[`daemon_status`](/functions/daemon_status.md) and pidfile helpers.
-Defined in [`cli.main`](/modules/cli/main.md).
+against [`QueryDaemon`](../types/QueryDaemon.md) via
+[`daemon_status`](daemon_status.md) and pidfile helpers.
+Defined in [`cli.main`](../modules/cli/main.md).
 
 # Signature
 

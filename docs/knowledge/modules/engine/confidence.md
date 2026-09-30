@@ -31,12 +31,12 @@ function of query text, chunk metadata, and raw vector cosine.
 
 # Key Classes
 
-- [`QueryMatchContext`](/types/QueryMatchContext.md) — query-level facts computed once per request.
-- [`ConfidenceMatchEvidence`](/types/ConfidenceMatchEvidence.md) — per-result facts for confidence computation (distinct from `match_boost.MatchEvidence`).
+- [`QueryMatchContext`](../../types/QueryMatchContext.md) — query-level facts computed once per request.
+- [`ConfidenceMatchEvidence`](../../types/ConfidenceMatchEvidence.md) — per-result facts for confidence computation; the aliased source class is `confidence.MatchEvidence` (distinct from `match_boost.MatchEvidence`).
 
 # Key Functions
 
-- [`qualified_query_name`](/functions/qualified_query_name.md), [`is_exact_fqn_match`](/functions/is_exact_fqn_match.md), [`is_exact_symbol_match`](/functions/is_exact_symbol_match.md), [`is_controller_endpoint`](/functions/is_controller_endpoint.md) — evidence classifiers.
-- [`subword_overlap`](/functions/subword_overlap.md), [`confidence_score`](/functions/confidence_score.md) — base lexical/vector blend.
-- [`calibrated_confidence`](/functions/calibrated_confidence.md) — full calibrated confidence for one candidate.
-- [`confidence_band`](/functions/confidence_band.md), [`is_borderline`](/functions/is_borderline.md), [`envelope_band`](/functions/envelope_band.md) — banding and envelope aggregation.
+- [`qualified_query_name`](../../functions/qualified_query_name.md), [`is_exact_fqn_match`](../../functions/is_exact_fqn_match.md), [`is_exact_symbol_match`](../../functions/is_exact_symbol_match.md), [`is_controller_endpoint`](../../functions/is_controller_endpoint.md) — evidence classifiers.
+- [`subword_overlap`](../../functions/subword_overlap.md), [`confidence_score`](../../functions/confidence_score.md) — base lexical/vector blend.
+- [`calibrated_confidence`](../../functions/calibrated_confidence.md) — full calibrated confidence for one candidate.
+- [`confidence_band`](../../functions/confidence_band.md), [`is_borderline`](../../functions/is_borderline.md), [`envelope_band`](../../functions/envelope_band.md) — banding and envelope aggregation.

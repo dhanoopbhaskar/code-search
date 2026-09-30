@@ -14,10 +14,9 @@ sources:
 # Overview
 
 Handles the `implementations` subcommand, invoking
-[`find_implementations`](/functions/find_implementations.md) or
-[`EdgeStore.get_subtypes`](/types/EdgeStore.md)/`get_ancestors` to print
+[`find_implementations`](find_implementations.md) to print
 implementations of a symbol. Defined in
-[`cli.main`](/modules/cli/main.md).
+[`cli.main`](../modules/cli/main.md).
 
 # Signature
 
@@ -27,8 +26,8 @@ implementations of a symbol. Defined in
 
 | Name | Type | Description |
 |---|---|---|
-| `args` | `argparse.Namespace` | Parsed CLI arguments including symbol and lookup kind (subtypes/ancestors). |
+| `args` | `argparse.Namespace` | Parsed arguments; `fqn` and `json` are honoured. |
 
 # Returns
 
-Process exit code.
+A process exit code; `0` on success, `1` when the index is not initialised.

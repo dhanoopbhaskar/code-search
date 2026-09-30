@@ -16,13 +16,13 @@ sources:
 Path normalization and stored-path resolution for the `find_related` MCP
 tool. Resolves caller-supplied file paths (absolute or project-relative)
 to the indexed location spelling. All functions are pure stdlib-only
-utilities using `pathlib` and `os`, returning `None` for paths that
+utilities using `pathlib` and `sqlite3`, returning `None` for paths that
 escape the index root rather than raising errors.
 
 # Key Functions
 
-- [`normalize_indexed_path`](/functions/normalize_indexed_path.md) — resolve a path against the indexed repo root, collapsing symlinks and `../` segments.
-- [`resolve_stored_path`](/functions/resolve_stored_path.md) — return the stored `code_chunks.file_path` spelling for a candidate path.
+- [`normalize_indexed_path`](../../functions/normalize_indexed_path.md) — resolve a path against the indexed repo root, collapsing symlinks and `../` segments.
+- [`resolve_stored_path`](../../functions/resolve_stored_path.md) — return the stored `code_chunks.file_path` spelling for a candidate path.
 
 # Internal Helpers
 

@@ -14,9 +14,9 @@ sources:
 # Overview
 
 Handles the `serve` subcommand, constructing an
-[`MCPServer`](/types/MCPServer.md) via
-[`create_server`](/functions/create_server.md) and running its stdio event
-loop. Defined in [`cli.main`](/modules/cli/main.md).
+[`MCPServer`](../types/MCPServer.md) via
+[`create_server`](create_server.md) and running its stdio event
+loop. Defined in [`cli.main`](../modules/cli/main.md).
 
 # Signature
 
@@ -26,8 +26,8 @@ loop. Defined in [`cli.main`](/modules/cli/main.md).
 
 | Name | Type | Description |
 |---|---|---|
-| `args` | `argparse.Namespace` | Parsed CLI arguments for the `serve` subcommand. |
+| `args` | `argparse.Namespace` | Parsed arguments; `context_dir` is honoured. |
 
 # Returns
 
-Process exit code (typically does not return until the server stops).
+`0` after the server shuts down.

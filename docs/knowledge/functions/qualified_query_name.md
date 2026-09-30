@@ -15,7 +15,7 @@ sources:
 
 Extracts the qualified-name portion of a query string, used by the
 exact-match evidence classifiers. Defined in
-[`engine.confidence`](/modules/engine/confidence.md).
+[`engine.confidence`](../modules/engine/confidence.md).
 
 # Signature
 
@@ -29,4 +29,4 @@ exact-match evidence classifiers. Defined in
 
 # Returns
 
-The qualified name substring, or `None` if the query has no such pattern.
+The trimmed qualified name, or `None` when the query is not qualified.

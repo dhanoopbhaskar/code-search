@@ -15,18 +15,17 @@ sources:
 
 Writes the daemon's pidfile so `daemon_status`/`cmd_daemon` can detect and
 stop the running process. Defined in
-[`engine.daemon`](/modules/engine/daemon.md).
+[`engine.daemon`](../modules/engine/daemon.md).
 
 # Signature
 
-`def write_pidfile(context_dir: Path, pid: int) -> None`
+`def write_pidfile(context_dir: Path) -> None`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `context_dir` | `Path` | The index/context directory. |
-| `pid` | `int` | The daemon process id to record. |
+| `context_dir` | `Path` | The daemon's context directory (`.context/`). |
 
 # Returns
 

@@ -16,19 +16,19 @@ sources:
 Resolves a caller-supplied path (absolute or project-relative) against
 the indexed repo root, collapsing symlinks and `../` segments. Returns
 `None` when the resolved path escapes the repo root. Defined in
-[`engine.paths`](/modules/engine/paths.md).
+[`engine.paths`](../modules/engine/paths.md).
 
 # Signature
 
-`def normalize_indexed_path(repo_root: Path, candidate: str) -> Path \| None`
+`def normalize_indexed_path(path: str, index_root: Path) -> Path \| None`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `repo_root` | `Path` | The indexed repository root. |
-| `candidate` | `str` | The caller-supplied path to normalize. |
+| `path` | `str` | Caller-supplied file path (absolute or project-relative). |
+| `index_root` | `Path` | The indexed repository root. |
 
 # Returns
 
-The normalized absolute `Path`, or `None` if it escapes *repo_root*.
+The normalized absolute `Path`, or `None` if it escapes *index_root*.

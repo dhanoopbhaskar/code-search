@@ -15,7 +15,7 @@ sources:
 
 Classifies a query as symbol-like (identifier lookup) or natural-language
 (semantic search), influencing which search strategies are weighted more
-heavily. Defined in [`engine.search`](/modules/engine/search.md).
+heavily. Defined in [`engine.search`](../modules/engine/search.md).
 
 # Signature
 
@@ -29,4 +29,4 @@ heavily. Defined in [`engine.search`](/modules/engine/search.md).
 
 # Returns
 
-The query class label (e.g. `"symbol"`, `"natural_language"`).
+The query class label: `"symbol"` for a single identifier, else `"natural"`.

@@ -15,17 +15,20 @@ sources:
 
 Vector index for cosine-similarity nearest-neighbor search over chunk
 embeddings, persisted alongside the SQLite index. Defined in
-[`engine.embeddings`](/modules/engine/embeddings.md); consumed by
-[`VectorSearch`](/types/VectorSearch.md).
+[`engine.embeddings`](../modules/engine/embeddings.md); consumed by
+[`VectorSearch`](VectorSearch.md).
 
 # Methods
 
 | Method | Description |
 |---|---|
-| `__init__(self, index_dir: Path, dim: int) -> None` | Initialize an index of the given embedding dimensionality. |
-| `add(self, chunk_id: int, vector: list[float]) -> None` | Add a single chunk vector to the index. |
-| `add_batch(self, chunk_ids: list[int], vectors: list[list[float]]) -> None` | Add multiple chunk vectors at once. |
-| `search(self, query_vector: list[float], top_k: int = 10) -> list[tuple[int, float]]` | Return the top-k `(chunk_id, cosine_score)` nearest neighbors. |
-| `save() -> None` | Persist the index to disk. |
-| `load() -> None` | Load the index from disk. |
-| `size() -> int` | Return the number of vectors currently indexed. |
+| `__init__(vectors_bin_path: Path, vectors_meta_path: Path, removed_path: Path \| None = None) -> None` | Initialize an in-memory vector index backed by three on-disk files. |
+| `load() -> None` | Load vectors, metadata, and tombstones from disk, if they exist. |
+| `save() -> None` | Persist the delta since the last save (appended rows + tombstones). |
+| `add(chunk_id: int, embedding: np.ndarray, metadata: dict[str, Any]) -> int` | Append one vector + metadata entry and return its physical index. |
+| `add_batch(chunk_ids: list[int], embeddings: list[np.ndarray], metadata_list: list[dict[str, Any]]) -> list[int]` | Append multiple vectors + metadata entries atomically. |
+| `search(query_embedding: np.ndarray, top_k: int = 10, exclude_file_paths: set[str] \| None = None, content: str = 'all') -> list[tuple[int, float]]` | Cosine-similarity search — returns `(chunk_id, score)` sorted descending. |
+| `size: int` (property) | Return the number of alive vectors currently in the index. |
+| `remove(chunk_id: int) -> bool` | Remove the vector + metadata entry for *chunk_id* by tombstoning it. |
+| `remove_many(chunk_ids: list[int]) -> int` | Tombstone every alive vector whose chunk id is in *chunk_ids*. |
+| `clear() -> None` | Drop all vectors and metadata, truncating the on-disk files. |
