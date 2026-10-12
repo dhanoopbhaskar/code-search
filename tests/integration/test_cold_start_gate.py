@@ -42,6 +42,7 @@ def cold_generator(gate_components: dict[str, Any]) -> Iterator[Any]:
     saved_instance = embeddings._model_instance
     saved_path = embeddings._loaded_model_path
     embeddings._model_instance = None
+    gen: EmbeddingGenerator | None = None
     try:
         settings = gate_components["settings"]
         gen = EmbeddingGenerator(settings)
@@ -52,6 +53,15 @@ def cold_generator(gate_components: dict[str, Any]) -> Iterator[Any]:
         index.load()
         yield {"gen": gen, "index": index, "settings": settings}
     finally:
+        # Drain any in-flight background load before restoring the module
+        # singleton. A cold query starts the load on a worker thread, so
+        # restoring the singleton first lets the worker repopulate
+        # ``_model_instance`` after teardown and race a later test's
+        # load accounting (the concurrency gate would then observe a
+        # non-``None`` starting state and report zero loads).
+        warm_thread = gen._warm_thread if gen is not None else None
+        if warm_thread is not None:
+            warm_thread.join(timeout=30.0)
         embeddings._model_instance = saved_instance
         embeddings._loaded_model_path = saved_path
 
