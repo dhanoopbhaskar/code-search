@@ -20,5 +20,5 @@ retrieval, session-aware reranking, and an audit-graded compliance layer.
 
 `VERSION` / `__version__` — currently `"0.1.0"`.
 
-See [engine module index](/modules/engine/index.md) for the full list of
+See [engine module index](index.md) for the full list of
 engine submodules.

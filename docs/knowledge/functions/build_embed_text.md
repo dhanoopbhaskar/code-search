@@ -14,23 +14,23 @@ sources:
 # Overview
 
 Composes the final, character-budgeted embedding input text by prefixing
-a chunk's body with its [`EnclosingContext`](/types/EnclosingContext.md),
+a chunk's body with its [`EnclosingContext`](../types/EnclosingContext.md),
 truncating deterministically to fit the budget (body content prioritized
 over context). Defined in
-[`engine.embed_representation`](/modules/engine/embed_representation.md).
+[`engine.embed_representation`](../modules/engine/embed_representation.md).
 
 # Signature
 
-`def build_embed_text(chunk_body: str, context: EnclosingContext, char_budget: int) -> str`
+`def build_embed_text(context: EnclosingContext \| None, content: str, budget: int) -> str`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `chunk_body` | `str` | The chunk's declaration/body text. |
-| `context` | `EnclosingContext` | The chunk's enclosing structural context. |
-| `char_budget` | `int` | Maximum character length of the resulting text. |
+| `context` | `EnclosingContext \| None` | The chunk's enclosing context, or `None` when unavailable. |
+| `content` | `str` | The chunk body (declaration + body), never mutated. |
+| `budget` | `int` | Maximum characters of the returned text (floored at `1`). |
 
 # Returns
 
-The composed, bounded embedding input text.
+The text to embed for the chunk.

@@ -14,5 +14,6 @@ sources:
 # Overview
 
 Command-line interface for code-search. Dispatches the `index`, `search`,
-`symbol`, `graph`, `metrics`, `serve`, `list-languages`, `download-models`,
-and `daemon` subcommands via the [`main`](/modules/cli/main.md) module.
+`symbol`, `graph`, `implementations`, `metrics`, `serve`, `list-languages`,
+`download-models`, and `daemon` subcommands via the [`main`](main.md)
+module.

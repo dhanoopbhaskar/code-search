@@ -22,9 +22,9 @@ downstream gates still apply.
 
 # Key Constants
 
-`_BUILTIN_EXPANSIONS` — dict of 20+ acronym/phrase pairs mapped to domain
+`_BUILTIN_EXPANSIONS` — dict of 16 acronym/phrase pairs mapped to domain
 vocabulary.
 
 # Key Classes
 
-- [`ExpansionTable`](/types/ExpansionTable.md) — two-way, case-insensitive acronym/phrase → expansion-terms table with fuzzy matching.
+- [`ExpansionTable`](../../types/ExpansionTable.md) — two-way, case-insensitive acronym/phrase → expansion-terms table with fuzzy matching.

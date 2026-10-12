@@ -16,19 +16,19 @@ sources:
 Counts occurrences of a pattern per line in text, returning a per-line
 array whose sum equals the total match count, enabling verification
 against a grep ground-truth oracle in exhaustive mode. Defined in
-[`engine.occurrence_count`](/modules/engine/occurrence_count.md).
+[`engine.occurrence_count`](../modules/engine/occurrence_count.md).
 
 # Signature
 
-`def count_occurrences_per_line(text: str, pattern: str) -> list[int]`
+`def count_occurrences_per_line(text: str, pattern: str) -> dict[str, Any]`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `text` | `str` | The text to search within. |
-| `pattern` | `str` | The literal or regex pattern to count. |
+| `text` | `str` | The text to search within (multi-line string). |
+| `pattern` | `str` | The literal pattern to count. |
 
 # Returns
 
-Per-line occurrence counts, one entry per line in *text*.
+dict with keys: - `literal`: The searched pattern - `total`: Total number of occurrences across all matching lines - `per_line`: List of occurrence counts, one per matching line - `line_numbers`: List of line numbers (1-indexed) where matches occur

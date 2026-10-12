@@ -15,19 +15,19 @@ sources:
 
 Reads a line-range slice of a source file from disk, used to populate a
 symbol's source code when returning definitions. Defined in
-[`engine.graph`](/modules/engine/graph.md).
+[`engine.graph`](../modules/engine/graph.md).
 
 # Signature
 
-`def read_source_slice(file_path: Path, start_line: int, end_line: int) -> str`
+`def read_source_slice(file_path: str, line_start: int \| None, line_end: int \| None) -> str`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `file_path` | `Path` | Path to the source file. |
-| `start_line` | `int` | 1-based inclusive start line. |
-| `end_line` | `int` | 1-based inclusive end line. |
+| `file_path` | `str` | Path to the source file. |
+| `line_start` | `int \| None` | 0-based start row, or `None`. |
+| `line_end` | `int \| None` | 0-based end row, or `None`. |
 
 # Returns
 

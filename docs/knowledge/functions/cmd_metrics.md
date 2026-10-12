@@ -14,8 +14,8 @@ sources:
 # Overview
 
 Handles the `metrics` subcommand, invoking
-[`MetricsCollector.percentiles`](/types/MetricsCollector.md) to print
-health statistics. Defined in [`cli.main`](/modules/cli/main.md).
+[`MetricsCollector.get_latency_stats`](../types/MetricsCollector.md) to print
+health statistics. Defined in [`cli.main`](../modules/cli/main.md).
 
 # Signature
 
@@ -25,8 +25,8 @@ health statistics. Defined in [`cli.main`](/modules/cli/main.md).
 
 | Name | Type | Description |
 |---|---|---|
-| `args` | `argparse.Namespace` | Parsed CLI arguments for the `metrics` subcommand. |
+| `args` | `argparse.Namespace` | Parsed arguments; `format` selects the output style. |
 
 # Returns
 
-Process exit code.
+`0` on success.

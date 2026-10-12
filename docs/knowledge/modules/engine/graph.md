@@ -18,7 +18,7 @@ SQLite-backed schema and CRUD layer for the code graph: symbols
 directed edges (`CALLS`, `IMPORTS`, `INHERITS`, `REFERENCES`), code chunks
 with FTS5 full-text search, and index metadata (version, status, counts).
 Provides thread-safe database access via per-thread connections,
-migration logic across 13+ schema versions, and high-level graph
+forward-migration logic for older schema versions, and high-level graph
 traversal (call graph, inheritance tree, symbol resolution).
 
 # Key Constants
@@ -29,17 +29,18 @@ traversal (call graph, inheritance tree, symbol resolution).
 
 # Key Classes
 
-- [`GraphDatabase`](/types/GraphDatabase.md) — thread-safe SQLite connection manager; owns schema creation and migrations.
-- [`EdgeStore`](/types/EdgeStore.md) — high-level CRUD for call-graph edges and traversal queries (callers/callees, subtypes, ancestors).
-- [`IndexMetadataStore`](/types/IndexMetadataStore.md) — key-value store for index metadata (status, version, counts).
+- [`GraphDatabase`](../../types/GraphDatabase.md) — thread-safe SQLite connection manager; owns schema creation and migrations.
+- [`EdgeStore`](../../types/EdgeStore.md) — high-level CRUD for call-graph edges and traversal queries (callers/callees, subtypes, ancestors).
+- [`IndexMetadataStore`](../../types/IndexMetadataStore.md) — key-value store for index metadata (status, version, counts).
 
 # Key Functions
 
-- [`read_source_slice`](/functions/read_source_slice.md) — read a line-range slice of a source file.
+- [`read_source_slice`](../../functions/read_source_slice.md) — read a line-range slice of a source file.
 
 # Internal Helpers
 
 Private helpers implement fuzzy symbol resolution
 (`_resolve_symbol_candidates`, `_rank_symbol_candidates`,
 `_levenshtein`, `_decompose_leaf`) and candidate summarization
-(`_candidate_summary`) used by `EdgeStore.resolve_symbol_definition`.
+(`_candidate_summary`); these are consumed by `SymbolStore.resolve_name`
+(in `symbols.py`), which `EdgeStore.resolve_symbol_definition` delegates to.

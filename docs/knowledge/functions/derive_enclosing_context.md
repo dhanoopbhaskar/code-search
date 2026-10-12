@@ -13,22 +13,22 @@ sources:
 
 # Overview
 
-Builds an [`EnclosingContext`](/types/EnclosingContext.md) for a chunk
+Builds an [`EnclosingContext`](../types/EnclosingContext.md) for a chunk
 from its per-file symbol list, resolving the module path, ancestor chain,
 and content axis. Defined in
-[`engine.embed_representation`](/modules/engine/embed_representation.md).
+[`engine.embed_representation`](../modules/engine/embed_representation.md).
 
 # Signature
 
-`def derive_enclosing_context(chunk: dict[str, Any], file_symbols: list[dict[str, Any]]) -> EnclosingContext`
+`def derive_enclosing_context(chunk: dict[str, Any], symbols: list[dict[str, Any]]) -> EnclosingContext`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `chunk` | `dict[str, Any]` | The chunk to derive context for. |
-| `file_symbols` | `list[dict[str, Any]]` | All symbols declared in the chunk's file. |
+| `chunk` | `dict[str, Any]` | A parsed chunk with `file_path`, `line_start`, `chunk_type`, and `content_type`. |
+| `symbols` | `list[dict[str, Any]]` | The per-file symbol list the worker already computed. |
 
 # Returns
 
-The derived [`EnclosingContext`](/types/EnclosingContext.md).
+The `EnclosingContext`. Code chunks carry the declaring-type chain; free/top-level functions fall back to the module path alone; resource/config/docs chunks carry the module path only with an empty chain.

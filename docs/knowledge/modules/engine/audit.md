@@ -21,4 +21,4 @@ SQLite trigger level.
 
 # Key Classes
 
-- [`AuditDatabase`](/types/AuditDatabase.md) — append-only SQLite database for the query audit trail; enforces immutability via SQLite triggers.
+- [`AuditDatabase`](../../types/AuditDatabase.md) — append-only SQLite database for the query audit trail; enforces immutability via SQLite triggers.

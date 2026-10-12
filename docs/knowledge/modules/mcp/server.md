@@ -1,7 +1,7 @@
 ---
 type: Module
 title: "mcp.server"
-description: "MCP stdio server exposing search, symbol, graph, implementations, and find_related tools."
+description: "MCP stdio server exposing search, get_symbol_definition, get_call_neighbors, get_implementations, and find_related tools."
 resource: src/mcp/server.py
 tags: [mcp, server, api]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
@@ -33,11 +33,11 @@ redaction, and index-freshness signals.
 
 # Key Classes
 
-- [`MCPServer`](/types/MCPServer.md) — serves the code-search engine to MCP clients over stdio.
+- [`MCPServer`](../../types/MCPServer.md) — serves the code-search engine to MCP clients over stdio.
 
 # Key Functions
 
-- [`create_server`](/functions/create_server.md) — create an `MCPServer` around a component registry.
+- [`create_server`](../../functions/create_server.md) — create an `MCPServer` around a component registry.
 
 # Internal Helpers
 

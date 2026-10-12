@@ -14,18 +14,18 @@ sources:
 # Overview
 
 High-level CRUD for call-graph edges and traversal queries. Defined in
-[`engine.graph`](/modules/engine/graph.md).
+[`engine.graph`](../modules/engine/graph.md).
 
 # Methods
 
 | Method | Description |
 |---|---|
-| `__init__(self, db: GraphDatabase, settings: Settings \| None = None) -> None` | Initialize the edge store over a graph database. |
-| `insert_edge(self, source_symbol_id, target_symbol_id, edge_type, source_range=None, target_range=None, resolution_tier=None) -> int \| None` | Insert a single directed edge; skips self-loops. |
-| `insert_edges_batch(self, edges: list[dict[str, Any]]) -> None` | Insert many edges at once. |
-| `run_edge_validation_sweep() -> dict[str, int]` | Post-index validation sweep; delete spurious edges; return `{deleted, kept_recursive}`. |
-| `resolve_symbol_definition(self, fqn: str) -> tuple[dict[str, Any] \| None, list[dict[str, Any]]]` | Resolve *fqn* to `(symbol, candidates)` with source code populated. |
-| `get_symbol_definition(self, fqn: str) -> dict[str, Any] \| None` | Look up a symbol by FQN, returning its definition + source + parent info. |
-| `get_call_graph(self, symbol_id: int, direction: str = "both", max_depth: int = 1) -> dict[str, list[dict[str, Any]]]` | Traverse callers and/or callees via recursive CTE; returns `{callers, callees}`. |
-| `get_subtypes(self, symbol_id: int, max_depth: int = 5) -> list[dict[str, Any]]` | Return types that inherit from *symbol_id*, with minimum depth. |
-| `get_ancestors(self, symbol_id: int, max_depth: int = 5) -> list[dict[str, Any]]` | Return the class ancestors of *symbol_id*, nearest base first. |
+| `__init__(db: GraphDatabase, settings: Settings \| None = None) -> None` | Initialize the edge store over a graph database. |
+| `insert_edge(source_symbol_id: int, target_symbol_id: int, edge_type: str, source_range: str \| None = None, target_range: str \| None = None, resolution_tier: str \| None = None) -> int \| None` | Insert a single directed edge between two symbols. |
+| `insert_edges_batch(edges: list[dict[str, Any]]) -> None` | Insert many edges at once, guarding against spurious self-edges. |
+| `run_edge_validation_sweep() -> dict[str, int]` | Post-index edge validation sweep. |
+| `resolve_symbol_definition(fqn: str) -> tuple[dict[str, Any] \| None, list[dict[str, Any]]]` | Resolve *fqn* to `(symbol, candidates)` with source code populated. |
+| `get_symbol_definition(fqn: str) -> dict[str, Any] \| None` | Look up a symbol by FQN, returning its definition + source code + parent info. |
+| `get_call_graph(symbol_id: int, direction: str = 'both', max_depth: int = 1) -> dict[str, list[dict[str, Any]]]` | Traverse callers and/or callees via recursive CTE, clipped to *max_depth*. |
+| `get_subtypes(symbol_id: int, max_depth: int = 5) -> list[dict[str, Any]]` | Return types that inherit from *symbol_id*, with minimum depth. |
+| `get_ancestors(symbol_id: int, max_depth: int = 5) -> list[dict[str, Any]]` | Return the class ancestors of *symbol_id*, nearest base first. |

@@ -15,12 +15,13 @@ sources:
 
 Final bounded boost/no-boost decision produced for a single candidate
 result by the match-boost pass, derived from
-[`MatchEvidence`](/types/MatchEvidence.md). Defined in
-[`engine.match_boost`](/modules/engine/match_boost.md).
+[`MatchEvidence`](MatchEvidence.md). Defined in
+[`engine.match_boost`](../modules/engine/match_boost.md).
 
 # Schema
 
 | Field | Type | Description |
 |---|---|---|
-| `boost_factor` | `float` | Multiplicative score adjustment (bounded). |
-| `reason` | `str` | Human-readable explanation of the verdict. |
+| `tier` | `MatchTier` | The tier the boost was applied for (the dampened `stem` tier when a generic-stem `exact_filename` was reduced). |
+| `boost` | `float` | The additive amount added to the fused score. |
+| `applied` | `bool` | `False` when the tier was withheld (demoted role or a generic stem without independent evidence). |

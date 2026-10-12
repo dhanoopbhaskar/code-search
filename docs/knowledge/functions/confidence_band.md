@@ -15,18 +15,20 @@ sources:
 
 Maps a calibrated confidence score to a discrete band label
 (`"high"`/`"medium"`/`"low"`) for response envelope display. Defined in
-[`engine.confidence`](/modules/engine/confidence.md).
+[`engine.confidence`](../modules/engine/confidence.md).
 
 # Signature
 
-`def confidence_band(score: float) -> str`
+`def confidence_band(score: float, high_floor: float, medium_floor: float) -> str`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `score` | `float` | A calibrated confidence score. |
+| `score` | `float` | The blended confidence score. |
+| `high_floor` | `float` | The score at which a result becomes `high`. |
+| `medium_floor` | `float` | The score below which a result is `low`. |
 
 # Returns
 
-The band label string.
+One of `"high"`, `"medium"`, or `"low"`.

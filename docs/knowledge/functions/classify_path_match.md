@@ -14,20 +14,22 @@ sources:
 # Overview
 
 Classifies how strongly a candidate's file path segments match the
-query, returning a [`MatchTier`](/types/MatchTier.md). Defined in
-[`engine.match_boost`](/modules/engine/match_boost.md).
+query, returning a [`MatchTier`](../types/MatchTier.md). Defined in
+[`engine.match_boost`](../modules/engine/match_boost.md).
 
 # Signature
 
-`def classify_path_match(file_path: str, query_tokens: list[str]) -> MatchTier`
+`def classify_path_match(context: QueryNameContext, file_path: str, *, min_prefix: int = 3, keywords_min: int = 2) -> tuple[MatchTier, float]`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `file_path` | `str` | The candidate's file path. |
-| `query_tokens` | `list[str]` | Named tokens extracted from the query. |
+| `context` | `QueryNameContext` | The request-scoped name context. |
+| `file_path` | `str` | The candidate chunk's file path. |
+| `min_prefix` | `int` | Minimum length for an eligible query term and a matched path term. |
+| `keywords_min` | `int` | Minimum eligible query terms required to run the pass. |
 
 # Returns
 
-The classified [`MatchTier`](/types/MatchTier.md).
+`(MatchTier.stem | MatchTier.path_term | MatchTier.none, match_ratio)`.

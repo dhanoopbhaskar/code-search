@@ -20,4 +20,4 @@ via the `metrics` CLI command.
 
 # Key Classes
 
-- [`MetricsCollector`](/types/MetricsCollector.md) — sliding-window metrics collector computing latency percentiles and tracking redaction counts.
+- [`MetricsCollector`](../../types/MetricsCollector.md) — sliding-window metrics collector computing latency percentiles and tracking redaction counts.

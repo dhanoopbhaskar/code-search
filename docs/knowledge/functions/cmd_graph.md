@@ -14,8 +14,8 @@ sources:
 # Overview
 
 Handles the `graph` subcommand, invoking
-[`EdgeStore.get_call_graph`](/types/EdgeStore.md) to print callers and/or
-callees of a symbol. Defined in [`cli.main`](/modules/cli/main.md).
+[`EdgeStore.get_call_graph`](../types/EdgeStore.md) to print callers and/or
+callees of a symbol. Defined in [`cli.main`](../modules/cli/main.md).
 
 # Signature
 
@@ -25,8 +25,8 @@ callees of a symbol. Defined in [`cli.main`](/modules/cli/main.md).
 
 | Name | Type | Description |
 |---|---|---|
-| `args` | `argparse.Namespace` | Parsed CLI arguments including symbol, direction, and depth. |
+| `args` | `argparse.Namespace` | Parsed arguments; `fqn`, `direction`, `depth`, `transitive`, and `json` are honoured. |
 
 # Returns
 
-Process exit code.
+A process exit code; `0` on success, `1` when the index is not initialised.

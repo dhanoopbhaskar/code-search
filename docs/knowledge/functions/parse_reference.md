@@ -14,9 +14,9 @@ sources:
 # Overview
 
 Parses a raw query string into a
-[`SymbolReference`](/types/SymbolReference.md) structure ahead of
+[`SymbolReference`](../types/SymbolReference.md) structure ahead of
 resolution. Defined in
-[`engine.symbol_resolution`](/modules/engine/symbol_resolution.md).
+[`engine.symbol_resolution`](../modules/engine/symbol_resolution.md).
 
 # Signature
 
@@ -30,4 +30,4 @@ resolution. Defined in
 
 # Returns
 
-The parsed [`SymbolReference`](/types/SymbolReference.md).
+The parsed [`SymbolReference`](../types/SymbolReference.md).

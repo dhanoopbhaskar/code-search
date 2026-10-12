@@ -15,19 +15,20 @@ sources:
 
 Returns chunk ids whose file name or stem exactly equals the query,
 providing a high-confidence candidate set for filename-driven queries.
-Defined in [`engine.match_boost`](/modules/engine/match_boost.md).
+Defined in [`engine.match_boost`](../modules/engine/match_boost.md).
 
 # Signature
 
-`def filename_candidates(db: GraphDatabase, query: str) -> list[int]`
+`def filename_candidates(db: Any, context: QueryNameContext, content_scope: str) -> tuple[int, ...]`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `db` | `GraphDatabase` | Graph database to query. |
-| `query` | `str` | The raw query text. |
+| `db` | `Any` | The graph database exposing `chunks_fts` and `code_chunks`. |
+| `context` | `QueryNameContext` | The request-scoped name context. |
+| `content_scope` | `str` | The active content scope (`all`/`code`/`config`/ `docs`/`code_focused`). |
 
 # Returns
 
-List of matching chunk ids.
+A deterministic, de-duplicated tuple of matching chunk ids.

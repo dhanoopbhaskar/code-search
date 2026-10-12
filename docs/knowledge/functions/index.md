@@ -11,179 +11,182 @@ status: draft
 
 ## cli/main.py
 
-* [main](main.md) - CLI entry point; parses args and dispatches subcommands.
-* [cmd_index](cmd_index.md) - `index` subcommand handler.
-* [cmd_search](cmd_search.md) - `search` subcommand handler.
-* [cmd_symbol](cmd_symbol.md) - `symbol` subcommand handler.
-* [cmd_graph](cmd_graph.md) - `graph` subcommand handler.
-* [cmd_implementations](cmd_implementations.md) - `implementations` subcommand handler.
-* [cmd_metrics](cmd_metrics.md) - `metrics` subcommand handler.
-* [cmd_daemon](cmd_daemon.md) - `daemon` subcommand handler.
-* [cmd_daemon_run](cmd_daemon_run.md) - runs the daemon subcommand's foreground/background logic.
-* [cmd_serve](cmd_serve.md) - `serve` subcommand starting the MCP server.
-* [cmd_download_models](cmd_download_models.md) - `download-models` subcommand handler.
-* [cmd_list_languages](cmd_list_languages.md) - `list-languages` subcommand handler.
+* [build_parser](build_parser.md) - Build the full argparse tree with all subcommands.
+* [cmd_daemon](cmd_daemon.md) - Handler for the `daemon` subcommand: start/stop/status control of the QueryDaemon.
+* [cmd_daemon_run](cmd_daemon_run.md) - Handler that runs the daemon blocking in the foreground (used internally by `cmd_daemon start`).
+* [cmd_download_models](cmd_download_models.md) - Handler for the `download-models` subcommand: fetches the embedding model into the Hugging Face cache.
+* [cmd_graph](cmd_graph.md) - Handler for the `graph` subcommand: prints callers/callees of a symbol.
+* [cmd_implementations](cmd_implementations.md) - Handler for the `implementations` subcommand: prints subtypes or ancestors of a symbol.
+* [cmd_index](cmd_index.md) - Handler for the `index` subcommand: builds or rebuilds the code index.
+* [cmd_list_languages](cmd_list_languages.md) - Handler for the `list-languages` subcommand: prints supported languages.
+* [cmd_metrics](cmd_metrics.md) - Handler for the `metrics` subcommand: prints latency percentiles and redaction counts.
+* [cmd_search](cmd_search.md) - Handler for the `search` subcommand: runs a hybrid search query and prints results.
+* [cmd_serve](cmd_serve.md) - Handler for the `serve` subcommand: starts the MCP stdio server.
+* [cmd_symbol](cmd_symbol.md) - Handler for the `symbol` subcommand: resolves and prints a symbol's definition.
+* [main](main.md) - Parse arguments and dispatch to the selected subcommand handler.
 
 ## engine/classification.py
 
-* [classify_query](classify_query.md) - classifies a query's shape/mode.
-* [classify_content_intent](classify_content_intent.md) - classifies query content-intent (code/config/docs).
-* [chunk_rank_class](chunk_rank_class.md) - assigns a rank-class label to a chunk.
-* [demote_test_file_candidates](demote_test_file_candidates.md) - demotes test-file matches for non-test queries.
+* [content_type](content_type.md) - Classify a file into the content axis (code, docs, config).
+* [file_role](file_role.md) - Resolve a file's role from path/filename signals alone.
 
 ## engine/confidence.py
 
-* [calibrated_confidence](calibrated_confidence.md) - computes a calibrated confidence score.
-* [confidence_band](confidence_band.md) - maps a score to a high/medium/low confidence band.
-* [confidence_score](confidence_score.md) - core confidence-score computation.
-* [is_borderline](is_borderline.md) - detects borderline-confidence results.
-* [envelope_band](envelope_band.md) - determines the response envelope's confidence band.
+* [calibrated_confidence](calibrated_confidence.md) - Full calibrated confidence for one candidate, combining base score with exact-match evidence boosts.
+* [confidence_band](confidence_band.md) - Map a calibrated confidence score to a discrete band label (high/medium/low).
+* [confidence_score](confidence_score.md) - Base lexical/vector blend confidence score for one candidate.
+* [envelope_band](envelope_band.md) - Aggregate confidence band for the overall response envelope from a list of per-result bands.
+* [is_borderline](is_borderline.md) - Whether a confidence score falls in the borderline zone between bands.
+* [is_controller_endpoint](is_controller_endpoint.md) - Whether a symbol looks like a web controller/route endpoint (a high-trust signal for authorization-intent queries).
+* [is_exact_fqn_match](is_exact_fqn_match.md) - Whether a candidate's FQN exactly matches the query's qualified name.
+* [is_exact_symbol_match](is_exact_symbol_match.md) - Whether a candidate's short symbol name exactly matches a query token.
+* [qualified_query_name](qualified_query_name.md) - Extract the qualified name portion of a query, if any.
+* [subword_overlap](subword_overlap.md) - Compute the fraction of query sub-words present in a candidate's text.
 
 ## engine/config.py
 
-* [load_language_config](load_language_config.md) - loads per-language parsing config from disk.
+* [load_language_config](load_language_config.md) - Load custom language configuration from JSON.
 
 ## engine/daemon.py
 
-* [default_socket_path](default_socket_path.md) - resolves the default daemon Unix-socket path.
-* [write_pidfile](write_pidfile.md) - writes the daemon's pidfile.
-* [clear_pidfile](clear_pidfile.md) - removes the daemon's pidfile.
-* [daemon_status](daemon_status.md) - checks whether the daemon is running.
-* [run_daemon_foreground](run_daemon_foreground.md) - runs the daemon loop in the foreground.
-* [create_server](create_server.md) - constructs the daemon's socket server.
+* [clear_pidfile](clear_pidfile.md) - Remove the daemon's pidfile on clean shutdown.
+* [daemon_status](daemon_status.md) - Report {running, warm, socket, pid} for a context directory's daemon.
+* [default_socket_path](default_socket_path.md) - The daemon's socket path convention for a context directory.
+* [run_daemon_foreground](run_daemon_foreground.md) - Run the daemon blocking in the foreground.
+* [write_pidfile](write_pidfile.md) - Write the daemon's pidfile for lifecycle tracking.
 
 ## engine/embed_representation.py
 
-* [build_embed_text](build_embed_text.md) - builds the enclosing-context + chunk text passed to the embedding model.
-* [derive_enclosing_context](derive_enclosing_context.md) - derives the enclosing declaration context for a chunk.
-* [get_representation_scheme_version](get_representation_scheme_version.md) - returns the current embedding representation scheme version.
-* [set_representation_scheme_version](set_representation_scheme_version.md) - sets the embedding representation scheme version (test/tooling use).
+* [build_embed_text](build_embed_text.md) - Compose bounded embedding input text (context prefix + body).
+* [derive_enclosing_context](derive_enclosing_context.md) - Build the enclosing context for a chunk from its per-file symbol list.
 
 ## engine/embeddings.py
 
-* [check_index_model_compatibility](check_index_model_compatibility.md) - checks whether an index matches the configured embedding model.
-* [check_index_representation_compatibility](check_index_representation_compatibility.md) - checks whether an index matches the current representation scheme.
+* [check_index_model_compatibility](check_index_model_compatibility.md) - Raise when the index was built by a different embedding model.
+* [check_index_representation_compatibility](check_index_representation_compatibility.md) - Raise when stored embeddings predate the running representation scheme.
+* [get_representation_scheme_version](get_representation_scheme_version.md) - Read the stored chunk-representation scheme version from index metadata.
+* [profile_model_available](profile_model_available.md) - Whether the active model profile is available locally.
+* [set_representation_scheme_version](set_representation_scheme_version.md) - Persist the current chunk-representation scheme version into index metadata.
 
 ## engine/file_role.py
 
-* [classify_file_role](classify_file_role.md) - classifies a file's structural role.
-* [file_role](file_role.md) - resolves a file's role for a given path.
+* [classify_file_role](classify_file_role.md) - Classify a file's role for ranking adjustment, with evidence-based overrides.
 
 ## engine/graph.py
 
-* [build_symbol_fqn](build_symbol_fqn.md) - builds a symbol's fully-qualified name.
-* [find_implementations](find_implementations.md) - finds implementations of an interface/abstract symbol.
+* [read_source_slice](read_source_slice.md) - Read a line-range slice of a source file.
 
 ## engine/implementations.py
 
-(no additional top-level functions beyond those listed under engine/graph.py and engine/search.py)
+* [find_implementations](find_implementations.md) - Resolve static implementations of an interface member or type.
 
 ## engine/index_service.py
 
-* [index_mtime](index_mtime.md) - resolves the index's last-modified timestamp.
-* [normalize_indexed_path](normalize_indexed_path.md) - normalizes a path for consistent index storage/lookup.
-* [resolve_stored_path](resolve_stored_path.md) - resolves a stored index path back to an absolute path.
+* [index_mtime](index_mtime.md) - Extract the index's last build time from the metadata store.
 
 ## engine/intent_detection.py
 
-* [detect_definition_intent](detect_definition_intent.md) - detects "where is X defined" query intent.
-* [decompose_query](decompose_query.md) - decomposes a query into constituent terms/signals.
-* [scope_override](scope_override.md) - determines a scope override from query intent.
-* [build_scope_signal](build_scope_signal.md) - builds the scope signal used in query-intent scope inference.
+* [build_scope_signal](build_scope_signal.md) - Generate a surface-neutral scope message explaining an exclusion.
+* [classify_content_intent](classify_content_intent.md) - Classify a query lexically into docs/config/neutral.
+* [scope_override](scope_override.md) - The neutral scope token that would include the intent's content type.
 
 ## engine/language.py
 
-* [infer_query_language](infer_query_language.md) - infers the target programming language of a query.
-* [language_vocabularies](language_vocabularies.md) - returns per-language vocabulary tables.
-* [tokenize](tokenize.md) - tokenizes text using language-aware rules.
-* [identify_subwords](identify_subwords.md) - splits identifiers into subwords (camelCase/snake_case).
-* [subword_overlap](subword_overlap.md) - computes subword overlap between two identifiers.
-* [build_parser](build_parser.md) - builds a tree-sitter parser for a given language.
+* [analyze_query](analyze_query.md) - Build the QueryAnalysis entity for a query (the one shared rule).
+* [detect_definition_intent](detect_definition_intent.md) - Detect definition phrasing and resolve its target.
+* [embedded_symbols](embedded_symbols.md) - Resolved symbol short names embedded in a natural-language query.
+* [infer_query_language](infer_query_language.md) - Infer a query's language.
+* [language_vocabularies](language_vocabularies.md) - Map each indexed language to its exact sub-word set.
 
 ## engine/match_boost.py
 
-* [compute_verdict](compute_verdict.md) - computes the bounded match-boost verdict for a chunk.
-* [is_exact_fqn_match](is_exact_fqn_match.md) - checks for an exact FQN match.
-* [is_exact_symbol_match](is_exact_symbol_match.md) - checks for an exact symbol-name match.
-* [classify_filename_match](classify_filename_match.md) - classifies the strength of a filename match.
-* [classify_path_match](classify_path_match.md) - classifies the strength of a path/stem match.
-* [classify_symbol_match](classify_symbol_match.md) - classifies the strength of a symbol match.
-* [is_controller_endpoint](is_controller_endpoint.md) - detects controller/endpoint-style symbols.
-* [boost_for_tier](boost_for_tier.md) - maps a match tier to its boost value.
-* [strongest_tier](strongest_tier.md) - picks the strongest matching tier from multiple candidates.
-* [query_symbol_identifier](query_symbol_identifier.md) - extracts a candidate symbol identifier from the query.
-* [qualified_query_name](qualified_query_name.md) - builds a qualified name candidate from the query.
-* [filename_candidates](filename_candidates.md) - generates candidate filenames implied by the query.
-* [normalize_name](normalize_name.md) - normalizes an identifier/name for comparison.
-* [exact_precheck](exact_precheck.md) - runs the exact-match pre-check pass.
+* [boost_for_tier](boost_for_tier.md) - Bounded additive boost for a match tier.
+* [classify_filename_match](classify_filename_match.md) - Per-signal classifier detecting filename-level match strength.
+* [classify_path_match](classify_path_match.md) - Per-signal classifier detecting path-segment match strength.
+* [classify_symbol_match](classify_symbol_match.md) - Per-signal classifier detecting symbol-name match strength.
+* [compute_verdict](compute_verdict.md) - Bounded boost verdict for one candidate.
+* [filename_candidates](filename_candidates.md) - Chunk ids whose file name/stem equals the query.
+* [normalize_name](normalize_name.md) - Casefold and strip separators for comparison.
+* [strongest_tier](strongest_tier.md) - Highest-priority tier in an iterable.
 
 ## engine/model_status.py
 
-* [report_model_status](report_model_status.md) - reports embedding model availability/compatibility.
-* [profile_model_available](profile_model_available.md) - checks whether a given model profile's assets are available.
+* [report_model_status](report_model_status.md) - Generate the model warm/cold status report with latency breakdown.
 
 ## engine/occurrence_count.py
 
-* [count_occurrences_per_line](count_occurrences_per_line.md) - counts query-term occurrences per matching line.
+* [count_occurrences_per_line](count_occurrences_per_line.md) - Count occurrences of a pattern per line in text.
 
 ## engine/paths.py
 
-* [content_type](content_type.md) - classifies a path's `ContentType`.
+* [normalize_indexed_path](normalize_indexed_path.md) - Resolve a path against the indexed repo root, collapsing symlinks and ../ segments.
+* [resolve_stored_path](resolve_stored_path.md) - Return the stored code_chunks.file_path spelling for a candidate path.
 
 ## engine/redactor.py
 
-* [verify_air_gap](verify_air_gap.md) - verifies outbound network access is blocked.
-* [air_gap_enforcement](air_gap_enforcement.md) - context manager/patch enforcing air-gap network blocking.
-* [allow_downloads](allow_downloads.md) - narrow escape hatch permitting outbound downloads.
+* [air_gap_enforcement](air_gap_enforcement.md) - Context manager blocking all outbound socket connections.
+* [allow_downloads](allow_downloads.md) - Context manager temporarily allowing outbound socket connections.
+* [verify_air_gap](verify_air_gap.md) - Verify that air-gap enforcement is active.
 
 ## engine/reranking.py
 
-* [rerank_with_semantic](rerank_with_semantic.md) - reranks fused results using semantic and structural signals.
+* [demote_test_file_candidates](demote_test_file_candidates.md) - Demote test-file chunks inside the candidate pool before fusion.
 
 ## engine/rescue_floor.py
 
-* [evaluate_rescue_floor](evaluate_rescue_floor.md) - decides whether rescue-ladder tiers should run.
+* [evaluate_rescue_floor](evaluate_rescue_floor.md) - Evaluate whether the rescue tier should return results.
 
 ## engine/response_service.py
 
-* [build_response](build_response.md) - builds the final search response envelope.
+* [build_response](build_response.md) - Build a search response, checking for the index-change envelope and code-scoped config hints.
 
 ## engine/scent_detection.py
 
-* [detect_config_ddl_scent](detect_config_ddl_scent.md) - detects config/DDL "scent" in a query or chunk.
+* [compute_scent_adjustment](compute_scent_adjustment.md) - Multiplicative ranking adjustment for a file under config/DDL scent.
+* [detect_config_ddl_scent](detect_config_ddl_scent.md) - Detect config/DDL scent signals in a query string.
 
 ## engine/search.py
 
-* [build_fts_query](build_fts_query.md) - builds the SQLite FTS5 query string.
-* [analyze_query](analyze_query.md) - analyzes a query into a `QueryAnalysis` (expansion/language/intent).
+* [build_fts_query](build_fts_query.md) - Build an FTS5 MATCH expression from decomposed sub-words.
+* [chunk_rank_class](chunk_rank_class.md) - Classify a chunk as code/boilerplate/resource.
+* [classify_query](classify_query.md) - Classify a query as symbol-like or natural-language.
+* [decompose_query](decompose_query.md) - Tokenize and decompose a full query into its sub-word set.
+* [exact_precheck](exact_precheck.md) - Detect concrete literal/annotation/identifier patterns in a query.
+* [identify_subwords](identify_subwords.md) - Split identifier-style tokens into their constituent sub-words (camelCase/snake_case decomposition).
+* [query_symbol_identifier](query_symbol_identifier.md) - Extract a candidate symbol identifier from a query, if it looks like one.
 * [rrf_fusion](rrf_fusion.md) - Reciprocal Rank Fusion of BM25 and vector result lists.
+* [tokenize](tokenize.md) - Tokenization and identifier decomposition of raw text.
 
 ## engine/semantic_signals.py
 
-* [compute_semantic_score](compute_semantic_score.md) - computes a blended semantic similarity score.
-* [compute_call_proximity](compute_call_proximity.md) - computes call-graph proximity between two symbols.
-* [compute_package_overlap](compute_package_overlap.md) - computes package/namespace overlap between two files.
-* [compute_type_sharing](compute_type_sharing.md) - computes shared-type overlap between two chunks.
-* [compute_scent_adjustment](compute_scent_adjustment.md) - computes a scent-based score adjustment.
-* [compute_final_score](compute_final_score.md) - combines all semantic signals into a final score.
-* [embedded_symbols](embedded_symbols.md) - extracts symbols embedded within a chunk's text.
-* [read_source_slice](read_source_slice.md) - reads a slice of source text for a chunk.
+* [compute_call_proximity](compute_call_proximity.md) - Inverse call-graph depth between two symbols.
+* [compute_final_score](compute_final_score.md) - Fuse semantic signals with vector similarity.
+* [compute_package_overlap](compute_package_overlap.md) - Jaccard similarity of namespace directory segments.
+* [compute_semantic_score](compute_semantic_score.md) - Compute all three semantic signals for a candidate.
+* [compute_type_sharing](compute_type_sharing.md) - Normalized signature comparison score.
+* [rerank_with_semantic](rerank_with_semantic.md) - Rerank vector results using semantic signals.
 
 ## engine/symbol_resolution.py
 
-* [parse_reference](parse_reference.md) - parses a raw callee/reference string into structured parts.
-* [resolve_reference](resolve_reference.md) - resolves a parsed reference to an indexed symbol definition.
-* [resolve_with_signature](resolve_with_signature.md) - resolves a reference using signature-aware disambiguation.
-* [normalize_signature](normalize_signature.md) - normalizes a function/method signature for comparison.
-* [strip_params](strip_params.md) - strips parameter lists from a signature string.
-* [symbol_leaf](symbol_leaf.md) - extracts the leaf (unqualified) name from a symbol path.
-* [outcome_for_kind](outcome_for_kind.md) - maps a resolution outcome to its result kind.
-* [is_deprecated](is_deprecated.md) - checks whether a resolved symbol is marked deprecated.
+* [is_deprecated](is_deprecated.md) - Whether declared_rules carries a deprecation marker.
+* [normalize_signature](normalize_signature.md) - Parse and normalize a (params) signature.
+* [outcome_for_kind](outcome_for_kind.md) - Map an envelope kind to a user-visible outcome.
+* [parse_reference](parse_reference.md) - Parse a query into a SymbolReference.
+* [resolve_reference](resolve_reference.md) - Apply resolution tiers to rank candidates.
+* [resolve_with_signature](resolve_with_signature.md) - Signature-aware overload disambiguation.
+* [strip_params](strip_params.md) - Remove the parameter-list suffix from a symbol name-shape string.
+* [symbol_leaf](symbol_leaf.md) - Return the trailing (leaf) segment of a dotted or qualified symbol name.
+
+## engine/symbols.py
+
+* [build_symbol_fqn](build_symbol_fqn.md) - Construct a symbol's fully-qualified name.
 
 ## engine/watcher.py
 
-* [create_watcher](create_watcher.md) - constructs a configured `FileWatcher`.
+* [create_watcher](create_watcher.md) - Convenience factory returning a fully-configured FileWatcher.
 
 ## mcp/server.py
 
-(MCP tool functions are documented as methods of [`MCPServer`](/types/MCPServer.md) rather than standalone functions.)
+* [create_server](create_server.md) - Create an MCPServer around a component registry.
+
+The MCP tools (`search`, `get_symbol_definition`, `get_call_neighbors`, `get_implementations`, `find_related`) are nested inside `MCPServer.build_fastmcp`; see [`MCPServer`](../types/MCPServer.md).

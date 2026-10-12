@@ -15,21 +15,23 @@ sources:
 
 Generates a surface-neutral message explaining why content was excluded
 from search results (e.g. docs excluded from a code-only scope), and
-recommending the [`scope_override`](/functions/scope_override.md).
+recommending the [`scope_override`](scope_override.md).
 Defined in
-[`engine.intent_detection`](/modules/engine/intent_detection.md).
+[`engine.intent_detection`](../modules/engine/intent_detection.md).
 
 # Signature
 
-`def build_scope_signal(intent: ContentIntent, current_scope: str) -> str \| None`
+`def build_scope_signal(intent: ContentIntent, effective: str, origin: str, suggested: str \| None) -> str \| None`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `intent` | `ContentIntent` | The detected content intent. |
-| `current_scope` | `str` | The `content` scope currently applied to the search. |
+| `intent` | `ContentIntent` | The classified query intent. |
+| `effective` | `str` | The effective scope applied to the search. |
+| `origin` | `str` | `explicit`, `inferred`, or `default`. |
+| `suggested` | `str \| None` | The recommended scope when no switch occurred, else `None`. |
 
 # Returns
 
-A human-readable scope message, or `None` when no signal is warranted.
+The actionable message, or `None` when no message is due.

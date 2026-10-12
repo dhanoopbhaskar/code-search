@@ -15,21 +15,22 @@ sources:
 
 Combines BM25 and vector search result lists using Reciprocal Rank
 Fusion (RRF), producing a single fused ranking. Defined in
-[`engine.search`](/modules/engine/search.md); the core fusion step inside
-[`HybridSearch.search`](/types/HybridSearch.md).
+[`engine.search`](../modules/engine/search.md); the core fusion step inside
+[`HybridSearch.search`](../types/HybridSearch.md).
 
 # Signature
 
-`def rrf_fusion(bm25_results: list[tuple[int, float]], vector_results: list[tuple[int, float]], k: int = 60) -> list[tuple[int, float]]`
+`def rrf_fusion(bm25_results: list[tuple[int, float]], vector_results: list[tuple[int, float]], k: int = 60, alpha: float \| None = None) -> dict[int, float]`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `bm25_results` | `list[tuple[int, float]]` | `(chunk_id, score)` pairs from [`BM25Search`](/types/BM25Search.md). |
-| `vector_results` | `list[tuple[int, float]]` | `(chunk_id, score)` pairs from [`VectorSearch`](/types/VectorSearch.md). |
-| `k` | `int` | RRF smoothing constant. |
+| `bm25_results` | `list[tuple[int, float]]` | `(chunk_rowid, score)` pairs from the lexical arm. |
+| `vector_results` | `list[tuple[int, float]]` | `(chunk_rowid, score)` pairs from the dense arm. |
+| `k` | `int` | RRF rank offset. |
+| `alpha` | `float \| None` | Weight of the vector arm in `[0, 1]`; `None` defaults to a balanced (0.5) blend. |
 
 # Returns
 
-Fused `(chunk_id, rrf_score)` pairs, sorted by fused score descending.
+A dict mapping `chunk_id` to its fused RRF score.

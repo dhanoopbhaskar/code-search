@@ -16,7 +16,7 @@ sources:
 Builds the full `argparse.ArgumentParser` tree, registering every
 subcommand (index, search, symbol, graph, implementations, metrics,
 serve, list-languages, download-models, daemon). Defined in
-[`cli.main`](/modules/cli/main.md).
+[`cli.main`](../modules/cli/main.md).
 
 # Signature
 
@@ -24,4 +24,4 @@ serve, list-languages, download-models, daemon). Defined in
 
 # Returns
 
-The configured top-level parser with all subcommands attached.
+The configured root parser.

@@ -15,18 +15,18 @@ sources:
 
 Persists the current `REPRESENTATION_SCHEME_VERSION` into index metadata
 after a (re)index build. Defined in
-[`engine.embeddings`](/modules/engine/embeddings.md).
+[`engine.embeddings`](../modules/engine/embeddings.md).
 
 # Signature
 
-`def set_representation_scheme_version(metadata_store: IndexMetadataStore, version: int) -> None`
+`def set_representation_scheme_version(metadata_store: Any, version: int \| None = None) -> None`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `metadata_store` | `IndexMetadataStore` | Metadata store to write to. |
-| `version` | `int` | The current representation scheme version. |
+| `metadata_store` | `Any` | The index metadata store, or `None` to no-op. |
+| `version` | `int \| None` | The scheme to record; defaults to the running code's `REPRESENTATION_SCHEME_VERSION`. |
 
 # Returns
 

@@ -14,20 +14,21 @@ sources:
 # Overview
 
 Computes a normalized signature comparison score measuring shared
-parameter/return types between two symbols. Defined in
-[`engine.semantic_signals`](/modules/engine/semantic_signals.md).
+parameter types between two symbols, with a capped +0.2 bonus when both
+symbols' return types match. Defined in
+[`engine.semantic_signals`](../modules/engine/semantic_signals.md).
 
 # Signature
 
-`def compute_type_sharing(signature_a: str, signature_b: str) -> float`
+`def compute_type_sharing(anchor_fqn: str, candidate_fqn: str) -> float`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `signature_a` | `str` | First symbol's signature string. |
-| `signature_b` | `str` | Second symbol's signature string. |
+| `anchor_fqn` | `str` | Anchor symbol's fully qualified name |
+| `candidate_fqn` | `str` | Candidate symbol's fully qualified name |
 
 # Returns
 
-Type-sharing score in `[0.0, 1.0]`.
+Type sharing score in [0.0, 1.0]

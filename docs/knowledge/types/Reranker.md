@@ -1,7 +1,7 @@
 ---
 type: Class
 title: "Reranker"
-description: "Adjusts raw search scores using definition boost, test-file penalty, non-canonical penalty, and session weight."
+description: "Adjusts raw search scores using definition/file-role boosts, test-file and non-canonical penalties, and session weighting."
 resource: src/engine/reranking.py#Reranker
 tags: [ranking, reranking]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
@@ -15,12 +15,12 @@ sources:
 
 Adjusts raw fused search scores using a definition boost, test-file
 penalty, non-canonical-path penalty, file-role penalties, and session
-weighting (via [`SessionDatabase`](/types/SessionDatabase.md)). Defined
-in [`engine.reranking`](/modules/engine/reranking.md).
+weighting (via [`SessionDatabase`](SessionDatabase.md)). Defined
+in [`engine.reranking`](../modules/engine/reranking.md).
 
 # Methods
 
 | Method | Description |
 |---|---|
-| `__init__(self, session_db: SessionDatabase \| None = None, settings: Settings \| None = None) -> None` | Initialize the reranker, optionally wired to a session database. |
-| `rerank(self, results: list[dict[str, Any]], query: str) -> list[dict[str, Any]]` | Apply all adjustment rules to a candidate result list and re-sort. |
+| `__init__(db: GraphDatabase, session_db: SessionDatabase \| None = None, settings: Settings \| None = None) -> None` | Create a reranker wired to the graph and session databases. |
+| `rerank(results: list[dict[str, Any]], query_terms: list[str] \| None = None, query: str \| None = None) -> list[dict[str, Any]]` | Reorder *results* in place by applying the definition, file-role, and authorization boosts, the test-file, DTS/barrel, and non-canonical penalties, and session weighting. |

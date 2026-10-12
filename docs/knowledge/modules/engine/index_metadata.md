@@ -20,5 +20,5 @@ status hints.
 
 # Key Classes
 
-- [`IndexStatus`](/types/IndexStatus.md) — `Enum` for index health status (`CURRENT`, `STALE`, `UNAVAILABLE`).
-- [`IndexMetadata`](/types/IndexMetadata.md) — metadata tracking for index change detection (version, mtime, timestamp, status).
+- [`IndexStatus`](../../types/IndexStatus.md) — `Enum` for index health status (`CURRENT`, `STALE`, `UNAVAILABLE`).
+- [`IndexMetadata`](../../types/IndexMetadata.md) — metadata tracking for index change detection (version, mtime, timestamp, status).

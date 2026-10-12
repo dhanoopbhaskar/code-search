@@ -9,4 +9,4 @@ status: draft
 
 # Context Modules
 
-* [__init__](__init__.md) - package marker module.
+* [__init__](__init__.md) - context directory manager (`ContextManager`).

@@ -14,13 +14,15 @@ sources:
 # Overview
 
 Cross-process file lock preventing concurrent index writes. Defined in
-[`engine.indexer`](/modules/engine/indexer.md).
+[`engine.indexer`](../modules/engine/indexer.md).
 
 # Methods
 
 | Method | Description |
 |---|---|
-| `__init__(self, lock_path: Path) -> None` | Initialize the lock at *lock_path*. |
-| `acquire(self, timeout: float = 10.0) -> bool` | Attempt to acquire the lock, retrying until *timeout*. |
-| `release() -> None` | Release the lock and remove the lock file. |
-| `__enter__` / `__exit__` | Context-manager protocol wrapping acquire/release. |
+| `__init__(lock_path: Path, timeout: float = 30.0) -> None` | Initialize a filesystem lock rooted at *lock_path*. |
+| `try_acquire() -> bool` | Attempt one atomic lock acquisition without waiting. |
+| `acquire() -> bool` | Poll for the lock until timeout or stale detection triggers a force release. |
+| `release(force: bool = False) -> None` | Release the lock by deleting its file. |
+| `is_locked: bool` (property) | Return whether the lock file currently exists on disk. |
+| `acquired: bool` (property) | Return whether this process currently holds the lock. |

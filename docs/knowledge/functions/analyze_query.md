@@ -13,24 +13,27 @@ sources:
 
 # Overview
 
-Builds the [`QueryAnalysis`](/types/QueryAnalysis.md) entity for a query
+Builds the [`QueryAnalysis`](../types/QueryAnalysis.md) entity for a query
 — expansion, exact tokens, coverage, inferred language, and definition
 intent — as the single shared rule consumed by the search/rerank
-pipeline. Defined in [`engine.language`](/modules/engine/language.md).
+pipeline. Defined in [`engine.language`](../modules/engine/language.md).
 
 # Signature
 
-`def analyze_query(query: str, db: GraphDatabase, symbol_store: SymbolStore, explicit_language: str \| None = None) -> QueryAnalysis`
+`def analyze_query(query: str, settings: Settings, vocabulary: set[str] \| None = None, expansion_table: Any \| None = None, symbol_store: Any \| None = None, vocab_by_language: dict[str, set[str]] \| None = None, explicit_language: str \| None = None) -> QueryAnalysis`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `query` | `str` | The raw query text. |
-| `db` | `GraphDatabase` | Graph database for vocabulary lookups. |
-| `symbol_store` | `SymbolStore` | Symbol store for definition-intent resolution. |
-| `explicit_language` | `str \| None` | Caller-supplied language filter. |
+| `query` | `str` | The raw user query. |
+| `settings` | `Settings` | Runtime settings, used to locate the expansion table when none is supplied. |
+| `vocabulary` | `set[str] \| None` | The exact corpus vocabulary (all sub-words in the index); when `None`, coverage and exact tokens resolve to zero/empty. |
+| `expansion_table` | `Any \| None` | An `ExpansionTable`; built from `expansion_file` when `None`. |
+| `symbol_store` | `Any \| None` | Optional symbol store for definition-target resolution and language inference. |
+| `vocab_by_language` | `dict[str, set[str]] \| None` | Per-language vocabularies for language inference. |
+| `explicit_language` | `str \| None` | Language supplied by the caller; always takes precedence over inferred language. |
 
 # Returns
 
-The populated [`QueryAnalysis`](/types/QueryAnalysis.md) entity.
+A `QueryAnalysis` carrying the expanded text, exact tokens, coverage, inferred language, and definition intent.

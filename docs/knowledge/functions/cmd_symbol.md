@@ -14,8 +14,8 @@ sources:
 # Overview
 
 Handles the `symbol` subcommand, invoking
-[`SymbolStore.resolve_name`](/types/SymbolStore.md) to resolve and print a
-symbol's definition. Defined in [`cli.main`](/modules/cli/main.md).
+[`SymbolStore.resolve_name`](../types/SymbolStore.md) to resolve and print a
+symbol's definition. Defined in [`cli.main`](../modules/cli/main.md).
 
 # Signature
 
@@ -25,8 +25,8 @@ symbol's definition. Defined in [`cli.main`](/modules/cli/main.md).
 
 | Name | Type | Description |
 |---|---|---|
-| `args` | `argparse.Namespace` | Parsed CLI arguments including the symbol name/FQN query. |
+| `args` | `argparse.Namespace` | Parsed arguments; `fqn` and `json` are honoured. |
 
 # Returns
 
-Process exit code.
+A process exit code; `0` on success, `1` when the index is not initialised.

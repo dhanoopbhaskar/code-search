@@ -15,18 +15,18 @@ sources:
 
 Aggregates per-result confidence bands into a single overall band for the
 response envelope. Defined in
-[`engine.confidence`](/modules/engine/confidence.md).
+[`engine.confidence`](../modules/engine/confidence.md).
 
 # Signature
 
-`def envelope_band(result_bands: list[str]) -> str`
+`def envelope_band(bands: list[str]) -> str`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `result_bands` | `list[str]` | Confidence band labels for each result in the response. |
+| `bands` | `list[str]` | The per-result confidence bands. |
 
 # Returns
 
-The overall envelope band label.
+One of `"high"`, `"medium"`, `"low"`, or `"none"`.

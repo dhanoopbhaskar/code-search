@@ -28,9 +28,9 @@ trigger regeneration of stored embeddings.
 
 # Key Classes
 
-- [`EnclosingContext`](/types/EnclosingContext.md) — a chunk's nearest structural context: module identity, ancestor-name chain, content axis.
+- [`EnclosingContext`](../../types/EnclosingContext.md) — a chunk's nearest structural context: module identity, ancestor-name chain, content axis.
 
 # Key Functions
 
-- [`derive_enclosing_context`](/functions/derive_enclosing_context.md) — build the enclosing context for a chunk from its per-file symbol list.
-- [`build_embed_text`](/functions/build_embed_text.md) — compose bounded embedding input text (context prefix + body).
+- [`derive_enclosing_context`](../../functions/derive_enclosing_context.md) — build the enclosing context for a chunk from its per-file symbol list.
+- [`build_embed_text`](../../functions/build_embed_text.md) — compose bounded embedding input text (context prefix + body).

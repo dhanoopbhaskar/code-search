@@ -15,19 +15,19 @@ sources:
 
 Evidence classifier: returns whether a candidate result's FQN exactly
 matches the query's qualified name. Defined in
-[`engine.confidence`](/modules/engine/confidence.md).
+[`engine.confidence`](../modules/engine/confidence.md).
 
 # Signature
 
-`def is_exact_fqn_match(fqn: str, query: str) -> bool`
+`def is_exact_fqn_match(qualified_name: str \| None, fqn: str) -> bool`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `fqn` | `str` | The candidate result's fully-qualified name. |
-| `query` | `str` | The raw query text. |
+| `qualified_name` | `str \| None` | The query's qualified form, or `None`. |
+| `fqn` | `str` | The candidate chunk's fully qualified name. |
 
 # Returns
 
-`True` if the FQN exactly matches the query's qualified name portion.
+`True` when the qualified query names the candidate exactly.

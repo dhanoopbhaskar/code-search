@@ -16,12 +16,14 @@ sources:
 Two-way, case-insensitive acronym/phrase → expansion-terms table with
 fuzzy matching, seeded from `_BUILTIN_EXPANSIONS` plus an optional JSON
 overlay. Defined in
-[`engine.expansions`](/modules/engine/expansions.md); consumed by
-[`analyze_query`](/functions/analyze_query.md).
+[`engine.expansions`](../modules/engine/expansions.md); consumed by
+[`analyze_query`](../functions/analyze_query.md).
 
 # Methods
 
 | Method | Description |
 |---|---|
-| `__init__(self, overlay_path: Path \| None = None) -> None` | Initialize with built-in expansions plus an optional JSON overlay file. |
-| `expand(self, text: str) -> str` | Return *text* with any matching acronyms/phrases expanded. |
+| `__init__(config_path: str \| None = None) -> None` | Create an expansion table, optionally merging a user JSON file. |
+| `expand(query: str) -> set[str]` | Return the query plus any expansion terms reachable from it. |
+| `matched_phrases(query: str) -> list[str]` | Return the table keys that fuzzy-match inside *query*, longest first. |
+| `expanded_text(query: str) -> str` | Return *query* with expansion terms appended (FTS + embedding input). |

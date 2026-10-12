@@ -14,6 +14,6 @@ sources:
 # Overview
 
 Model Context Protocol (MCP) server for code-search. Exposes the engine to
-MCP clients over stdio via the [`server`](/modules/mcp/server.md) module,
+MCP clients over stdio via the [`server`](server.md) module,
 implementing `search`, `get_symbol_definition`, `get_call_neighbors`,
 `get_implementations`, and `find_related` tools.

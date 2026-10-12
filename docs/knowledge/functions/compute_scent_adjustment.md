@@ -14,21 +14,24 @@ sources:
 # Overview
 
 Computes a multiplicative ranking adjustment for a file under
-config/DDL scent — boosting `.properties`/`.sql`/`docker-compose.yml`
-files and deprioritizing build metadata. Defined in
-[`engine.scent_detection`](/modules/engine/scent_detection.md).
+config/DDL scent — under config scent boosting `.properties`/`.sql`/
+`docker-compose.yml` files, under DDL scent boosting only `.sql`/
+`docker-compose.yml`, and deprioritizing build metadata. Defined in
+[`engine.scent_detection`](../modules/engine/scent_detection.md).
 
 # Signature
 
-`def compute_scent_adjustment(file_path: str, scent: str) -> float`
+`def compute_scent_adjustment(file_role: str, file_extension: str, scent_type: str, boost_factor: float) -> float`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `file_path` | `str` | The candidate file's path. |
-| `scent` | `str` | The detected scent signal (e.g. `"config"`, `"ddl"`). |
+| `file_role` | `str` | The classified role (code/config/infra/resource/docs). |
+| `file_extension` | `str` | The file extension (`.properties`) or bare filename (e.g. `pom.xml`). |
+| `scent_type` | `str` | `config`, `ddl`, or `neutral`. |
+| `boost_factor` | `float` | The configured boost factor ([0.0, 2.0]). |
 
 # Returns
 
-A multiplicative score adjustment factor.
+A multiplier to apply to the file's weighted score; `1.0` means no adjustment.

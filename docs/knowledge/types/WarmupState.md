@@ -1,7 +1,7 @@
 ---
 type: Class
 title: "WarmupState"
-description: "Tracks whether the embedding model has completed its warm-up pass."
+description: "Lifecycle state of the in-process embedding model (cold, warming, warm, failed, disabled)."
 resource: src/engine/embeddings.py#WarmupState
 tags: [embeddings, model, state]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
@@ -13,14 +13,15 @@ sources:
 
 # Overview
 
-Tracks whether the embedding model has completed its warm-up pass (first
-inference call, which is slower). Defined in
-[`engine.embeddings`](/modules/engine/embeddings.md).
+`StrEnum` tracking the lifecycle state of the in-process embedding model. Defined in
+[`engine.embeddings`](../modules/engine/embeddings.md).
 
-# Schema
+# Values
 
-| Field | Type | Description |
-|---|---|---|
-| `is_warm` | `bool` | Whether the model has completed its first inference. |
-| `warmup_started_at` | `float \| None` | Monotonic timestamp when warm-up began. |
-| `warmup_duration_ms` | `float \| None` | Duration of the warm-up call, in milliseconds. |
+| Value | Description |
+|---|---|
+| `COLD` | No model load has started. |
+| `WARMING` | A background model load is in flight. |
+| `WARM` | A usable model is resident in memory. |
+| `FAILED` | The model load raised. |
+| `DISABLED` | The model is explicitly off (`--no-model`). |

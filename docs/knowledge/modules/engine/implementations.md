@@ -24,4 +24,4 @@ beyond the symbol and edge stores.
 
 # Key Functions
 
-- [`find_implementations`](/functions/find_implementations.md) — resolve static implementations of an interface member or type.
+- [`find_implementations`](../../functions/find_implementations.md) — resolve static implementations of an interface member or type.

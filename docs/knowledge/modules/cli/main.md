@@ -36,9 +36,9 @@ queries.
 
 # Key Functions
 
-- [`build_parser`](/functions/build_parser.md) — build the full argparse tree with all subcommands.
-- [`main`](/functions/main.md) — parse arguments and dispatch to the selected subcommand handler.
-- [`cmd_index`](/functions/cmd_index.md), [`cmd_search`](/functions/cmd_search.md), [`cmd_symbol`](/functions/cmd_symbol.md), [`cmd_graph`](/functions/cmd_graph.md), [`cmd_implementations`](/functions/cmd_implementations.md), [`cmd_metrics`](/functions/cmd_metrics.md), [`cmd_serve`](/functions/cmd_serve.md), [`cmd_list_languages`](/functions/cmd_list_languages.md), [`cmd_daemon`](/functions/cmd_daemon.md), [`cmd_daemon_run`](/functions/cmd_daemon_run.md), [`cmd_download_models`](/functions/cmd_download_models.md) — one handler per subcommand.
+- [`build_parser`](../../functions/build_parser.md) — build the full argparse tree with all subcommands.
+- [`main`](../../functions/main.md) — parse arguments and dispatch to the selected subcommand handler.
+- [`cmd_index`](../../functions/cmd_index.md), [`cmd_search`](../../functions/cmd_search.md), [`cmd_symbol`](../../functions/cmd_symbol.md), [`cmd_graph`](../../functions/cmd_graph.md), [`cmd_implementations`](../../functions/cmd_implementations.md), [`cmd_metrics`](../../functions/cmd_metrics.md), [`cmd_serve`](../../functions/cmd_serve.md), [`cmd_list_languages`](../../functions/cmd_list_languages.md), [`cmd_daemon`](../../functions/cmd_daemon.md), [`cmd_daemon_run`](../../functions/cmd_daemon_run.md), [`cmd_download_models`](../../functions/cmd_download_models.md) — one handler per subcommand.
 
 # Internal Helpers
 

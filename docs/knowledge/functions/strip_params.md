@@ -15,7 +15,7 @@ sources:
 
 Name-shape helper: removes the parameter-list suffix (e.g.
 `foo(int, str)` → `foo`) from a symbol reference string. Defined in
-[`engine.symbol_resolution`](/modules/engine/symbol_resolution.md).
+[`engine.symbol_resolution`](../modules/engine/symbol_resolution.md).
 
 # Signature
 

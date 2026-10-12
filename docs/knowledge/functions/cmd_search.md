@@ -14,9 +14,9 @@ sources:
 # Overview
 
 Handles the `search` subcommand, invoking
-[`HybridSearch.search`](/types/HybridSearch.md) and formatting the
+[`HybridSearch.search`](../types/HybridSearch.md) and formatting the
 response envelope for terminal output. Defined in
-[`cli.main`](/modules/cli/main.md).
+[`cli.main`](../modules/cli/main.md).
 
 # Signature
 
@@ -26,8 +26,8 @@ response envelope for terminal output. Defined in
 
 | Name | Type | Description |
 |---|---|---|
-| `args` | `argparse.Namespace` | Parsed CLI arguments including query text, limit, language, and content filters. |
+| `args` | `argparse.Namespace` | Parsed arguments; `query`, `limit`, `language`, `include_tests`, `json`, `no_model` are honoured. |
 
 # Returns
 
-Process exit code.
+A process exit code: `0` on success, `1` when the index is not initialised.

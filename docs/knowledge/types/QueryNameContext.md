@@ -16,11 +16,17 @@ sources:
 Query-level facts about named-symbol tokens extracted from the query
 text, computed once per request and reused across all candidate results
 during the match-boost pass. Defined in
-[`engine.match_boost`](/modules/engine/match_boost.md).
+[`engine.match_boost`](../modules/engine/match_boost.md).
 
 # Schema
 
 | Field | Type | Description |
 |---|---|---|
-| `named_tokens` | `list[str]` | Identifier-like tokens extracted from the query. |
-| `has_named_tokens` | `bool` | Whether any named tokens were found. |
+| `raw_query` | `str` | The user query text. |
+| `normalized` | `str` | :func:`normalize_name` applied to *raw_query*. |
+| `subwords` | `tuple[str, ...]` | The query's decomposed sub-words. |
+| `significant_terms` | `tuple[str, ...]` | Sub-words used for proportional path matching (stopwords removed). |
+| `query_identifier` | `str \| None` | The query's bare identifier, or `None`. |
+| `qualified_name` | `str \| None` | The query's `A.B` / `A::B` form, or `None`. |
+| `ambiguous` | `bool` | Whether the bare identifier resolves to multiple candidates. |
+| `exact_filename_candidates` | `tuple[int, ...]` | Chunk ids whose file name/stem equals *normalized* within the active content scope. |

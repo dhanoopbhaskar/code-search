@@ -21,8 +21,8 @@ patterns skip common artifact directories.
 
 # Key Classes
 
-- [`FileWatcher`](/types/FileWatcher.md) — polls the filesystem for content changes using SHA256 hashing; debounces callbacks via `threading.Timer`.
+- [`FileWatcher`](../../types/FileWatcher.md) — polls the filesystem for content changes using SHA256 hashing; debounces callbacks via `threading.Timer`.
 
 # Key Functions
 
-- [`create_watcher`](/functions/create_watcher.md) — convenience factory returning a fully-configured `FileWatcher`.
+- [`create_watcher`](../../functions/create_watcher.md) — convenience factory returning a fully-configured `FileWatcher`.

@@ -13,21 +13,23 @@ sources:
 
 # Overview
 
-Returns whether the active embedding model profile (`potion-code-16m-32d`)
-is available locally under the models directory, without triggering a
-download. Defined in
-[`engine.embeddings`](/modules/engine/embeddings.md).
+Returns whether the active embedding model profile can be used locally,
+without triggering a download. The `default` profile always returns `True`
+(its model is bundled as the fallback); the opt-in `fast` profile returns
+`False` until it is explicitly shipped and a measured local candidate
+exists. Defined in
+[`engine.embeddings`](../modules/engine/embeddings.md).
 
 # Signature
 
-`def profile_model_available(models_dir: Path) -> bool`
+`def profile_model_available(settings: Settings) -> bool`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `models_dir` | `Path` | Directory where models are stored. |
+| `settings` | `Settings` | Active settings carrying `model_profile` and paths. |
 
 # Returns
 
-`True` if the model files are present locally.
+`True` when the profile's model can be used locally.

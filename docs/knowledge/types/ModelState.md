@@ -15,6 +15,14 @@ sources:
 
 `StrEnum` for the current embedding model state: `WARM`, `COLD`, or
 `INITIALIZING`. Defined in
-[`engine.model_status`](/modules/engine/model_status.md); reported by
-[`report_model_status`](/functions/report_model_status.md) and surfaced
+[`engine.model_status`](../modules/engine/model_status.md); reported by
+[`report_model_status`](../functions/report_model_status.md) and surfaced
 in every ranked MCP response.
+
+# Values
+
+| Value | Description |
+|---|---|
+| `WARM` | Model loaded and ready. |
+| `COLD` | Model not loaded. |
+| `INITIALIZING` | Model load in progress. |

@@ -14,7 +14,7 @@ sources:
 # Overview
 
 Removes the daemon's pidfile on clean shutdown. Defined in
-[`engine.daemon`](/modules/engine/daemon.md).
+[`engine.daemon`](../modules/engine/daemon.md).
 
 # Signature
 
@@ -24,7 +24,7 @@ Removes the daemon's pidfile on clean shutdown. Defined in
 
 | Name | Type | Description |
 |---|---|---|
-| `context_dir` | `Path` | The index/context directory. |
+| `context_dir` | `Path` | The daemon's context directory (`.context/`). |
 
 # Returns
 

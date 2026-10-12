@@ -21,7 +21,7 @@ files and caches the signal under index metadata with a TTL.
 
 # Key Classes
 
-- [`FreshnessChecker`](/types/FreshnessChecker.md) — computes a working-tree-vs-index staleness signal via stat baselines and optional rehashing.
+- [`FreshnessChecker`](../../types/FreshnessChecker.md) — computes a working-tree-vs-index staleness signal via stat baselines and optional rehashing.
 
 # Internal Helpers
 

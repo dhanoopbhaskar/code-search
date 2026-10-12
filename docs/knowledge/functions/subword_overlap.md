@@ -15,20 +15,20 @@ sources:
 
 Computes the fraction of query sub-words present in a candidate's text,
 the base lexical overlap signal feeding
-[`confidence_score`](/functions/confidence_score.md). Defined in
-[`engine.confidence`](/modules/engine/confidence.md).
+[`confidence_score`](confidence_score.md). Defined in
+[`engine.confidence`](../modules/engine/confidence.md).
 
 # Signature
 
-`def subword_overlap(query_subwords: list[str], candidate_text: str) -> float`
+`def subword_overlap(query_subwords: list[str], chunk_subwords: list[str]) -> float`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `query_subwords` | `list[str]` | Sub-word tokens from the query. |
-| `candidate_text` | `str` | The candidate result's text. |
+| `query_subwords` | `list[str]` | The query's decomposed sub-words. |
+| `chunk_subwords` | `list[str]` | The chunk's indexed sub-words. |
 
 # Returns
 
-Overlap fraction in `[0.0, 1.0]`.
+The overlap fraction in `[0.0, 1.0]`.

@@ -13,20 +13,20 @@ sources:
 
 # Overview
 
-Casefolds and strips separators (underscores, hyphens, camelCase
-boundaries) from a name for normalized comparison. Defined in
-[`engine.match_boost`](/modules/engine/match_boost.md).
+Casefolds and strips separators (underscores, hyphens, dots, slashes,
+and colons) from a name for normalized comparison. Defined in
+[`engine.match_boost`](../modules/engine/match_boost.md).
 
 # Signature
 
-`def normalize_name(name: str) -> str`
+`def normalize_name(text: str) -> str`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `name` | `str` | The raw identifier or filename to normalize. |
+| `text` | `str` | The raw name, query, or path segment. |
 
 # Returns
 
-The normalized, comparison-ready string.
+The normalized comparison form (never `None`; empty for empty input).

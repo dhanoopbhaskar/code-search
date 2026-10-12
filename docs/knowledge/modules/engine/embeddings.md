@@ -26,22 +26,22 @@ semantics.
 | Constant | Purpose |
 |---|---|
 | `WarmupState` | Enum of model lifecycle states: `COLD`, `WARMING`, `WARM`, `FAILED`, `DISABLED` |
-| `RANKED_PATH_HYBRID` / `_LEXICAL_REDUCED` / `_LEXICAL_DEGRADED` | Ranked-path identifiers surfaced in responses |
+| `RANKED_PATH_HYBRID` / `RANKED_PATH_LEXICAL_REDUCED` / `RANKED_PATH_LEXICAL_DEGRADED` | Ranked-path identifiers surfaced in responses |
 | `MODEL_NAME` | Default model: `"potion-code-16m-32d"` |
 | `EMBEDDING_DIM` | Default embedding dimension: `32` |
 
 # Key Classes
 
-- [`WarmupState`](/types/WarmupState.md) — lifecycle state enum for the embedding model.
-- [`EmbeddingGenerator`](/types/EmbeddingGenerator.md) — generates normalised vector embeddings for code text.
-- [`VectorIndex`](/types/VectorIndex.md) — flat numpy-based vector store with O(1) tombstone removal.
+- [`WarmupState`](../../types/WarmupState.md) — lifecycle state enum for the embedding model.
+- [`EmbeddingGenerator`](../../types/EmbeddingGenerator.md) — generates normalised vector embeddings for code text.
+- [`VectorIndex`](../../types/VectorIndex.md) — flat numpy-based vector store with O(1) tombstone removal.
 
 # Key Functions
 
-- [`profile_model_available`](/functions/profile_model_available.md) — whether the active model profile is available locally.
-- [`check_index_model_compatibility`](/functions/check_index_model_compatibility.md) — raise when the index was built by a different embedding model.
-- [`get_representation_scheme_version`](/functions/get_representation_scheme_version.md), [`set_representation_scheme_version`](/functions/set_representation_scheme_version.md) — track the chunk-representation scheme version.
-- [`check_index_representation_compatibility`](/functions/check_index_representation_compatibility.md) — raise when stored embeddings predate the running representation scheme.
+- [`profile_model_available`](../../functions/profile_model_available.md) — whether the active model profile is available locally.
+- [`check_index_model_compatibility`](../../functions/check_index_model_compatibility.md) — raise when the index was built by a different embedding model.
+- [`get_representation_scheme_version`](../../functions/get_representation_scheme_version.md), [`set_representation_scheme_version`](../../functions/set_representation_scheme_version.md) — track the chunk-representation scheme version.
+- [`check_index_representation_compatibility`](../../functions/check_index_representation_compatibility.md) — raise when stored embeddings predate the running representation scheme.
 
 # Internal Helpers
 

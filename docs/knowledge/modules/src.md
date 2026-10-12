@@ -21,7 +21,7 @@ redaction/compliance.
 
 # Subpackages
 
-- [`src.cli`](/modules/cli/__init__.md) — command-line interface
-- [`src.engine`](/modules/engine/__init__.md) — core search/index engine
-- [`src.mcp`](/modules/mcp/__init__.md) — Model Context Protocol stdio server
-- [`src.context`](/modules/context/__init__.md) — on-disk context directory management
+- [`src.cli`](cli/__init__.md) — command-line interface
+- [`src.engine`](engine/__init__.md) — core search/index engine
+- [`src.mcp`](mcp/__init__.md) — Model Context Protocol stdio server
+- [`src.context`](context/__init__.md) — on-disk context directory management

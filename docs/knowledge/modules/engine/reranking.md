@@ -16,16 +16,16 @@ sources:
 Result reranking scoring pipeline executed after initial BM25 + vector
 hybrid retrieval. Boosts definitions, penalises test files, applies
 session weights, detects query intent (definition/behavior/authorization),
-and applies file-role-based penalties (model/DTO/exception/infra/dts
-/barrel).
+and applies role/path-class penalties (model/DTO/assembler/exception/infra
+file roles, plus DTS/barrel path classes).
 
 # Key Classes
 
-- [`Reranker`](/types/Reranker.md) — adjusts raw search scores using definition boost, test-file penalty, non-canonical penalty, and session weight.
+- [`Reranker`](../../types/Reranker.md) — adjusts raw search scores using definition boost, test-file penalty, non-canonical penalty, and session weight.
 
 # Key Functions
 
-- [`demote_test_file_candidates`](/functions/demote_test_file_candidates.md) — demote test-file chunks inside the candidate pool before fusion.
+- [`demote_test_file_candidates`](../../functions/demote_test_file_candidates.md) — demote test-file chunks inside the candidate pool before fusion.
 
 # Internal Helpers
 

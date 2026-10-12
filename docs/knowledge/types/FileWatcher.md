@@ -16,12 +16,12 @@ sources:
 Polls a directory recursively for content changes using SHA256 hashing,
 aggregating changes within a debounce window before invoking a
 user-supplied callback via `threading.Timer`. Defined in
-[`engine.watcher`](/modules/engine/watcher.md).
+[`engine.watcher`](../modules/engine/watcher.md).
 
 # Methods
 
 | Method | Description |
 |---|---|
-| `__init__(self, watch_dir: Path, callback: Callable, debounce_seconds: float = 2.0, exclude_patterns: list[str] \| None = None) -> None` | Initialize the watcher over a directory with a debounce window. |
-| `start() -> None` | Begin polling for changes in a background thread. |
-| `stop() -> None` | Stop polling and cancel any pending debounce timer. |
+| `__init__(root_path: Path, on_change: Callable[[list[Path]], None], debounce_seconds: float \| None = None, exclusion_patterns: set[str] \| None = None, settings: Settings \| None = None) -> None` | Create a file watcher rooted at *root_path*. |
+| `start() -> None` | Snapshot the current hashes and begin the polling loop in a thread. |
+| `stop() -> None` | Stop the polling loop, cancel any pending timer, and join the thread. |

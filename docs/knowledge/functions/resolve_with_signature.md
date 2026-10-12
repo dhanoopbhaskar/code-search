@@ -15,21 +15,22 @@ sources:
 
 Disambiguates between overloaded candidates by comparing normalized
 signatures (see
-[`normalize_signature`](/functions/normalize_signature.md)) against the
+[`normalize_signature`](normalize_signature.md)) against the
 query's supplied signature. Defined in
-[`engine.symbol_resolution`](/modules/engine/symbol_resolution.md).
+[`engine.symbol_resolution`](../modules/engine/symbol_resolution.md).
 
 # Signature
 
-`def resolve_with_signature(candidates: list[dict[str, Any]], signature: str) -> dict[str, Any] \| None`
+`def resolve_with_signature(reference: SymbolReference, candidates: list[dict[str, Any]], *, max_candidates: int) -> ResolutionResult`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `candidates` | `list[dict[str, Any]]` | Ambiguous candidate symbols sharing a name. |
-| `signature` | `str` | The caller-supplied signature to match against. |
+| `reference` | `SymbolReference` | The parsed caller reference (with `signature` populated). |
+| `candidates` | `list[dict[str, Any]]` | Raw candidate rows. |
+| `max_candidates` | `int` | The bound applied to the ambiguous candidate list. |
 
 # Returns
 
-The uniquely matching candidate, or `None` if none/multiple match.
+A `ResolutionResult`.

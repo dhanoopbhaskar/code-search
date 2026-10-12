@@ -21,8 +21,8 @@ envelope when applicable.
 
 # Key Classes
 
-- [`IndexChangeDetector`](/types/IndexChangeDetector.md) — tracks index metadata (version, mtime, status) and decides reload vs. envelope response on detecting mtime changes.
+- [`IndexChangeDetector`](../../types/IndexChangeDetector.md) — tracks index metadata (version, mtime, status) and decides reload vs. envelope response on detecting mtime changes.
 
 # Key Functions
 
-- [`index_mtime`](/functions/index_mtime.md) — extract the index's last build time from the metadata store.
+- [`index_mtime`](../../functions/index_mtime.md) — extract the index's last build time from the metadata store.

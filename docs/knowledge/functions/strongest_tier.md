@@ -13,9 +13,11 @@ sources:
 
 # Overview
 
-Returns the highest-priority [`MatchTier`](/types/MatchTier.md) from an
-iterable of tiers (EXACT > PREFIX > FUZZY > NONE). Defined in
-[`engine.match_boost`](/modules/engine/match_boost.md).
+Returns the highest-priority [`MatchTier`](../types/MatchTier.md) from an
+iterable of tiers (`none` when empty). Priority follows the enum's integer
+ordering: `exact_fqn` > `exact_symbol` > `exact_filename` > `stem` >
+`path_term` > `none`. Defined in
+[`engine.match_boost`](../modules/engine/match_boost.md).
 
 # Signature
 

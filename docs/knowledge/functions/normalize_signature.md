@@ -15,18 +15,18 @@ sources:
 
 Parses and normalizes a `(params)` signature string for overload
 disambiguation comparison. Defined in
-[`engine.symbol_resolution`](/modules/engine/symbol_resolution.md).
+[`engine.symbol_resolution`](../modules/engine/symbol_resolution.md).
 
 # Signature
 
-`def normalize_signature(signature: str) -> str`
+`def normalize_signature(signature: str \| None) -> dict[str, Any] \| None`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `signature` | `str` | The raw `(params)` signature text. |
+| `signature` | `str \| None` | The raw `(params)` signature string to parse, or `None`. |
 
 # Returns
 
-The normalized signature string.
+A dict with `arity`, `param_types`, and `normalized` keys, or `None` when *signature* is absent or unparseable.

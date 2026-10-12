@@ -15,19 +15,22 @@ sources:
 
 Evidence classifier: detects whether a symbol looks like a web
 controller/route endpoint (e.g. annotated with `@GetMapping`,
-`@app.route`), a high-trust signal for authorization-intent queries.
-Defined in [`engine.confidence`](/modules/engine/confidence.md).
+`@PostMapping`, or a file whose stem ends with `Controller`), a high-trust
+signal for authorization-intent queries.
+Defined in [`engine.confidence`](../modules/engine/confidence.md).
 
 # Signature
 
-`def is_controller_endpoint(symbol: dict[str, Any]) -> bool`
+`def is_controller_endpoint(is_definition: bool, content: str, file_path: str) -> bool`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
-| `symbol` | `dict[str, Any]` | The candidate symbol record. |
+| `is_definition` | `bool` | Whether the chunk is the symbol's definition site. |
+| `content` | `str` | The chunk source (already in memory). |
+| `file_path` | `str` | The containing file path. |
 
 # Returns
 
-`True` if the symbol carries controller/endpoint markers.
+`True` when the chunk is a controller endpoint definition.

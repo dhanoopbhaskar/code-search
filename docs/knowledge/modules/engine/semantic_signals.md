@@ -22,14 +22,14 @@ fusion.
 
 # Key Classes
 
-- [`SemanticSignals`](/types/SemanticSignals.md) — computed signals between anchor and candidate.
-- [`RelevanceScore`](/types/RelevanceScore.md) — final combined relevance score.
+- [`SemanticSignals`](../../types/SemanticSignals.md) — computed signals between anchor and candidate.
+- [`RelevanceScore`](../../types/RelevanceScore.md) — final combined relevance score.
 
 # Key Functions
 
-- [`compute_package_overlap`](/functions/compute_package_overlap.md) — Jaccard similarity of namespace directory segments.
-- [`compute_type_sharing`](/functions/compute_type_sharing.md) — normalized signature comparison score.
-- [`compute_call_proximity`](/functions/compute_call_proximity.md) — inverse call-graph depth between two symbols.
-- [`compute_semantic_score`](/functions/compute_semantic_score.md) — compute all three signals for a candidate.
-- [`compute_final_score`](/functions/compute_final_score.md) — fuse semantic signals with vector similarity.
-- [`rerank_with_semantic`](/functions/rerank_with_semantic.md) — rerank vector results using semantic signals.
+- [`compute_package_overlap`](../../functions/compute_package_overlap.md) — Jaccard similarity of namespace directory segments.
+- [`compute_type_sharing`](../../functions/compute_type_sharing.md) — normalized signature comparison score.
+- [`compute_call_proximity`](../../functions/compute_call_proximity.md) — inverse call-graph depth between two symbols.
+- [`compute_semantic_score`](../../functions/compute_semantic_score.md) — compute all three signals for a candidate.
+- [`compute_final_score`](../../functions/compute_final_score.md) — fuse semantic signals with vector similarity.
+- [`rerank_with_semantic`](../../functions/rerank_with_semantic.md) — rerank vector results using semantic signals.

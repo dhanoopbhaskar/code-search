@@ -1,7 +1,7 @@
 ---
 type: Overview
 title: "Environment Configuration"
-description: "Full enumeration of CODE_SEARCH_* environment variables backing the Settings dataclass."
+description: "Full enumeration of CODE_SEARCH_* environment variables: the 129 Settings fields plus the separately-read language-config path."
 resource: src/engine/config.py
 tags: [config, environment, settings]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
@@ -14,11 +14,11 @@ sources:
 # Overview
 
 All runtime configuration for `code-search` is read from `CODE_SEARCH_*`
-environment variables at process start, via the [`Settings`](/types/Settings.md)
-dataclass ([`engine.config`](/modules/engine/config.md)). There is no
+environment variables at process start, via the [`Settings`](../types/Settings.md)
+dataclass ([`engine.config`](../modules/engine/config.md)). There is no
 config file for these values (a separate `CODE_SEARCH_LANGUAGE_CONFIG`
 path controls per-language parsing settings via
-[`LanguageConfig`](/types/LanguageConfig.md) instead). Booleans accept
+[`LanguageConfig`](../types/LanguageConfig.md) instead). Booleans accept
 `true`/`1`/`yes` (case-insensitive) unless noted.
 
 # Core Paths
@@ -26,10 +26,10 @@ path controls per-language parsing settings via
 | Variable | Default | Purpose |
 |---|---|---|
 | `CODE_SEARCH_CONTEXT_DIR` | `.context` | Root directory for the index, vector store, and graph database. |
-| `CODE_SEARCH_LOG_LEVEL` | `WARNING` | Logging verbosity for the engine and CLI. |
+| `CODE_SEARCH_LOG_LEVEL` | `WARNING` | Logging verbosity for the engine and CLI; defined but currently not consumed by the engine (the CLI configures logging from `--verbose`). |
 | `CODE_SEARCH_DATA_DIR` | (none) | Overrides the data directory used to locate bundled model assets. |
 | `CODE_SEARCH_MODEL_PATH` | (none) | Explicit override path to a local embedding model directory. |
-| `CODE_SEARCH_LANGUAGE_CONFIG` | `language_config.json` | Path to the per-language parsing config consumed by [`LanguageConfig`](/types/LanguageConfig.md). |
+| `CODE_SEARCH_LANGUAGE_CONFIG` | `language_config.json` | Path to the per-language parsing config consumed by [`LanguageConfig`](../types/LanguageConfig.md). |
 
 # Embedding Model
 
@@ -63,10 +63,10 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_CONFIG_CONTENT_BOOST` | `1.35` | Score multiplier for config-classified chunks on a config-scented query. |
 | `CODE_SEARCH_CONFIG_INJECT_BOOST` | `0.75` | Multiplier applied when injecting config chunks into results. |
 | `CODE_SEARCH_CONFIG_INJECT_PRIMARY_EXTRA` | `0.3` | Extra boost for the primary injected config chunk. |
-| `CODE_SEARCH_DOCS_CONTENT_BOOST` | `1.2` | Score multiplier for docs-classified chunks. |
+| `CODE_SEARCH_DOCS_CONTENT_BOOST` | `1.2` | Score multiplier for docs-classified chunks; defined but currently not consumed by the engine. |
 | `CODE_SEARCH_NON_CODE_LANGUAGE_DEMOTE` | `0.7` | Demotion multiplier for config/docs chunks under an active code-language query context. |
 | `CODE_SEARCH_CONFIG_SCENT_WORDS` | (built-in list) | Vocabulary that triggers config-scent detection. |
-| `CODE_SEARCH_EXHAUSTIVE_MATCHING_MODE` | `all_tokens` | `all_tokens` (AND) or `any_token` (OR) line-matching semantics. |
+| `CODE_SEARCH_EXHAUSTIVE_MATCHING_MODE` | `all_tokens` | `literal`, `all_tokens` (AND), or `any_token` (OR) line-matching semantics. |
 | `CODE_SEARCH_BORDERLINE_FILTER` | `false` | Drop low-confidence-band results instead of tagging them. |
 | `CODE_SEARCH_FIND_RELATED_EXCLUDE_FILE` | `true` | Exclude the anchor chunk's own file from `find_related` neighbors. |
 | `CODE_SEARCH_FIND_RELATED_SAME_FILE_PENALTY` | `0.5` | Down-weight applied to same-file neighbors when exclusion is off. |
@@ -78,8 +78,8 @@ path controls per-language parsing settings via
 | Variable | Default | Purpose |
 |---|---|---|
 | `CODE_SEARCH_MIN_VECTOR_COSINE` | `0.25` | Minimum cosine similarity for a vector hit to count. |
-| `CODE_SEARCH_BM25_K1` | `1.5` | BM25 term-frequency saturation parameter. |
-| `CODE_SEARCH_BM25_B` | `0.75` | BM25 length-normalization parameter. |
+| `CODE_SEARCH_BM25_K1` | `1.5` | BM25 term-frequency saturation parameter; defined but currently not consumed by the engine (FTS5 `bm25()` uses fixed built-in constants). |
+| `CODE_SEARCH_BM25_B` | `0.75` | BM25 length-normalization parameter; defined but currently not consumed by the engine (FTS5 `bm25()` uses fixed built-in constants). |
 | `CODE_SEARCH_BM25_CONTENT_WEIGHT` | `1.0` | Weight of the content field in the FTS5 query. |
 | `CODE_SEARCH_BM25_SUBWORDS_WEIGHT` | `0.6` | Weight of the subwords field. |
 | `CODE_SEARCH_BM25_FQN_WEIGHT` | `0.5` | Weight of the fully-qualified-name field. |
@@ -109,8 +109,8 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_TOP_VECTOR_FLOOR` | `0.5` | Minimum top vector score to trust vector-only evidence. |
 | `CODE_SEARCH_EXPANSION_FILE` | `""` | Path to a custom query-expansion synonym file. |
 | `CODE_SEARCH_EXACT_MATCH_BOOST` | `0.5` | Boost applied when a query token exactly matches indexed content. |
-| `CODE_SEARCH_LANGUAGE_SCOPE_MODE` | `demote` | How out-of-scope-language results are treated (`demote` vs. exclude). |
-| `CODE_SEARCH_LANGUAGE_SCOPE_PENALTY` | `0.5` | Penalty multiplier applied under `demote` mode. |
+| `CODE_SEARCH_LANGUAGE_SCOPE_MODE` | `demote` | Intended handling for out-of-scope-language results (`demote` vs. exclude); defined but currently not consumed by the engine. |
+| `CODE_SEARCH_LANGUAGE_SCOPE_PENALTY` | `0.5` | Intended penalty multiplier under `demote` mode; defined but currently not consumed by the engine. |
 
 # Rank-Class Weights
 
@@ -118,7 +118,7 @@ path controls per-language parsing settings via
 |---|---|---|
 | `CODE_SEARCH_RESOURCE_DEBOOST` | `0.35` | Score multiplier for resource-classified chunks. |
 | `CODE_SEARCH_BOILERPLATE_DEBOOST` | `0.65` | Score multiplier for boilerplate-classified chunks. |
-| `CODE_SEARCH_MIN_LIFT` | `0.05` | Minimum score lift required to promote a demoted chunk back up. |
+| `CODE_SEARCH_MIN_LIFT` | `0.05` | Minimum separation enforced between de-boosted and code-class weights. |
 | `CODE_SEARCH_RESOURCE_INTENT_WORDS` | (built-in list) | Query words indicating deliberate resource-file intent. |
 
 # Exact Pre-Check / Score Breakdown / Confidence
@@ -135,12 +135,12 @@ path controls per-language parsing settings via
 | Variable | Default | Purpose |
 |---|---|---|
 | `CODE_SEARCH_COHERENCE_BONUS` | `0.05` | Bonus for chunks whose file has multiple coherent matches. |
-| `CODE_SEARCH_CONFIG_SCENT_BOOST` | `1.5` | Boost for config-scented query matches. |
-| `CODE_SEARCH_DDL_SCENT_BOOST` | `1.8` | Boost for DDL-scented query matches. |
-| `CODE_SEARCH_SUGGEST_EDIT_DISTANCE` | `2` | Max edit distance for symbol "did you mean" suggestions. |
-| `CODE_SEARCH_DEFINITION_BOOST` | `1.2` | [`Reranker`](/types/Reranker.md) boost for definition chunks. |
+| `CODE_SEARCH_CONFIG_SCENT_BOOST` | `1.5` | Boost for config-scented query matches; defined but currently not consumed by the engine (the scent detector hard-codes `1.5`). |
+| `CODE_SEARCH_DDL_SCENT_BOOST` | `1.8` | Boost for DDL-scented query matches; defined but currently not consumed by the engine (the scent detector hard-codes `1.8`). |
+| `CODE_SEARCH_SUGGEST_EDIT_DISTANCE` | `2` | Max edit distance for symbol "did you mean" suggestions; defined but currently not consumed by the engine (the resolver keeps its own `2` default). |
+| `CODE_SEARCH_DEFINITION_BOOST` | `1.2` | [`Reranker`](../types/Reranker.md) boost for definition chunks. |
 | `CODE_SEARCH_NOISE_PENALTY` | `0.5` | Reranker penalty for noisy/test-like chunks. |
-| `CODE_SEARCH_NON_CANONICAL_PENALTY` | `0.25` | Reranker penalty for non-canonical duplicate definitions. |
+| `CODE_SEARCH_NON_CANONICAL_PENALTY` | `0.25` | Reranker penalty for chunks flagged non-canonical (examples/legacy/generated/mocks). |
 
 # Session-Based Personalization
 
@@ -150,21 +150,21 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_DECAY_CONSTANT` | `0.1` | Exponential decay constant applied to session weighting. |
 | `CODE_SEARCH_SESSION_WRITE_WEIGHT` | `1.0` | Weight given to files the session has written. |
 | `CODE_SEARCH_SESSION_READ_WEIGHT` | `0.7` | Weight given to files the session has read. |
-| `CODE_SEARCH_GIT_TIMEOUT` | `10` | Timeout (seconds) for git subprocess calls used in session context. |
+| `CODE_SEARCH_GIT_TIMEOUT` | `10` | Timeout (seconds) for git subprocess calls used in session context; defined but currently not consumed by the engine (the session code hard-codes `10`). |
 
 # Indexing, Watcher, Freshness, Graph, Metrics
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `CODE_SEARCH_LOCK_TIMEOUT` | `30.0` | Timeout for acquiring the index lock. |
-| `CODE_SEARCH_MAX_CHUNK_LINES` | `100` | Maximum lines per indexed chunk. |
-| `CODE_SEARCH_WATCH_DEBOUNCE` | `1.0` | Debounce window (seconds) for [`FileWatcher`](/types/FileWatcher.md). |
+| `CODE_SEARCH_MAX_CHUNK_LINES` | `100` | Maximum lines per indexed chunk; defined but currently not consumed by the engine (the chunker uses a hard-coded default of 100). |
+| `CODE_SEARCH_WATCH_DEBOUNCE` | `1.0` | Debounce window (seconds) for [`FileWatcher`](../types/FileWatcher.md). |
 | `CODE_SEARCH_WATCH_POLL_INTERVAL` | `1.0` | Polling interval (seconds) for the file watcher. |
 | `CODE_SEARCH_FRESHNESS_TTL_SECONDS` | `5.0` | Cache TTL for computed freshness signals; `0` disables caching. |
 | `CODE_SEARCH_MAX_GRAPH_DEPTH` | `5` | Maximum traversal depth for call-graph queries. |
-| `CODE_SEARCH_CALL_GRAPH_LIMIT` | `50` | Maximum nodes returned per call-graph query. |
+| `CODE_SEARCH_CALL_GRAPH_LIMIT` | `50` | Maximum nodes returned per call-graph query; defined but currently not consumed by the engine. |
 | `CODE_SEARCH_MAX_RESOLUTION_CANDIDATES` | `10` | Maximum candidates considered when resolving a symbol reference. |
-| `CODE_SEARCH_METRICS_WINDOW_SIZE` | `1000` | Rolling window size for [`MetricsCollector`](/types/MetricsCollector.md) latency percentiles. |
+| `CODE_SEARCH_METRICS_WINDOW_SIZE` | `1000` | Rolling window size for [`MetricsCollector`](../types/MetricsCollector.md) latency percentiles. |
 
 # MCP Server / Display
 
@@ -195,7 +195,7 @@ path controls per-language parsing settings via
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CODE_SEARCH_MATCH_BOOST_ENABLED` | `true` | Enables the additive [`BoostVerdict`](/types/BoostVerdict.md) layer. |
+| `CODE_SEARCH_MATCH_BOOST_ENABLED` | `true` | Enables the additive [`BoostVerdict`](../types/BoostVerdict.md) layer. |
 | `CODE_SEARCH_MATCH_BOOST_CAP` | `2.0` | Upper bound on total per-chunk match boost. |
 | `CODE_SEARCH_MATCH_BOOST_EXACT_FQN` | `2.0` | Boost multiplier for exact FQN match. |
 | `CODE_SEARCH_MATCH_BOOST_EXACT_SYMBOL` | `1.5` | Boost multiplier for exact symbol match. |
@@ -258,5 +258,5 @@ path controls per-language parsing settings via
 
 # See Also
 
-- [`Settings`](/types/Settings.md) — the dataclass these variables populate.
-- [Build System](/config/build-system.md)
+- [`Settings`](../types/Settings.md) — the dataclass these variables populate.
+- [Build System](build-system.md)

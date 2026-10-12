@@ -15,7 +15,7 @@ sources:
 
 Classifies a query lexically into the documentation, configuration, or
 neutral content intent, pure and deterministic. Defined in
-[`engine.intent_detection`](/modules/engine/intent_detection.md).
+[`engine.intent_detection`](../modules/engine/intent_detection.md).
 
 # Signature
 
@@ -25,8 +25,8 @@ neutral content intent, pure and deterministic. Defined in
 
 | Name | Type | Description |
 |---|---|---|
-| `query` | `str` | The raw query text. |
+| `query` | `str` | The user query text. |
 
 # Returns
 
-The detected [`ContentIntent`](/types/ContentIntent.md).
+The classified `ContentIntent`.

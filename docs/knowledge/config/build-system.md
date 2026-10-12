@@ -39,7 +39,7 @@ Optional dependency groups (`[project.optional-dependencies]`):
 # Entry Point
 
 `code-search = "src.cli.main:main"` — installs the `code-search` console
-script backed by [`main`](/functions/main.md).
+script backed by [`main`](../functions/main.md).
 
 # Tooling Configuration
 
@@ -76,11 +76,12 @@ script backed by [`main`](/functions/main.md).
 - `scripts/bundle.py` — builds the portable/offline install tarball.
 - `scripts/install-from-bundle.py` / `.sh` — installs `code-search` from
   a pre-built bundle on an air-gapped machine.
-- `scripts/benchmark.sh` — runs the benchmark test suite
-  (`tests/benchmarks/`).
+- `scripts/benchmark.sh` — offline search-robustness/transparency
+  benchmark driver: re-indexes a corpus and runs the S1–S10/E1–E5 battery
+  (no pytest invocation).
 - `scripts/check_comment_refs.py` — validates that in-code comment
   references stay consistent (repo-specific lint helper).
 
 # See Also
 
-- [Environment Configuration](/config/environment.md)
+- [Environment Configuration](environment.md)

@@ -21,10 +21,10 @@ why documentation was excluded) in search response envelopes.
 
 # Key Classes
 
-- [`ContentIntent`](/types/ContentIntent.md) — `StrEnum` for the content axis a query targets (`DOCS`, `CONFIG`, `NEUTRAL`).
+- [`ContentIntent`](../../types/ContentIntent.md) — `StrEnum` for the content axis a query targets (`DOCS`, `CONFIG`, `NEUTRAL`).
 
 # Key Functions
 
-- [`classify_content_intent`](/functions/classify_content_intent.md) — classify a query lexically into docs/config/neutral.
-- [`scope_override`](/functions/scope_override.md) — the neutral scope token that would include the intent's content type.
-- [`build_scope_signal`](/functions/build_scope_signal.md) — generate a surface-neutral scope message explaining an exclusion.
+- [`classify_content_intent`](../../functions/classify_content_intent.md) — classify a query lexically into docs/config/neutral.
+- [`scope_override`](../../functions/scope_override.md) — the neutral scope token that would include the intent's content type.
+- [`build_scope_signal`](../../functions/build_scope_signal.md) — generate a surface-neutral scope message explaining an exclusion.

@@ -13,14 +13,14 @@ sources:
 
 # Overview
 
-Client for connecting to and querying a running [`QueryDaemon`](/types/QueryDaemon.md)
+Client for connecting to and querying a running [`QueryDaemon`](QueryDaemon.md)
 over its local socket, used by the CLI to avoid re-loading the index
-per-invocation. Defined in [`engine.daemon`](/modules/engine/daemon.md).
+per-invocation. Defined in [`engine.daemon`](../modules/engine/daemon.md).
 
 # Methods
 
 | Method | Description |
 |---|---|
-| `__init__(self, socket_path: Path) -> None` | Initialize the client for a given daemon socket path. |
-| `is_available() -> bool` | Return whether a daemon is currently listening on the socket. |
-| `send_request(self, request: dict[str, Any]) -> dict[str, Any]` | Send a request to the daemon and return its response. |
+| `__init__(socket_path: Path, timeout: float = 30.0) -> None` | Create a client for the daemon listening on *socket_path*. |
+| `is_running(socket_path: Path) -> bool` | Return whether a daemon socket file currently exists at *socket_path*. |
+| `request(action: str, params: dict[str, Any] \| None = None) -> dict[str, Any]` | Send one request to the daemon and return its parsed response. |

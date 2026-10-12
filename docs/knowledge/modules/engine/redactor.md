@@ -26,13 +26,13 @@ secret detection. `REDACTED_PLACEHOLDER = "[REDACTED]"`.
 
 # Key Classes
 
-- [`Redactor`](/types/Redactor.md) — regex-based secret redactor that applies patterns to text and tracks redaction counts.
+- [`Redactor`](../../types/Redactor.md) — regex-based secret redactor that applies patterns to text and tracks redaction counts.
 
 # Key Functions
 
-- [`allow_downloads`](/functions/allow_downloads.md) — context manager temporarily allowing outbound socket connections.
-- [`air_gap_enforcement`](/functions/air_gap_enforcement.md) — context manager blocking all outbound socket connections.
-- [`verify_air_gap`](/functions/verify_air_gap.md) — verify that air-gap enforcement is active.
+- [`allow_downloads`](../../functions/allow_downloads.md) — context manager temporarily allowing outbound socket connections.
+- [`air_gap_enforcement`](../../functions/air_gap_enforcement.md) — context manager blocking all outbound socket connections.
+- [`verify_air_gap`](../../functions/verify_air_gap.md) — verify that air-gap enforcement is active.
 
 # Internal Helpers
 
