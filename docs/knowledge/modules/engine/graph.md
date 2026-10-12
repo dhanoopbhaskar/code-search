@@ -42,4 +42,5 @@ traversal (call graph, inheritance tree, symbol resolution).
 Private helpers implement fuzzy symbol resolution
 (`_resolve_symbol_candidates`, `_rank_symbol_candidates`,
 `_levenshtein`, `_decompose_leaf`) and candidate summarization
-(`_candidate_summary`) used by `EdgeStore.resolve_symbol_definition`.
+(`_candidate_summary`); these are consumed by `SymbolStore.resolve_name`
+(in `symbols.py`), which `EdgeStore.resolve_symbol_definition` delegates to.

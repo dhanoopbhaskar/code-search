@@ -33,7 +33,7 @@ status: draft
 * [IndexMetadataStore](IndexMetadataStore.md) - Key-value store for index metadata (status, version, counts, etc.).
 * [IndexOrchestrator](IndexOrchestrator.md) - Coordinates full and incremental indexing: parsing, symbol/edge extraction, embedding, and FTS population.
 * [IndexStatus](IndexStatus.md) - Enum for index health status (CURRENT, STALE, UNAVAILABLE).
-* [LanguageConfig](LanguageConfig.md) - Operator-supplied overrides of the built-in language definitions (extensions, grammar modules, chunk node types).
+* [LanguageConfig](LanguageConfig.md) - Operator-supplied overrides of the built-in language definitions (extensions and grammar modules).
 * [MCPServer](MCPServer.md) - FastMCP server exposing search and code-navigation tools over stdio.
 * [MatchEvidence](MatchEvidence.md) - Per-result name-matching evidence used by the match-boost pass (match_boost.py variant).
 * [MatchTier](MatchTier.md) - IntEnum ranking the strongest filename/symbol evidence connecting a query to a chunk.

@@ -55,9 +55,10 @@ orchestrator:
    [`VectorSearch`](../types/VectorSearch.md) run independently.
 3. Fusion — [`rrf_fusion`](../functions/rrf_fusion.md) (Reciprocal Rank Fusion)
    merges both result lists.
-4. Quality gate — a multi-signal gate (informative-token coverage, concept
-   signal, exact-token coverage, and top-vector floors) decides whether the
-   fused results are trustworthy enough to return.
+4. Quality gate — before fusion, a multi-signal gate (informative-token
+   coverage, concept signal, exact-token coverage, and top-vector floors)
+   evaluated against the raw BM25 hit count and raw vector results decides
+   whether the retrieval evidence is trustworthy enough to proceed.
 5. Rescue ladder — when the ranked path yields nothing, progressively
    looser tiers ([`_rescue_t1`](../modules/engine/search.md) relaxed lexical,
    then `_rescue_t2` literal substring scan) attempt recovery before

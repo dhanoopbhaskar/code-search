@@ -14,8 +14,8 @@ sources:
 # Overview
 
 Maps each indexed language to its exact sub-word vocabulary set, built
-from the corpus, used for language inference and coverage computation.
-Defined in [`engine.language`](../modules/engine/language.md).
+from the corpus, used for query-language inference. Defined in
+[`engine.language`](../modules/engine/language.md).
 
 # Signature
 

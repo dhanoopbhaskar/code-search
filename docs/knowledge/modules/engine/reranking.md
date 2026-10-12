@@ -16,8 +16,8 @@ sources:
 Result reranking scoring pipeline executed after initial BM25 + vector
 hybrid retrieval. Boosts definitions, penalises test files, applies
 session weights, detects query intent (definition/behavior/authorization),
-and applies file-role-based penalties (model/DTO/assembler/exception/infra
-/dts/barrel).
+and applies role/path-class penalties (model/DTO/assembler/exception/infra
+file roles, plus DTS/barrel path classes).
 
 # Key Classes
 

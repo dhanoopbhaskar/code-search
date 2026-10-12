@@ -14,9 +14,10 @@ sources:
 # Overview
 
 Wraps tree-sitter grammars to parse source files into ASTs across
-multiple languages, producing chunk boundaries used by
-[`SymbolExtractor`](../types/SymbolExtractor.md) and the indexing pipeline.
-Defined in [`engine.parser`](../modules/engine/parser.md).
+multiple languages, producing chunk boundaries consumed by the indexing
+pipeline and parse trees consumed by
+[`SymbolExtractor`](../types/SymbolExtractor.md). Defined in
+[`engine.parser`](../modules/engine/parser.md).
 
 # Methods
 

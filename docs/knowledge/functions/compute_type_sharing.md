@@ -14,7 +14,8 @@ sources:
 # Overview
 
 Computes a normalized signature comparison score measuring shared
-parameter types between two symbols. Defined in
+parameter types between two symbols, with a capped +0.2 bonus when both
+symbols' return types match. Defined in
 [`engine.semantic_signals`](../modules/engine/semantic_signals.md).
 
 # Signature

@@ -13,9 +13,11 @@ sources:
 
 # Overview
 
-Handles the `list-languages` subcommand, printing all
-[`LanguageConfig`](../types/LanguageConfig.md) entries the parser supports.
-Defined in [`cli.main`](../modules/cli/main.md).
+Handles the `list-languages` subcommand, printing each supported language
+with its file extensions and tree-sitter grammar module, sourced from
+`LANGUAGE_MAP` and `LANGUAGE_GRAMMAR_MAP` in
+[`engine.parser`](../modules/engine/parser.md). Defined in
+[`cli.main`](../modules/cli/main.md).
 
 # Signature
 

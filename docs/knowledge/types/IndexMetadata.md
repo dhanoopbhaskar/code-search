@@ -22,9 +22,9 @@ rebuilds since a serving process last loaded the index. Defined in
 | Field | Type | Description |
 |---|---|---|
 | `version` | `str` | Index schema version (default `1.0.0`) recorded in the metadata. |
-| `mtime` | `datetime \| None` | Modification time of the index files; used by server to detect changes. |
-| `timestamp` | `datetime \| None` | UTC timestamp when the index was last built/updated. |
-| `status` | `IndexStatus \| None` | Current index health status. |
+| `mtime` | `datetime` | Modification time of the index files; used by server to detect changes. Defaults to the current time when the constructor's `mtime` argument is `None`. |
+| `timestamp` | `datetime` | UTC timestamp when the index was last built/updated. Defaults to the current time when the constructor's `timestamp` argument is `None`. |
+| `status` | `IndexStatus` | Current index health status. Defaults to `CURRENT`/`UNAVAILABLE` based on whether `mtime` was supplied when the constructor's `status` argument is `None`. |
 
 # Methods
 

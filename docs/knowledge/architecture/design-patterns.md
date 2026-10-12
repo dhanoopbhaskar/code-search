@@ -20,10 +20,12 @@ Recurring architectural and implementation patterns observed across the
 
 Used in [`HybridSearch`](../types/HybridSearch.md)
 ([`engine.search`](../modules/engine/search.md)). Rather than always
-returning the top-k fused results, the pipeline runs fused results through
-a multi-signal quality gate (confidence, lexical coverage, rescue-floor
-checks). If the gate fails, progressively looser "rescue" tiers
-(`_rescue_t1`, `_rescue_t2`) attempt to recover a reasonable answer before
+returning the top-k fused results, the pipeline runs the raw BM25/vector
+retrieval evidence through a multi-signal quality gate (informative-token
+coverage, concept signal, exact-token coverage, and top-vector floors)
+before fusion. If the gate fails,
+progressively looser "rescue" tiers (`_rescue_t1`, `_rescue_t2`) attempt
+to recover a reasonable answer before
 falling back to an explicit `no_match` envelope — preferring an honest "no
 result" over a low-confidence false positive.
 

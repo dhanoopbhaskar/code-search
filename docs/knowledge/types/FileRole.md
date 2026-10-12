@@ -16,10 +16,9 @@ sources:
 `StrEnum` classifying a file's structural role for behavior-intent and
 definition reranking: data-flow plumbing (`MODEL`/`DTO`/`ASSEMBLER`/
 `EXCEPTION`), deployment files (`INFRA`), config/schema (`CONFIG`),
-non-code data (`RESOURCE`), prose (`DOCS`), analysis artifacts
-(`ANALYSIS`), and the `CODE` default. Defined in
-[`engine.classification`](../modules/engine/classification.md); consumed
-by [`Reranker`](Reranker.md).
+prose (`DOCS`), analysis artifacts (`ANALYSIS`), and the `CODE` default.
+Defined in [`engine.classification`](../modules/engine/classification.md);
+consumed by [`Reranker`](Reranker.md).
 
 # Values
 
@@ -32,6 +31,6 @@ by [`Reranker`](Reranker.md).
 | `EXCEPTION` | Exception/error plumbing (demoted under behavior-intent queries). |
 | `INFRA` | Deployment and container files (demoted under code-language queries). |
 | `CONFIG` | Configuration and schema files (boosted for config/DDL-scent queries). |
-| `RESOURCE` | Non-code data files (XML/JSON/YAML/TOML/...). |
+| `RESOURCE` | Defined but not currently emitted by `file_role` (data extensions such as `.xml`/`.json`/`.yaml`/`.toml` resolve `CONFIG`). |
 | `DOCS` | Prose chunks (content type `docs`). |
 | `ANALYSIS` | Repo-local report/analysis artifacts (demoted below shipped content). |

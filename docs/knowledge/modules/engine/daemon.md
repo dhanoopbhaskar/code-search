@@ -17,8 +17,9 @@ Local unix-socket query daemon holding the embedding model and SQLite
 connections warm for repeated CLI invocations, avoiding the per-invocation
 model load cost (0.5-2s on CPU). Handles JSON requests over a unix socket
 (`.context/code-search.sock`) serving search, symbol resolution, graph
-traversal, and related-chunk queries with a full audit trail and
-index-change detection. Implements both the server
+traversal, and related-chunk queries; the `search` action additionally
+writes an audit entry and an index-change/freshness signal (the other
+actions do not). Implements both the server
 ([`QueryDaemon`](../../types/QueryDaemon.md)) and a synchronous client
 ([`DaemonClient`](../../types/DaemonClient.md)) used by CLI forwarding.
 
