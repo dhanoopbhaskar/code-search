@@ -594,3 +594,44 @@ def test_index_codebase_reports_finalization_status(tmp_path: Path) -> None:
     assert "Sweeping stale files" in messages
     assert "Rebuilding keyword index" in messages
     assert "Validating graph edges" in messages
+
+
+def test_chunked_splits_into_bounded_batches() -> None:
+    from code_search.engine.indexer import _chunked
+
+    assert _chunked([], 3) == []
+    assert _chunked(["a", "b", "c"], 5) == [["a", "b", "c"]]
+    assert _chunked(["a", "b", "c", "d", "e"], 2) == [["a", "b"], ["c", "d"], ["e"]]
+
+
+def test_full_index_uses_one_writer_and_suspends_fts_triggers(tmp_path: Path) -> None:
+    """A full build commits per file over one connection, with triggers off."""
+    repo = tmp_path / "writer_repo"
+    (repo / "src").mkdir(parents=True)
+    for i in range(3):
+        (repo / "src" / f"mod{i}.py").write_text(f"def f{i}(): return {i}\n")
+    comps = _build_components(repo)
+    orch = comps["orchestrator"]
+    db = comps["db"]
+
+    with (
+        patch.object(db, "write_connection", wraps=db.write_connection) as writer,
+        patch.object(db, "set_fts_triggers", wraps=db.set_fts_triggers) as triggers,
+    ):
+        orch.index_codebase(root_path=repo, force=True, verbose=False)
+
+    assert writer.call_count == 1
+    assert [call.args[0] for call in triggers.call_args_list] == [False, True]
+
+    with db.connect() as conn:
+        names = {
+            r["name"]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger';").fetchall()
+        }
+        code_count = conn.execute("SELECT COUNT(*) AS n FROM code_chunks;").fetchone()["n"]
+        hits = conn.execute(
+            "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'return';"
+        ).fetchall()
+    assert {"chunks_fts_ai", "chunks_fts_ad", "chunks_fts_au"} <= names
+    assert code_count > 0
+    assert hits, "keyword index was not rebuilt after the suspended-trigger full build"

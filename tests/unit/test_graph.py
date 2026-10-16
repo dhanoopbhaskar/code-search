@@ -893,6 +893,123 @@ def test_fts_metadata_store(db: GraphDatabase) -> None:
     assert meta.get_fts_chunks() == 42
 
 
+def test_connection_uses_synchronous_normal(db: GraphDatabase) -> None:
+    """WAL connections drop the per-commit fsync (synchronous=NORMAL == 1)."""
+    with db.connect() as conn:
+        assert conn.execute("PRAGMA synchronous;").fetchone()[0] == 1
+
+
+def _fts_indexed(db: GraphDatabase, token: str) -> bool:
+    """Return whether *token* is present in the FTS index (not just content).
+
+    ``COUNT(*)`` on an external-content FTS5 table reports the content-table row
+    count, so a ``MATCH`` probe is required to observe trigger maintenance.
+    """
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?;", (token,)
+        ).fetchall()
+    return bool(rows)
+
+
+def test_set_fts_triggers_suspends_and_restores_maintenance(db: GraphDatabase) -> None:
+    """Dropping the triggers halts FTS maintenance; restoring resumes it."""
+    chunk_ddl = (
+        "INSERT INTO code_chunks (fqn, file_path, line_start, line_end, "
+        "content, language) VALUES (?, ?, ?, ?, ?, ?);"
+    )
+    db.set_fts_triggers(False)
+    with db.write_transaction() as conn:
+        conn.execute(chunk_ddl, ("c1", "file1.py", 1, 2, "hello world", "python"))
+    assert not _fts_indexed(db, "hello")
+
+    db.set_fts_triggers(True)
+    with db.write_transaction() as conn:
+        conn.execute(chunk_ddl, ("c2", "file2.py", 1, 2, "second token", "python"))
+    assert _fts_indexed(db, "second")
+
+    assert db.rebuild_fts() == 2
+    assert _fts_indexed(db, "hello")
+
+
+def test_write_connection_commits_only_when_asked(db: GraphDatabase) -> None:
+    """One writer connection spans many commits; rows stay invisible until commit."""
+    insert = (
+        "INSERT INTO symbols (fqn, name, kind, file_path, line_start, line_end, "
+        "column_start, column_end, language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);"
+    )
+    with db.write_connection() as conn:
+        conn.execute(insert, ("a", "a", "function", "a.py", 1, 2, 0, 1, "python"))
+        with db.connect() as reader:
+            assert reader.execute("SELECT COUNT(*) AS n FROM symbols;").fetchone()["n"] == 0
+        conn.commit()
+        with db.connect() as reader:
+            assert reader.execute("SELECT COUNT(*) AS n FROM symbols;").fetchone()["n"] == 1
+
+
+def test_write_connection_rolls_back_uncommitted_work_on_error(db: GraphDatabase) -> None:
+    with pytest.raises(RuntimeError), db.write_connection() as conn:
+        conn.execute(
+            "INSERT INTO symbols (fqn, name, kind, file_path, line_start, line_end, "
+            "column_start, column_end, language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+            ("a", "a", "function", "a.py", 1, 2, 0, 1, "python"),
+        )
+        raise RuntimeError("boom")
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS n FROM symbols;").fetchone()["n"] == 0
+
+
+def test_insert_symbols_batch_reuses_connection_without_committing(
+    db: GraphDatabase,
+) -> None:
+    store = SymbolStore(db)
+    syms = [
+        {
+            "fqn": "m.py::f",
+            "name": "f",
+            "kind": "function",
+            "file_path": "m.py",
+            "line_start": 1,
+            "line_end": 2,
+            "column_start": 0,
+            "column_end": 1,
+            "docstring": None,
+            "language": "python",
+            "parent_fqn": None,
+        }
+    ]
+    with db.write_connection() as conn:
+        id_map = store.insert_symbols_batch(syms, conn=conn)
+        assert id_map["m.py::f"] > 0
+        with db.connect() as reader:
+            assert reader.execute("SELECT COUNT(*) AS n FROM symbols;").fetchone()["n"] == 0
+        conn.commit()
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS n FROM symbols;").fetchone()["n"] == 1
+
+
+def test_insert_edges_batch_reuses_connection_without_committing(
+    populated_db: GraphDatabase,
+) -> None:
+    store = EdgeStore(populated_db)
+    with populated_db.connect() as conn:
+        ids = {r["fqn"]: r["id"] for r in conn.execute("SELECT id, fqn FROM symbols;")}
+    edges = [
+        {
+            "source_symbol_id": ids["module.func_a"],
+            "target_symbol_id": ids["module.func_b"],
+            "edge_type": "CALLS",
+        }
+    ]
+    with populated_db.write_connection() as conn:
+        store.insert_edges_batch(edges, conn=conn)
+        with populated_db.connect() as reader:
+            assert reader.execute("SELECT COUNT(*) AS n FROM graph_edges;").fetchone()["n"] == 0
+        conn.commit()
+        with populated_db.connect() as reader:
+            assert reader.execute("SELECT COUNT(*) AS n FROM graph_edges;").fetchone()["n"] == 1
+
+
 def test_cross_file_edge_batch_resolution(db: GraphDatabase) -> None:
     from code_search.engine.symbols import SymbolStore
 
