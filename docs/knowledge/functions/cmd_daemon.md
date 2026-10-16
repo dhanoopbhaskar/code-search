@@ -2,12 +2,12 @@
 type: Function
 title: "cmd_daemon"
 description: "Handler for the `daemon` subcommand: start/stop/status control of the QueryDaemon."
-resource: src/cli/main.py#cmd_daemon
+resource: code_search/cli/main.py#cmd_daemon
 tags: [cli, function, daemon]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/cli/main.py
+  - resource: code_search/cli/main.py
     id: source-code
 ---
 

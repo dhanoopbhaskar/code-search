@@ -2,12 +2,12 @@
 type: Function
 title: "cmd_download_models"
 description: "Handler for the `download-models` subcommand: fetches the embedding model into the Hugging Face cache."
-resource: src/cli/main.py#cmd_download_models
+resource: code_search/cli/main.py#cmd_download_models
 tags: [cli, function, embeddings]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/cli/main.py
+  - resource: code_search/cli/main.py
     id: source-code
 ---
 

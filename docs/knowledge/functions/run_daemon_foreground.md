@@ -2,12 +2,12 @@
 type: Function
 title: "run_daemon_foreground"
 description: "Run the daemon blocking in the foreground."
-resource: src/engine/daemon.py#run_daemon_foreground
+resource: code_search/engine/daemon.py#run_daemon_foreground
 tags: [daemon, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/daemon.py
+  - resource: code_search/engine/daemon.py
     id: source-code
 ---
 

@@ -2,12 +2,12 @@
 type: Function
 title: "classify_filename_match"
 description: "Per-signal classifier detecting filename-level match strength."
-resource: src/engine/match_boost.py#classify_filename_match
+resource: code_search/engine/match_boost.py#classify_filename_match
 tags: [ranking, match-boost, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/match_boost.py
+  - resource: code_search/engine/match_boost.py
     id: source-code
 ---
 

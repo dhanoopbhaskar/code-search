@@ -2,12 +2,12 @@
 type: Function
 title: "tokenize"
 description: "Tokenization and identifier decomposition of raw text."
-resource: src/engine/search.py#tokenize
+resource: code_search/engine/search.py#tokenize
 tags: [search, tokenization, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/search.py
+  - resource: code_search/engine/search.py
     id: source-code
 ---
 

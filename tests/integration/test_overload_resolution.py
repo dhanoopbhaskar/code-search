@@ -17,8 +17,8 @@ from typing import Any
 
 import pytest
 
-from src.engine.redactor import Redactor
-from src.mcp.server import _definition_payload
+from code_search.engine.redactor import Redactor
+from code_search.mcp.server import _definition_payload
 
 
 @pytest.fixture

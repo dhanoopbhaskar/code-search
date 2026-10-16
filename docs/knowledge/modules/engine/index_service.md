@@ -2,12 +2,12 @@
 type: Module
 title: "engine.index_service"
 description: "Server-side change detection for index staleness via mtime tracking."
-resource: src/engine/index_service.py
+resource: code_search/engine/index_service.py
 tags: [engine, freshness, server]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/index_service.py
+  - resource: code_search/engine/index_service.py
     id: source-code
 ---
 

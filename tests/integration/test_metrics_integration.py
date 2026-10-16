@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from src.engine.metrics import MetricsCollector
+from code_search.engine.metrics import MetricsCollector
 
 
 @pytest.mark.integration

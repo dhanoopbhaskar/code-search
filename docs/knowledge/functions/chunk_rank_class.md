@@ -2,12 +2,12 @@
 type: Function
 title: "chunk_rank_class"
 description: "Classify a chunk as code/boilerplate/resource."
-resource: src/engine/search.py#chunk_rank_class
+resource: code_search/engine/search.py#chunk_rank_class
 tags: [search, ranking, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/search.py
+  - resource: code_search/engine/search.py
     id: source-code
 ---
 

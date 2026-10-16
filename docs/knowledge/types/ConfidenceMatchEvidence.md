@@ -2,12 +2,12 @@
 type: Class
 title: "ConfidenceMatchEvidence"
 description: "Per-result facts used for confidence computation (confidence.py's MatchEvidence, renamed here to avoid collision)."
-resource: src/engine/confidence.py#MatchEvidence
+resource: code_search/engine/confidence.py#MatchEvidence
 tags: [confidence, ranking, dataclass]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/confidence.py
+  - resource: code_search/engine/confidence.py
     id: source-code
 ---
 

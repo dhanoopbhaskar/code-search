@@ -2,12 +2,12 @@
 type: Overview
 title: "Design Patterns"
 description: "Recurring architectural patterns used throughout the code-search engine."
-resource: src/
+resource: code_search/
 tags: [architecture, design-patterns]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/
+  - resource: code_search/
     id: source-code
 ---
 

@@ -2,12 +2,12 @@
 type: Class
 title: "EmbeddingGenerator"
 description: "Wraps the Model2Vec (potion-code-16m-32d) model to generate text embeddings with warm-up tracking."
-resource: src/engine/embeddings.py#EmbeddingGenerator
+resource: code_search/engine/embeddings.py#EmbeddingGenerator
 tags: [embeddings, model2vec, model]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/embeddings.py
+  - resource: code_search/engine/embeddings.py
     id: source-code
 ---
 

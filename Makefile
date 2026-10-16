@@ -64,7 +64,7 @@ download-deps:
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -rf *.egg-info
-	rm -rf src/*.egg-info
+	rm -rf code_search/*.egg-info
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name '*.pyc' -delete
 	find . -type f -name '*.pyo' -delete

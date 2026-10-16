@@ -2,12 +2,12 @@
 type: Function
 title: "derive_enclosing_context"
 description: "Build the enclosing context for a chunk from its per-file symbol list."
-resource: src/engine/embed_representation.py#derive_enclosing_context
+resource: code_search/engine/embed_representation.py#derive_enclosing_context
 tags: [embeddings, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/embed_representation.py
+  - resource: code_search/engine/embed_representation.py
     id: source-code
 ---
 

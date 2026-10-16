@@ -2,12 +2,12 @@
 type: Class
 title: "Reranker"
 description: "Adjusts raw search scores using definition/file-role boosts, test-file and non-canonical penalties, and session weighting."
-resource: src/engine/reranking.py#Reranker
+resource: code_search/engine/reranking.py#Reranker
 tags: [ranking, reranking]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/reranking.py
+  - resource: code_search/engine/reranking.py
     id: source-code
 ---
 

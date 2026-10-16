@@ -18,10 +18,10 @@ from typing import Any
 
 import pytest
 
-from src.engine.config import Settings
-from src.engine.graph import EdgeStore, GraphDatabase
-from src.engine.implementations import find_implementations
-from src.engine.symbols import SymbolStore
+from code_search.engine.config import Settings
+from code_search.engine.graph import EdgeStore, GraphDatabase
+from code_search.engine.implementations import find_implementations
+from code_search.engine.symbols import SymbolStore
 
 # A corpus large enough that the bounded candidate query dominates the ranking.
 _NUM_SYMBOLS = 20000

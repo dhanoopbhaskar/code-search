@@ -2,12 +2,12 @@
 type: Function
 title: "build_parser"
 description: "Build the full argparse tree with all subcommands."
-resource: src/cli/main.py#build_parser
+resource: code_search/cli/main.py#build_parser
 tags: [cli, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/cli/main.py
+  - resource: code_search/cli/main.py
     id: source-code
 ---
 

@@ -8,10 +8,10 @@ from typing import Any
 
 import pytest
 
-from src.engine.config import Settings
-from src.engine.graph import GraphDatabase
-from src.engine.search import BM25Search, HybridSearch
-from src.engine.symbols import SymbolStore
+from code_search.engine.config import Settings
+from code_search.engine.graph import GraphDatabase
+from code_search.engine.search import BM25Search, HybridSearch
+from code_search.engine.symbols import SymbolStore
 
 
 @pytest.fixture
@@ -130,13 +130,13 @@ def daemon_search_index(tmp_path: Path) -> dict[str, Any]:
     import threading
     import time
 
-    from src.context import ContextManager
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import GraphDatabase, IndexMetadataStore
-    from src.engine.indexer import IndexOrchestrator
-    from src.engine.parser import ASTParser
-    from src.engine.search import HybridSearch
-    from src.engine.symbols import SymbolExtractor, SymbolStore
+    from code_search.context import ContextManager
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import GraphDatabase, IndexMetadataStore
+    from code_search.engine.indexer import IndexOrchestrator
+    from code_search.engine.parser import ASTParser
+    from code_search.engine.search import HybridSearch
+    from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
     repo = tmp_path / "bench_repo"
     (repo / "src").mkdir(parents=True)
@@ -180,7 +180,7 @@ def daemon_search_index(tmp_path: Path) -> dict[str, Any]:
     no_model_search = HybridSearch(db, vector_index, embedding_gen, settings, no_model=True)
 
     socket_path = context_dir / "bench.sock"
-    from src.engine.daemon import QueryDaemon
+    from code_search.engine.daemon import QueryDaemon
 
     daemon = QueryDaemon(socket_path, context_dir, verbose=False)
     thread = threading.Thread(target=daemon.start, daemon=True)
@@ -201,7 +201,7 @@ def daemon_search_index(tmp_path: Path) -> dict[str, Any]:
 @pytest.mark.slow
 def test_daemon_warm_search_latency(benchmark: Any, daemon_search_index: dict[str, Any]) -> None:
     """Warm daemon search p50 < 5 s per invocation."""
-    from src.engine.daemon import DaemonClient
+    from code_search.engine.daemon import DaemonClient
 
     client = DaemonClient(daemon_search_index["socket_path"])
     client.request("ping")
@@ -256,8 +256,8 @@ def test_ranked_mode_never_enters_exhaustive_or_enumerate(
     entered during a ranked search."""
     db = large_fts5_index["db"]
     settings = large_fts5_index["settings"]
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.search import HybridSearch
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
 
     search = HybridSearch(
         db,
@@ -282,8 +282,8 @@ def test_ranked_envelope_fields_latency(large_fts5_index: dict[str, Any]) -> Non
     ``no_match``, ``low_confidence``) with no latency regression."""
     import time
 
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.search import HybridSearch
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
 
     settings = large_fts5_index["settings"]
     search = HybridSearch(

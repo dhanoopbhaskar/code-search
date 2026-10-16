@@ -2,12 +2,12 @@
 type: Function
 title: "report_model_status"
 description: "Generate the model warm/cold status report with latency breakdown."
-resource: src/engine/model_status.py#report_model_status
+resource: code_search/engine/model_status.py#report_model_status
 tags: [embeddings, observability, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/model_status.py
+  - resource: code_search/engine/model_status.py
     id: source-code
 ---
 

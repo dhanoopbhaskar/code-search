@@ -6,12 +6,12 @@ from typing import Any
 
 import pytest
 
-from src.engine.config import Settings
-from src.engine.graph import EdgeStore, GraphDatabase, IndexMetadataStore
-from src.engine.parser import ASTParser
-from src.engine.redactor import Redactor
-from src.engine.symbols import SymbolExtractor, SymbolStore
-from src.mcp.server import _call_neighbors_payload, _definition_payload
+from code_search.engine.config import Settings
+from code_search.engine.graph import EdgeStore, GraphDatabase, IndexMetadataStore
+from code_search.engine.parser import ASTParser
+from code_search.engine.redactor import Redactor
+from code_search.engine.symbols import SymbolExtractor, SymbolStore
+from code_search.mcp.server import _call_neighbors_payload, _definition_payload
 
 AMBIGUOUS_FIXTURE = Path(__file__).parent.parent / "fixtures" / "ambiguous_symbols"
 
@@ -20,7 +20,7 @@ AMBIGUOUS_NAMES = ("getBySlug", "save", "register", "generateToken", "favoriteAr
 
 @pytest.fixture
 def ambiguous_components(tmp_path: Path) -> dict[str, Any]:
-    from src.engine.audit import AuditDatabase
+    from code_search.engine.audit import AuditDatabase
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "graph.db", settings)
@@ -160,7 +160,7 @@ def test_cli_json_candidates_match_mcp_payloads(
     """CLI ``--json`` candidate arrays are byte-identical to the MCP payloads."""
     from argparse import Namespace
 
-    from src.cli import main as cli_main
+    from code_search.cli import main as cli_main
 
     monkeypatch.setattr(cli_main, "_initialize_components", lambda _ctx: ambiguous_components)
 

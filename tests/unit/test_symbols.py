@@ -2,10 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from src.engine.config import Settings
-from src.engine.graph import EdgeStore, GraphDatabase
-from src.engine.parser import ASTParser
-from src.engine.symbols import SymbolExtractor, SymbolStore
+from code_search.engine.config import Settings
+from code_search.engine.graph import EdgeStore, GraphDatabase
+from code_search.engine.parser import ASTParser
+from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
 
 @pytest.fixture
@@ -207,7 +207,7 @@ def test_walk_edges_consistent_fqn_format(extractor: SymbolExtractor, tmp_path: 
 
 
 def test_exact_match_first_lookup(db: GraphDatabase) -> None:
-    from src.engine.symbols import SymbolStore
+    from code_search.engine.symbols import SymbolStore
 
     store = SymbolStore(db)
     with db.write_transaction() as conn:
@@ -506,7 +506,7 @@ def test_conventional_fqn_null_for_python(extractor: SymbolExtractor, tmp_path: 
 
 
 def test_dual_lookup_conventional_fqn(db: GraphDatabase) -> None:
-    from src.engine.symbols import SymbolStore
+    from code_search.engine.symbols import SymbolStore
 
     store = SymbolStore(db)
     with db.write_transaction() as conn:
@@ -541,7 +541,7 @@ def test_lookup_by_fqn_source_code_from_file_slice(
     db: GraphDatabase,
     tmp_path: Path,
 ) -> None:
-    from src.engine.symbols import SymbolStore
+    from code_search.engine.symbols import SymbolStore
 
     py_file = tmp_path / "utils.py"
     py_file.write_text("def helper():\n    return 'ok'\n\ndef unused():\n    pass\n")
@@ -562,7 +562,7 @@ def test_lookup_by_fqn_source_code_from_file_slice(
 def test_lookup_by_fqn_missing_file_source_code_empty(
     db: GraphDatabase,
 ) -> None:
-    from src.engine.symbols import SymbolStore
+    from code_search.engine.symbols import SymbolStore
 
     store = SymbolStore(db)
     with db.write_transaction() as conn:
@@ -581,7 +581,7 @@ def test_resolve_symbol_bare_name_and_dotted_suffix(
     db: GraphDatabase,
     tmp_path: Path,
 ) -> None:
-    from src.engine.symbols import SymbolStore
+    from code_search.engine.symbols import SymbolStore
 
     py_file = tmp_path / "service.py"
     py_file.write_text(
@@ -638,7 +638,7 @@ def test_resolve_symbol_bare_name_and_dotted_suffix(
 def test_resolve_symbol_ambiguous_returns_candidates(
     db: GraphDatabase,
 ) -> None:
-    from src.engine.symbols import SymbolStore
+    from code_search.engine.symbols import SymbolStore
 
     store = SymbolStore(db)
     with db.write_transaction() as conn:
@@ -668,7 +668,7 @@ def test_resolve_symbol_near_miss_suggestions(
 ) -> None:
     """A near-miss name returns edit-distance suggestions with
     ``suggestion`` flags instead of a silent zero-candidate failure."""
-    from src.engine.symbols import SymbolStore
+    from code_search.engine.symbols import SymbolStore
 
     store = SymbolStore(db)
     with db.write_transaction() as conn:
@@ -700,7 +700,7 @@ def test_resolve_symbol_prefix_fallback(
     db: GraphDatabase,
 ) -> None:
     """Prefix/substring fallback resolves partial names."""
-    from src.engine.symbols import SymbolStore
+    from code_search.engine.symbols import SymbolStore
 
     store = SymbolStore(db)
     with db.write_transaction() as conn:
@@ -906,7 +906,7 @@ class TestResolveNameEnvelope:
 
 
 def test_normalize_signature_generic_body_not_inflating_arity() -> None:
-    from src.engine.symbols import normalize_signature
+    from code_search.engine.symbols import normalize_signature
 
     sig = normalize_signature("generateToken(Map<String,Object>,String)")
     assert sig is not None
@@ -916,7 +916,7 @@ def test_normalize_signature_generic_body_not_inflating_arity() -> None:
 
 
 def test_normalize_signature_list_generic() -> None:
-    from src.engine.symbols import normalize_signature
+    from code_search.engine.symbols import normalize_signature
 
     sig = normalize_signature("queueNewArticle(Article,List<Tag>)")
     assert sig is not None
@@ -925,7 +925,7 @@ def test_normalize_signature_list_generic() -> None:
 
 
 def test_normalize_signature_whitespace_collapsed() -> None:
-    from src.engine.symbols import normalize_signature
+    from code_search.engine.symbols import normalize_signature
 
     sig = normalize_signature("handle( String ,  int )")
     assert sig is not None
@@ -935,7 +935,7 @@ def test_normalize_signature_whitespace_collapsed() -> None:
 
 
 def test_normalize_signature_no_parens_returns_none() -> None:
-    from src.engine.symbols import normalize_signature
+    from code_search.engine.symbols import normalize_signature
 
     assert normalize_signature("io.spring.TokenService") is None
     assert normalize_signature(None) is None
@@ -943,7 +943,7 @@ def test_normalize_signature_no_parens_returns_none() -> None:
 
 def test_signature_query_resolves_exact_overload(db: GraphDatabase) -> None:
     """Supplying ``(Map<String,Object>,String)`` resolves the 2-arg overload."""
-    from src.engine.symbols import SymbolStore
+    from code_search.engine.symbols import SymbolStore
 
     _insert_generic_fixture(db)
     store = SymbolStore(db)
@@ -954,7 +954,7 @@ def test_signature_query_resolves_exact_overload(db: GraphDatabase) -> None:
 
 
 def test_bare_overloaded_generate_token_is_ambiguous(db: GraphDatabase) -> None:
-    from src.engine.symbols import SymbolStore
+    from code_search.engine.symbols import SymbolStore
 
     _insert_generic_fixture(db)
     store = SymbolStore(db)
@@ -967,7 +967,7 @@ def test_bare_overloaded_generate_token_is_ambiguous(db: GraphDatabase) -> None:
 def test_signature_never_returns_contradicting_overload(db: GraphDatabase) -> None:
     """A signature with no matching overload never resolves exact
     to a contradicting overload — it degrades to an ambiguous overload set."""
-    from src.engine.symbols import SymbolStore
+    from code_search.engine.symbols import SymbolStore
 
     _insert_generic_fixture(db)
     store = SymbolStore(db)

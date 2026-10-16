@@ -2,12 +2,12 @@
 type: Module
 title: "engine.scent_detection"
 description: "Detects configuration/DDL intent signals in queries and returns boost/deprioritization multipliers for ranking."
-resource: src/engine/scent_detection.py
+resource: code_search/engine/scent_detection.py
 tags: [engine, ranking, intent]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/scent_detection.py
+  - resource: code_search/engine/scent_detection.py
     id: source-code
 ---
 

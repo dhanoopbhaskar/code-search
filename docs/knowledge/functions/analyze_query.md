@@ -2,12 +2,12 @@
 type: Function
 title: "analyze_query"
 description: "Build the QueryAnalysis entity for a query (the one shared rule)."
-resource: src/engine/language.py#analyze_query
+resource: code_search/engine/language.py#analyze_query
 tags: [language, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/language.py
+  - resource: code_search/engine/language.py
     id: source-code
 ---
 

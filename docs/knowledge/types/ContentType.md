@@ -2,12 +2,12 @@
 type: Class
 title: "ContentType"
 description: "StrEnum for the content axis an indexed chunk belongs to (code, config, docs)."
-resource: src/engine/classification.py#ContentType
+resource: code_search/engine/classification.py#ContentType
 tags: [classification, content-axis, enum]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/classification.py
+  - resource: code_search/engine/classification.py
     id: source-code
 ---
 

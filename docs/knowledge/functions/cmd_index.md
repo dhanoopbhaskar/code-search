@@ -2,12 +2,12 @@
 type: Function
 title: "cmd_index"
 description: "Handler for the `index` subcommand: builds or rebuilds the code index."
-resource: src/cli/main.py#cmd_index
+resource: code_search/cli/main.py#cmd_index
 tags: [cli, function, indexing]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/cli/main.py
+  - resource: code_search/cli/main.py
     id: source-code
 ---
 

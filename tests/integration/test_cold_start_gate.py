@@ -36,8 +36,8 @@ def gate_components(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
 @pytest.fixture
 def cold_generator(gate_components: dict[str, Any]) -> Iterator[Any]:
     """A fresh generator over the gate index, with a controlled cold state."""
-    from src.engine import embeddings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine import embeddings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
 
     saved_instance = embeddings._model_instance
     saved_path = embeddings._loaded_model_path
@@ -70,7 +70,7 @@ def test_reduced_first_query_within_budget_and_labelled(
     gate_components: dict[str, Any], cold_generator: dict[str, Any]
 ) -> None:
     """The reduced first query returns under budget, labelled."""
-    from src.engine.search import HybridSearch
+    from code_search.engine.search import HybridSearch
 
     search = HybridSearch(
         gate_components["db"],
@@ -104,9 +104,9 @@ def test_concurrent_first_queries_trigger_one_load(
     gate_components: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Concurrent first queries trigger exactly one model load."""
-    from src.engine import embeddings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.search import HybridSearch
+    from code_search.engine import embeddings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
 
     original = embeddings._load_model
     state = {"loads": 0}
@@ -161,8 +161,8 @@ def test_missing_model_degrades_promptly_without_hanging(
     """An unusable vector layer degrades promptly, never hangs."""
     from pathlib import Path
 
-    from src.engine.embeddings import VectorIndex
-    from src.engine.search import HybridSearch
+    from code_search.engine.embeddings import VectorIndex
+    from code_search.engine.search import HybridSearch
 
     context_dir = Path(gate_components["context_dir"])
     empty = VectorIndex(context_dir / "empty.bin", context_dir / "empty.meta.json")
@@ -182,8 +182,8 @@ def test_repeated_resets_do_not_accumulate_loads(
     gate_components: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Repeated warm/reset cycles re-warm without accumulating duplicate loads."""
-    from src.engine import embeddings
-    from src.engine.embeddings import EmbeddingGenerator
+    from code_search.engine import embeddings
+    from code_search.engine.embeddings import EmbeddingGenerator
 
     original = embeddings._load_model
     state = {"loads": 0}
@@ -215,8 +215,8 @@ def test_repeated_resets_do_not_accumulate_loads(
 
 def test_fast_profile_withheld_from_user_surface(tmp_path: Path) -> None:
     """The fast profile is withheld without a qualifying candidate."""
-    from src.cli.main import _check_model_profile
-    from src.engine.config import Settings
+    from code_search.cli.main import _check_model_profile
+    from code_search.engine.config import Settings
 
     assert _check_model_profile(Settings(context_dir=tmp_path, model_profile="default")) is None
     assert _check_model_profile(Settings(context_dir=tmp_path, model_profile="fast")) == 1

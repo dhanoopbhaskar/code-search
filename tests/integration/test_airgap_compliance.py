@@ -8,7 +8,7 @@ import pytest
 
 
 def test_airgap_patches_socket() -> None:
-    from src.engine.redactor import air_gap_enforcement
+    from code_search.engine.redactor import air_gap_enforcement
 
     with air_gap_enforcement():
         import socket
@@ -25,7 +25,7 @@ def test_airgap_patches_socket() -> None:
 
 
 def test_airgap_verify_function() -> None:
-    from src.engine.redactor import verify_air_gap
+    from code_search.engine.redactor import verify_air_gap
 
     result = verify_air_gap()
     assert result is True
@@ -40,7 +40,7 @@ def test_airgap_no_outbound_on_import() -> None:
             sys.executable,
             "-c",
             "import sys; sys.path.insert(0, '.'); "
-            "from src.engine.redactor import verify_air_gap; "
+            "from code_search.engine.redactor import verify_air_gap; "
             "assert verify_air_gap(), 'Air-gap check failed'",
         ],
         capture_output=True,
@@ -51,7 +51,7 @@ def test_airgap_no_outbound_on_import() -> None:
 
 
 def test_redact_then_search_integration() -> None:
-    from src.engine.redactor import Redactor
+    from code_search.engine.redactor import Redactor
 
     redactor = Redactor()
 
@@ -90,8 +90,8 @@ def test_redact_then_search_integration() -> None:
 
 
 def test_audit_redact_roundtrip(tmp_path: Path) -> None:
-    from src.engine.audit import AuditDatabase
-    from src.engine.redactor import Redactor
+    from code_search.engine.audit import AuditDatabase
+    from code_search.engine.redactor import Redactor
 
     audit_db = AuditDatabase(tmp_path / "audit.db")
     audit_db.initialize()
@@ -124,7 +124,7 @@ def test_cli_main_wraps_with_air_gap(tmp_path: Path) -> None:
         [
             sys.executable,
             "-m",
-            "src.cli.main",
+            "code_search.cli.main",
             "list-languages",
         ],
         capture_output=True,
@@ -144,7 +144,7 @@ def test_cli_airgap_blocks_network(tmp_path: Path) -> None:
         textwrap.dedent("""\
             import sys
             sys.path.insert(0, '.')
-            from src.engine.redactor import air_gap_enforcement
+            from code_search.engine.redactor import air_gap_enforcement
 
             with air_gap_enforcement():
                 import socket
@@ -169,7 +169,7 @@ def test_cli_airgap_blocks_network(tmp_path: Path) -> None:
 def test_mcp_server_imports_air_gap() -> None:
     import inspect
 
-    from src.cli import main as cli_main
+    from code_search.cli import main as cli_main
 
     source = inspect.getsource(cli_main.cmd_serve)
     assert "air_gap_enforcement" in source
@@ -177,7 +177,7 @@ def test_mcp_server_imports_air_gap() -> None:
 
 def test_match_boost_query_makes_no_outbound_call(indexed_match_boost: dict[str, Any]) -> None:
     """A ranked query exercising the match-boost layer makes no outbound call."""
-    from src.engine.redactor import air_gap_enforcement
+    from code_search.engine.redactor import air_gap_enforcement
 
     with air_gap_enforcement():
         envelope = indexed_match_boost["search"].search("README", limit=5, content="docs")
@@ -194,9 +194,9 @@ def test_daemon_autostart_is_local_only(tmp_path: Path, monkeypatch: pytest.Monk
     """
     import argparse
 
-    from src.cli.main import _ensure_resident_service
-    from src.engine.daemon import default_socket_path
-    from src.engine.redactor import air_gap_enforcement
+    from code_search.cli.main import _ensure_resident_service
+    from code_search.engine.daemon import default_socket_path
+    from code_search.engine.redactor import air_gap_enforcement
 
     captured: dict[str, Any] = {}
 
@@ -225,7 +225,9 @@ def test_match_boost_module_imports_are_local() -> None:
     """``match_boost.py`` imports no network or third-party dependency."""
     import ast
 
-    source = (Path(__file__).resolve().parents[2] / "src" / "engine" / "match_boost.py").read_text()
+    source = (
+        Path(__file__).resolve().parents[2] / "code_search" / "engine" / "match_boost.py"
+    ).read_text()
     modules: set[str] = set()
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):

@@ -2,12 +2,12 @@
 type: Function
 title: "build_symbol_fqn"
 description: "Construct a symbol's fully-qualified name."
-resource: src/engine/symbols.py#build_symbol_fqn
+resource: code_search/engine/symbols.py#build_symbol_fqn
 tags: [symbols, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/symbols.py
+  - resource: code_search/engine/symbols.py
     id: source-code
 ---
 

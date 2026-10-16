@@ -2,12 +2,12 @@
 type: Function
 title: "is_borderline"
 description: "Whether a confidence band is borderline (low)."
-resource: src/engine/confidence.py#is_borderline
+resource: code_search/engine/confidence.py#is_borderline
 tags: [confidence, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/confidence.py
+  - resource: code_search/engine/confidence.py
     id: source-code
 ---
 

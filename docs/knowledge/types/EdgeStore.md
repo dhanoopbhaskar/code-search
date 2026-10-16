@@ -2,12 +2,12 @@
 type: Class
 title: "EdgeStore"
 description: "High-level CRUD for call-graph edges and traversal queries."
-resource: src/engine/graph.py#EdgeStore
+resource: code_search/engine/graph.py#EdgeStore
 tags: [graph, edges, traversal]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/graph.py
+  - resource: code_search/engine/graph.py
     id: source-code
 ---
 

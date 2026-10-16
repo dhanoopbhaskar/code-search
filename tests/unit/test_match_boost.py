@@ -6,7 +6,7 @@ bounding, demotion withholding, and generic-stem dampening.
 
 from __future__ import annotations
 
-from src.engine.match_boost import (
+from code_search.engine.match_boost import (
     EXACT_TIERS,
     BoostVerdict,
     MatchEvidence,

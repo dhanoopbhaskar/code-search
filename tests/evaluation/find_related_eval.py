@@ -18,7 +18,7 @@ from typing import Any
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.mcp.server import _find_related_payload
+from code_search.mcp.server import _find_related_payload
 from tests.conftest import FIXTURES_DIR, _indexed_components
 
 # Ground truth for relevance fixture queries

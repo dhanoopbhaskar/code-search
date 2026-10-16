@@ -2,12 +2,12 @@
 type: Module
 title: "engine.match_boost"
 description: "Pure filename/exact-match classification and bounded boost math for search ranking."
-resource: src/engine/match_boost.py
+resource: code_search/engine/match_boost.py
 tags: [engine, ranking, match-boost]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/match_boost.py
+  - resource: code_search/engine/match_boost.py
     id: source-code
 ---
 

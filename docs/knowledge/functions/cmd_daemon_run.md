@@ -2,12 +2,12 @@
 type: Function
 title: "cmd_daemon_run"
 description: "Handler that runs the daemon blocking in the foreground (used internally by `cmd_daemon start`)."
-resource: src/cli/main.py#cmd_daemon_run
+resource: code_search/cli/main.py#cmd_daemon_run
 tags: [cli, function, daemon]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/cli/main.py
+  - resource: code_search/cli/main.py
     id: source-code
 ---
 

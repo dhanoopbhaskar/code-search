@@ -2,12 +2,12 @@
 type: Function
 title: "rerank_with_semantic"
 description: "Rerank vector results using semantic signals."
-resource: src/engine/semantic_signals.py#rerank_with_semantic
+resource: code_search/engine/semantic_signals.py#rerank_with_semantic
 tags: [ranking, semantics, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/semantic_signals.py
+  - resource: code_search/engine/semantic_signals.py
     id: source-code
 ---
 

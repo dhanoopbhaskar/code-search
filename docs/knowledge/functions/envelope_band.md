@@ -2,12 +2,12 @@
 type: Function
 title: "envelope_band"
 description: "Aggregate confidence band for the overall response envelope from a list of per-result bands."
-resource: src/engine/confidence.py#envelope_band
+resource: code_search/engine/confidence.py#envelope_band
 tags: [confidence, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/confidence.py
+  - resource: code_search/engine/confidence.py
     id: source-code
 ---
 

@@ -2,12 +2,12 @@
 type: Function
 title: "cmd_search"
 description: "Handler for the `search` subcommand: runs a hybrid search query and prints results."
-resource: src/cli/main.py#cmd_search
+resource: code_search/cli/main.py#cmd_search
 tags: [cli, function, search]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/cli/main.py
+  - resource: code_search/cli/main.py
     id: source-code
 ---
 

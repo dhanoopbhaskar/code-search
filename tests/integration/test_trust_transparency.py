@@ -104,8 +104,8 @@ def test_envelope_query_time_matches_audit_recorded_duration(
     import argparse
     import json
 
-    from src.cli.main import cmd_search
-    from src.engine.audit import AuditDatabase
+    from code_search.cli.main import cmd_search
+    from code_search.engine.audit import AuditDatabase
 
     context_dir = indexed_transparency["context_dir"]
     args = argparse.Namespace(

@@ -2,12 +2,12 @@
 type: Class
 title: "IndexOrchestrator"
 description: "Coordinates full and incremental indexing: parsing, symbol/edge extraction, embedding, and FTS population."
-resource: src/engine/indexer.py#IndexOrchestrator
+resource: code_search/engine/indexer.py#IndexOrchestrator
 tags: [indexer, orchestration, core]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/indexer.py
+  - resource: code_search/engine/indexer.py
     id: source-code
 ---
 

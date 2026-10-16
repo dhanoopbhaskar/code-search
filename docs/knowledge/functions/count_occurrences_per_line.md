@@ -2,12 +2,12 @@
 type: Function
 title: "count_occurrences_per_line"
 description: "Count occurrences of a pattern per line in text."
-resource: src/engine/occurrence_count.py#count_occurrences_per_line
+resource: code_search/engine/occurrence_count.py#count_occurrences_per_line
 tags: [search, exhaustive-mode, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/occurrence_count.py
+  - resource: code_search/engine/occurrence_count.py
     id: source-code
 ---
 

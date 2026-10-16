@@ -114,8 +114,8 @@ def _violations(path: Path) -> list[tuple[int, str]]:
 
 
 def main(argv: list[str]) -> int:
-    """Check every ``.py``/``.sh`` file under the given paths (default ``src``)."""
-    roots = [Path(arg) for arg in argv[1:]] or [Path("src")]
+    """Check every ``.py``/``.sh`` file under the given paths (default ``code_search``)."""
+    roots = [Path(arg) for arg in argv[1:]] or [Path("code_search")]
     failed = False
     for root in roots:
         if root.is_file():

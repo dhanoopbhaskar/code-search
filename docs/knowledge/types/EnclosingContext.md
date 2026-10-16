@@ -2,12 +2,12 @@
 type: Class
 title: "EnclosingContext"
 description: "A chunk's nearest structural context: module identity, ancestor-name chain, content axis."
-resource: src/engine/embed_representation.py#EnclosingContext
+resource: code_search/engine/embed_representation.py#EnclosingContext
 tags: [embeddings, representation, dataclass]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/embed_representation.py
+  - resource: code_search/engine/embed_representation.py
     id: source-code
 ---
 

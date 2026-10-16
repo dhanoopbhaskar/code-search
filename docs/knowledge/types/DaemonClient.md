@@ -2,12 +2,12 @@
 type: Class
 title: "DaemonClient"
 description: "Client for connecting to and querying a running QueryDaemon over its local socket."
-resource: src/engine/daemon.py#DaemonClient
+resource: code_search/engine/daemon.py#DaemonClient
 tags: [daemon, client, ipc]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/daemon.py
+  - resource: code_search/engine/daemon.py
     id: source-code
 ---
 

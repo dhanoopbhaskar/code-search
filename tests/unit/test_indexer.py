@@ -6,20 +6,20 @@ from unittest.mock import patch
 
 import numpy as np
 
-from src.engine.indexer import _fallback_chunk_file, _process_file_worker
+from code_search.engine.indexer import _fallback_chunk_file, _process_file_worker
 
 
 def _build_components(repo: Path) -> dict[str, Any]:
     """Wire an orchestrator over *repo* the same way the CLI does."""
-    from src.context import ContextManager
-    from src.engine.audit import AuditDatabase
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import GraphDatabase, IndexMetadataStore
-    from src.engine.indexer import IndexOrchestrator
-    from src.engine.parser import ASTParser
-    from src.engine.session import SessionDatabase
-    from src.engine.symbols import SymbolExtractor, SymbolStore
+    from code_search.context import ContextManager
+    from code_search.engine.audit import AuditDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import GraphDatabase, IndexMetadataStore
+    from code_search.engine.indexer import IndexOrchestrator
+    from code_search.engine.parser import ASTParser
+    from code_search.engine.session import SessionDatabase
+    from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
     context_dir = repo / ".context"
     settings = Settings(context_dir=context_dir)
@@ -65,8 +65,8 @@ def _build_components(repo: Path) -> dict[str, Any]:
 
 
 def test_batch_embed_parity_with_per_item_encode(tmp_path: Path) -> None:
-    from src.engine.config import Settings
-    from src.engine.embeddings import EMBEDDING_DIM, EmbeddingGenerator
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EMBEDDING_DIM, EmbeddingGenerator
 
     generator = EmbeddingGenerator(Settings(context_dir=tmp_path))
     texts = ["def foo(): pass", "class Bar:\n    pass", "x = 1\n", ""]
@@ -176,16 +176,16 @@ def test_chunk_type_metadata() -> None:
 def test_content_hash_diffing_skips_unchanged_files(tmp_path: Path) -> None:
     import hashlib
 
-    from src.context import ContextManager
-    from src.engine.audit import AuditDatabase
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import GraphDatabase, IndexMetadataStore
-    from src.engine.indexer import IndexOrchestrator
-    from src.engine.parser import ASTParser
-    from src.engine.search import HybridSearch  # noqa: F401
-    from src.engine.session import SessionDatabase
-    from src.engine.symbols import SymbolExtractor, SymbolStore
+    from code_search.context import ContextManager
+    from code_search.engine.audit import AuditDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import GraphDatabase, IndexMetadataStore
+    from code_search.engine.indexer import IndexOrchestrator
+    from code_search.engine.parser import ASTParser
+    from code_search.engine.search import HybridSearch  # noqa: F401
+    from code_search.engine.session import SessionDatabase
+    from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
     repo = tmp_path / "repo"
     (repo / "src").mkdir(parents=True)
@@ -260,16 +260,16 @@ def test_content_hash_diffing_skips_unchanged_files(tmp_path: Path) -> None:
 
 
 def test_content_hash_diffing_detects_orphans(tmp_path: Path) -> None:
-    from src.context import ContextManager
-    from src.engine.audit import AuditDatabase
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import GraphDatabase, IndexMetadataStore
-    from src.engine.indexer import IndexOrchestrator
-    from src.engine.parser import ASTParser
-    from src.engine.search import HybridSearch  # noqa: F401
-    from src.engine.session import SessionDatabase
-    from src.engine.symbols import SymbolExtractor, SymbolStore
+    from code_search.context import ContextManager
+    from code_search.engine.audit import AuditDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import GraphDatabase, IndexMetadataStore
+    from code_search.engine.indexer import IndexOrchestrator
+    from code_search.engine.parser import ASTParser
+    from code_search.engine.search import HybridSearch  # noqa: F401
+    from code_search.engine.session import SessionDatabase
+    from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
     repo = tmp_path / "orphan_test"
     (repo / "src").mkdir(parents=True)

@@ -1,13 +1,13 @@
 ---
 type: Module
-title: "src.engine"
+title: "code_search.engine"
 description: "The code-search engine: AST-based indexing, hybrid search, reranking, and compliance."
-resource: src/engine/__init__.py
+resource: code_search/engine/__init__.py
 tags: [engine, package]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/__init__.py
+  - resource: code_search/engine/__init__.py
     id: source-code
 ---
 

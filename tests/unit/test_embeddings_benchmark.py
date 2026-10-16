@@ -11,8 +11,8 @@ from typing import Any
 import numpy as np
 import pytest
 
-from src.engine.config import Settings
-from src.engine.redactor import air_gap_enforcement
+from code_search.engine.config import Settings
+from code_search.engine.redactor import air_gap_enforcement
 
 
 def _build_repo(repo: Path, num_files: int) -> None:
@@ -23,12 +23,12 @@ def _build_repo(repo: Path, num_files: int) -> None:
 
 
 def _make_orchestrator(repo: Path) -> dict[str, Any]:
-    from src.context import ContextManager
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import GraphDatabase, IndexMetadataStore
-    from src.engine.indexer import IndexOrchestrator
-    from src.engine.parser import ASTParser
-    from src.engine.symbols import SymbolExtractor, SymbolStore
+    from code_search.context import ContextManager
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import GraphDatabase, IndexMetadataStore
+    from code_search.engine.indexer import IndexOrchestrator
+    from code_search.engine.parser import ASTParser
+    from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
     context_dir = repo / ".context"
     settings = Settings(context_dir=context_dir)
@@ -132,7 +132,7 @@ def test_embed_throttle_batch_throughput(tmp_path: Path) -> None:
     per-document throughput of N separate ``encode`` calls, and the vectors
     must match within float tolerance. Runs entirely on the local model.
     """
-    from src.engine.embeddings import EmbeddingGenerator
+    from code_search.engine.embeddings import EmbeddingGenerator
 
     if not _model_available():
         pytest.skip("embedding model unavailable")
@@ -162,6 +162,6 @@ def test_embed_throttle_batch_throughput(tmp_path: Path) -> None:
 
 
 def _model_available() -> bool:
-    from src.engine.embeddings import EmbeddingGenerator
+    from code_search.engine.embeddings import EmbeddingGenerator
 
     return EmbeddingGenerator().is_available()

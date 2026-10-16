@@ -2,12 +2,12 @@
 type: Module
 title: "engine.metrics"
 description: "In-memory latency and query metrics collector with thread-safe sliding-window percentile statistics."
-resource: src/engine/metrics.py
+resource: code_search/engine/metrics.py
 tags: [engine, metrics, observability]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/metrics.py
+  - resource: code_search/engine/metrics.py
     id: source-code
 ---
 

@@ -2,12 +2,12 @@
 type: Function
 title: "get_representation_scheme_version"
 description: "Read the stored chunk-representation scheme version from index metadata."
-resource: src/engine/embeddings.py#get_representation_scheme_version
+resource: code_search/engine/embeddings.py#get_representation_scheme_version
 tags: [embeddings, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/embeddings.py
+  - resource: code_search/engine/embeddings.py
     id: source-code
 ---
 

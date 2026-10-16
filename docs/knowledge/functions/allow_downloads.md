@@ -2,12 +2,12 @@
 type: Function
 title: "allow_downloads"
 description: "Context manager temporarily allowing outbound socket connections."
-resource: src/engine/redactor.py#allow_downloads
+resource: code_search/engine/redactor.py#allow_downloads
 tags: [security, compliance, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/redactor.py
+  - resource: code_search/engine/redactor.py
     id: source-code
 ---
 

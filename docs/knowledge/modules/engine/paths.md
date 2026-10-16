@@ -2,12 +2,12 @@
 type: Module
 title: "engine.paths"
 description: "Path normalization and stored-path resolution for the find_related MCP tool."
-resource: src/engine/paths.py
+resource: code_search/engine/paths.py
 tags: [engine, paths, find-related]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/paths.py
+  - resource: code_search/engine/paths.py
     id: source-code
 ---
 

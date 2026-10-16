@@ -2,12 +2,12 @@
 type: Function
 title: "find_implementations"
 description: "Resolve static implementations of an interface member or type."
-resource: src/engine/implementations.py#find_implementations
+resource: code_search/engine/implementations.py#find_implementations
 tags: [implementations, graph, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/implementations.py
+  - resource: code_search/engine/implementations.py
     id: source-code
 ---
 

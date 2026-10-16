@@ -2,12 +2,12 @@
 type: Function
 title: "qualified_query_name"
 description: "Extract the qualified name portion of a query, if any."
-resource: src/engine/confidence.py#qualified_query_name
+resource: code_search/engine/confidence.py#qualified_query_name
 tags: [confidence, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/confidence.py
+  - resource: code_search/engine/confidence.py
     id: source-code
 ---
 

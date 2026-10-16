@@ -2,12 +2,12 @@
 type: Class
 title: "SymbolReference"
 description: "A caller-supplied name parsed into its matching components (raw, leaf, qualifier, signature, form)."
-resource: src/engine/symbol_resolution.py#SymbolReference
+resource: code_search/engine/symbol_resolution.py#SymbolReference
 tags: [symbols, resolution, dataclass]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/symbol_resolution.py
+  - resource: code_search/engine/symbol_resolution.py
     id: source-code
 ---
 

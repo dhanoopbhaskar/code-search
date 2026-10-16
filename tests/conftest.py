@@ -44,16 +44,16 @@ def _indexed_components(
             the relevance gate so tiny synthetic corpora return the
             query-time evidence the tests assert).
     """
-    from src.context import ContextManager
-    from src.engine.audit import AuditDatabase
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import EdgeStore, GraphDatabase, IndexMetadataStore
-    from src.engine.indexer import IndexOrchestrator
-    from src.engine.parser import ASTParser
-    from src.engine.search import HybridSearch
-    from src.engine.session import SessionDatabase
-    from src.engine.symbols import SymbolExtractor, SymbolStore
+    from code_search.context import ContextManager
+    from code_search.engine.audit import AuditDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import EdgeStore, GraphDatabase, IndexMetadataStore
+    from code_search.engine.indexer import IndexOrchestrator
+    from code_search.engine.parser import ASTParser
+    from code_search.engine.search import HybridSearch
+    from code_search.engine.session import SessionDatabase
+    from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
     settings = Settings(context_dir=context_dir, **(settings_kwargs or {}))
     ctx = ContextManager(settings)
@@ -360,7 +360,7 @@ def indexed_boilerplate_merge(tmp_path: Path) -> dict[str, Any]:
     file (``__init__.py``), and a grammar-less file (``notes.txt``) enabled
     via ``resource_extensions`` for the whole-region fallback.
     """
-    from src.engine.config import Settings
+    from code_search.engine.config import Settings
 
     src = FIXTURES_DIR / "boilerplate_merge"
     repo = tmp_path / "boilerplate_merge_repo"
@@ -440,16 +440,16 @@ def indexed_trust_defects(trust_defects_repo: Path) -> dict[str, Any]:
     dict including the ready ``HybridSearch``. Every later integration test
     reuses this fixture.
     """
-    from src.context import ContextManager
-    from src.engine.audit import AuditDatabase
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import EdgeStore, GraphDatabase, IndexMetadataStore
-    from src.engine.indexer import IndexOrchestrator
-    from src.engine.parser import ASTParser
-    from src.engine.search import HybridSearch
-    from src.engine.session import SessionDatabase
-    from src.engine.symbols import SymbolExtractor, SymbolStore
+    from code_search.context import ContextManager
+    from code_search.engine.audit import AuditDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import EdgeStore, GraphDatabase, IndexMetadataStore
+    from code_search.engine.indexer import IndexOrchestrator
+    from code_search.engine.parser import ASTParser
+    from code_search.engine.search import HybridSearch
+    from code_search.engine.session import SessionDatabase
+    from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
     context_dir = trust_defects_repo / ".context"
     settings = Settings(context_dir=context_dir)
@@ -530,16 +530,16 @@ def indexed_trust_defects(trust_defects_repo: Path) -> dict[str, Any]:
 def quality_defects_components(quality_defects_repo: Path) -> dict[str, Any]:
     """Full index components (db, orchestrator, stores, search) wired over the
     synthetic validation corpus."""
-    from src.context import ContextManager
-    from src.engine.audit import AuditDatabase
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import EdgeStore, GraphDatabase, IndexMetadataStore
-    from src.engine.indexer import IndexOrchestrator
-    from src.engine.parser import ASTParser
-    from src.engine.search import HybridSearch
-    from src.engine.session import SessionDatabase
-    from src.engine.symbols import SymbolExtractor, SymbolStore
+    from code_search.context import ContextManager
+    from code_search.engine.audit import AuditDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import EdgeStore, GraphDatabase, IndexMetadataStore
+    from code_search.engine.indexer import IndexOrchestrator
+    from code_search.engine.parser import ASTParser
+    from code_search.engine.search import HybridSearch
+    from code_search.engine.session import SessionDatabase
+    from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
     context_dir = quality_defects_repo / ".context"
     settings = Settings(context_dir=context_dir)
@@ -609,16 +609,16 @@ def quality_defects_components(quality_defects_repo: Path) -> dict[str, Any]:
 @pytest.fixture
 def scratch_index_components(scratch_java_repo: Path) -> dict[str, Any]:
     """Full index components (db, orchestrator, stores, search) wired over the scratch repo."""
-    from src.context import ContextManager
-    from src.engine.audit import AuditDatabase
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import EdgeStore, GraphDatabase, IndexMetadataStore
-    from src.engine.indexer import IndexOrchestrator
-    from src.engine.parser import ASTParser
-    from src.engine.search import HybridSearch
-    from src.engine.session import SessionDatabase
-    from src.engine.symbols import SymbolExtractor, SymbolStore
+    from code_search.context import ContextManager
+    from code_search.engine.audit import AuditDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import EdgeStore, GraphDatabase, IndexMetadataStore
+    from code_search.engine.indexer import IndexOrchestrator
+    from code_search.engine.parser import ASTParser
+    from code_search.engine.search import HybridSearch
+    from code_search.engine.session import SessionDatabase
+    from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
     context_dir = scratch_java_repo / ".context"
     settings = Settings(context_dir=context_dir)

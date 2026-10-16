@@ -2,12 +2,12 @@
 type: Class
 title: "BM25Search"
 description: "FTS5-based BM25 keyword search over the indexed code_chunks corpus."
-resource: src/engine/search.py#BM25Search
+resource: code_search/engine/search.py#BM25Search
 tags: [search, bm25, lexical]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/search.py
+  - resource: code_search/engine/search.py
     id: source-code
 ---
 

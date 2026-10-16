@@ -2,12 +2,12 @@
 type: Class
 title: "MatchEvidence"
 description: "Per-result name-matching evidence used by the match-boost pass (match_boost.py variant)."
-resource: src/engine/match_boost.py#MatchEvidence
+resource: code_search/engine/match_boost.py#MatchEvidence
 tags: [ranking, match-boost, dataclass]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/match_boost.py
+  - resource: code_search/engine/match_boost.py
     id: source-code
 ---
 

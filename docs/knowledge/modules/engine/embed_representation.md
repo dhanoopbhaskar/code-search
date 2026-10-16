@@ -2,12 +2,12 @@
 type: Module
 title: "engine.embed_representation"
 description: "Derives deterministic, character-budgeted chunk-embedding input text from a chunk's structural context."
-resource: src/engine/embed_representation.py
+resource: code_search/engine/embed_representation.py
 tags: [engine, embeddings, representation]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/embed_representation.py
+  - resource: code_search/engine/embed_representation.py
     id: source-code
 ---
 

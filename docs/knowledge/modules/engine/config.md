@@ -2,12 +2,12 @@
 type: Module
 title: "engine.config"
 description: "Settings dataclass (env-var driven), language configuration overlay, and path-based file classification helpers."
-resource: src/engine/config.py
+resource: code_search/engine/config.py
 tags: [engine, config, settings]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/config.py
+  - resource: code_search/engine/config.py
     id: source-code
 ---
 

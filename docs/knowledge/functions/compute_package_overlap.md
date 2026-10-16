@@ -2,12 +2,12 @@
 type: Function
 title: "compute_package_overlap"
 description: "Jaccard similarity of namespace directory segments."
-resource: src/engine/semantic_signals.py#compute_package_overlap
+resource: code_search/engine/semantic_signals.py#compute_package_overlap
 tags: [ranking, semantics, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/semantic_signals.py
+  - resource: code_search/engine/semantic_signals.py
     id: source-code
 ---
 

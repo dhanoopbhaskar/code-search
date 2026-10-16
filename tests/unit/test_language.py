@@ -15,7 +15,7 @@ import pytest
 
 @pytest.fixture
 def builtin_table() -> Any:
-    from src.engine.expansions import ExpansionTable
+    from code_search.engine.expansions import ExpansionTable
 
     return ExpansionTable(config_path="")
 
@@ -27,8 +27,8 @@ def _analyze(
     symbol_store: Any = None,
     vocab_by_language: dict[str, set[str]] | None = None,
 ) -> Any:
-    from src.engine.config import Settings
-    from src.engine.language import analyze_query
+    from code_search.engine.config import Settings
+    from code_search.engine.language import analyze_query
 
     return analyze_query(
         query,
@@ -74,8 +74,8 @@ class TestCoverage:
 
     def test_s6_pre_expansion_coverage_zero(self) -> None:
         """S6 without expansion -> coverage 0.0 (the internal intermediate)."""
-        from src.engine.config import Settings
-        from src.engine.language import analyze_query
+        from code_search.engine.config import Settings
+        from code_search.engine.language import analyze_query
 
         analysis = analyze_query(
             "configure cross origin requests from a browser",
@@ -102,8 +102,8 @@ class TestCoverage:
 class TestInferLanguage:
     def test_explicit_language_never_overridden(self, builtin_table: Any) -> None:
         """An explicit ``language`` argument beats inference."""
-        from src.engine.config import Settings
-        from src.engine.language import analyze_query
+        from code_search.engine.config import Settings
+        from code_search.engine.language import analyze_query
 
         analysis = analyze_query(
             "TokenService",
@@ -157,9 +157,9 @@ class TestSymbolAndDefinition:
     def test_symbol_resolved_language(self, indexed_trust_defects: dict[str, Any]) -> None:
         """A symbol-like query that resolves via SymbolStore infers its language."""
         symbol_store = indexed_trust_defects["symbol_store"]
-        from src.engine.config import Settings
-        from src.engine.expansions import ExpansionTable
-        from src.engine.language import analyze_query, language_vocabularies
+        from code_search.engine.config import Settings
+        from code_search.engine.expansions import ExpansionTable
+        from code_search.engine.language import analyze_query, language_vocabularies
 
         analysis = analyze_query(
             "TokenService",
@@ -181,9 +181,9 @@ class TestSymbolAndDefinition:
 
     def test_definition_target_resolves(self, indexed_trust_defects: dict[str, Any]) -> None:
         symbol_store = indexed_trust_defects["symbol_store"]
-        from src.engine.config import Settings
-        from src.engine.expansions import ExpansionTable
-        from src.engine.language import analyze_query
+        from code_search.engine.config import Settings
+        from code_search.engine.expansions import ExpansionTable
+        from code_search.engine.language import analyze_query
 
         analysis = analyze_query(
             "definition of ArticleService.getBySlug",

@@ -15,8 +15,8 @@ from typing import Any
 
 import pytest
 
-from src.engine.redactor import Redactor
-from src.mcp.server import _call_neighbors_payload, _definition_payload
+from code_search.engine.redactor import Redactor
+from code_search.mcp.server import _call_neighbors_payload, _definition_payload
 
 
 def _build(tmp_path: Path, fixture: str, name: str) -> dict[str, Any]:
@@ -183,7 +183,7 @@ def test_cross_consumer_consistency(
     assert mcp_neigh["outcome"] == envelope["outcome"]
     assert [c["fqn"] for c in mcp_neigh["candidates"]] == [c["fqn"] for c in envelope["candidates"]]
 
-    from src.engine.daemon import QueryDaemon
+    from code_search.engine.daemon import QueryDaemon
 
     daemon_symbol = QueryDaemon._do_symbol(comps, {"fqn": "ArticleService.save"})
     assert daemon_symbol["payload"]["outcome"] == envelope["outcome"]
@@ -220,7 +220,7 @@ def test_cross_consumer_consistency(
 @pytest.mark.integration
 def test_no_schema_or_migration_change(transparency_comps: dict[str, Any]) -> None:
     """The schema version and symbol/graph columns are unchanged."""
-    from src.engine.graph import SCHEMA_VERSION
+    from code_search.engine.graph import SCHEMA_VERSION
 
     assert SCHEMA_VERSION == 13
     db = transparency_comps["db"]

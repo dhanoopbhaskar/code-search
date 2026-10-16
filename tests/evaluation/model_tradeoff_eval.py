@@ -52,8 +52,8 @@ _WARMUP_QUERIES = (
 
 def _measure_cold_load_ms(settings: Any) -> float | None:
     """Return the model cold-load time in ms, or ``None`` when unavailable."""
-    from src.engine import embeddings
-    from src.engine.embeddings import EmbeddingGenerator
+    from code_search.engine import embeddings
+    from code_search.engine.embeddings import EmbeddingGenerator
 
     saved = embeddings._model_instance
     embeddings._model_instance = None
@@ -86,8 +86,8 @@ def evaluate_profile(
         A JSON-serializable result dict; ``available`` is ``False`` when the
         profile's local model is absent, in which case timings are ``None``.
     """
-    from src.engine.config import Settings
-    from src.engine.embeddings import profile_model_available
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import profile_model_available
 
     repo = work_dir / f"{profile}_repo"
     if not repo.exists():

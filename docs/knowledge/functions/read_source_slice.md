@@ -2,12 +2,12 @@
 type: Function
 title: "read_source_slice"
 description: "Read a line-range slice of a source file."
-resource: src/engine/graph.py#read_source_slice
+resource: code_search/engine/graph.py#read_source_slice
 tags: [graph, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/graph.py
+  - resource: code_search/engine/graph.py
     id: source-code
 ---
 

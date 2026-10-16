@@ -2,12 +2,12 @@
 type: Module
 title: "engine.parser"
 description: "Tree-sitter based AST parsing and file discovery for the multi-language indexing pipeline."
-resource: src/engine/parser.py
+resource: code_search/engine/parser.py
 tags: [engine, parser, ast, tree-sitter]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/parser.py
+  - resource: code_search/engine/parser.py
     id: source-code
 ---
 

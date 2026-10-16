@@ -2,12 +2,12 @@
 type: Function
 title: "check_index_representation_compatibility"
 description: "Raise when stored embeddings predate the running representation scheme."
-resource: src/engine/embeddings.py#check_index_representation_compatibility
+resource: code_search/engine/embeddings.py#check_index_representation_compatibility
 tags: [embeddings, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/embeddings.py
+  - resource: code_search/engine/embeddings.py
     id: source-code
 ---
 

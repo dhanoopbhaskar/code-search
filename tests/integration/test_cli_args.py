@@ -7,7 +7,7 @@ import pytest
 
 
 def _run_cli(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, str]:
-    from src.cli.main import main
+    from code_search.cli.main import main
 
     previous = sys.argv
     sys.argv = ["code-search", *argv]
@@ -23,7 +23,7 @@ def _run_cli(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, 
 
 @pytest.mark.integration
 def test_cli_verbose_before_subcommand() -> None:
-    from src.cli.main import main
+    from code_search.cli.main import main
 
     test_args = ["code-search", "--verbose", "list-languages"]
     try:
@@ -35,7 +35,7 @@ def test_cli_verbose_before_subcommand() -> None:
 
 @pytest.mark.integration
 def test_cli_verbose_after_subcommand() -> None:
-    from src.cli.main import main
+    from code_search.cli.main import main
 
     test_args = ["code-search", "list-languages", "--verbose"]
     try:
@@ -47,7 +47,7 @@ def test_cli_verbose_after_subcommand() -> None:
 
 @pytest.mark.integration
 def test_cli_context_dir_before_subcommand(tmp_path: Path) -> None:
-    from src.cli.main import main
+    from code_search.cli.main import main
 
     ctx_dir = tmp_path / ".context"
     ctx_dir.mkdir()
@@ -61,7 +61,7 @@ def test_cli_context_dir_before_subcommand(tmp_path: Path) -> None:
 
 @pytest.mark.integration
 def test_cli_context_dir_after_subcommand(tmp_path: Path) -> None:
-    from src.cli.main import main
+    from code_search.cli.main import main
 
     ctx_dir = tmp_path / ".context"
     ctx_dir.mkdir()
@@ -151,7 +151,7 @@ def test_cli_graph_implements_direction(
 
 @pytest.mark.integration
 def test_cli_context_dir_conflicting_values(tmp_path: Path) -> None:
-    from src.cli.main import main
+    from code_search.cli.main import main
 
     ctx_dir1 = tmp_path / ".context1"
     ctx_dir1.mkdir()

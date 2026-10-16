@@ -25,7 +25,7 @@ def _run_cs(
     args: list[str], cwd: Path | None = None, timeout: int = 120
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-m", "src.cli.main", *args],
+        [sys.executable, "-m", "code_search.cli.main", *args],
         capture_output=True,
         text=True,
         timeout=timeout,

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.engine.redactor import Redactor
+from code_search.engine.redactor import Redactor
 
 DOCS_SCENT_QUERY = "how do I deploy"
 DOCS_SCOPE = "docs"

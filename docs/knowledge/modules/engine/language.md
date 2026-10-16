@@ -2,12 +2,12 @@
 type: Module
 title: "engine.language"
 description: "Query-time language inference and definition-intent detection."
-resource: src/engine/language.py
+resource: code_search/engine/language.py
 tags: [engine, query-analysis, language]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/language.py
+  - resource: code_search/engine/language.py
     id: source-code
 ---
 

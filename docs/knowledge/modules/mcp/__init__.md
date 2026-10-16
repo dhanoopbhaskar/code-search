@@ -1,13 +1,13 @@
 ---
 type: Module
-title: "src.mcp"
+title: "code_search.mcp"
 description: "Model Context Protocol (MCP) server package for code-search."
-resource: src/mcp/__init__.py
+resource: code_search/mcp/__init__.py
 tags: [mcp, package]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/mcp/__init__.py
+  - resource: code_search/mcp/__init__.py
     id: source-code
 ---
 

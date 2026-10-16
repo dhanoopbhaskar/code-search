@@ -2,17 +2,17 @@ from pathlib import Path
 
 import pytest
 
-from src.context import ContextManager
-from src.engine.audit import AuditDatabase
-from src.engine.config import Settings
-from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-from src.engine.graph import GraphDatabase, IndexMetadataStore
-from src.engine.indexer import IndexOrchestrator
-from src.engine.parser import ASTParser
-from src.engine.reranking import Reranker
-from src.engine.search import HybridSearch
-from src.engine.session import SessionDatabase
-from src.engine.symbols import SymbolExtractor, SymbolStore
+from code_search.context import ContextManager
+from code_search.engine.audit import AuditDatabase
+from code_search.engine.config import Settings
+from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+from code_search.engine.graph import GraphDatabase, IndexMetadataStore
+from code_search.engine.indexer import IndexOrchestrator
+from code_search.engine.parser import ASTParser
+from code_search.engine.reranking import Reranker
+from code_search.engine.search import HybridSearch
+from code_search.engine.session import SessionDatabase
+from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
 
 @pytest.fixture

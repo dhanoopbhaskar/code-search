@@ -2,12 +2,12 @@
 type: Function
 title: "load_language_config"
 description: "Load custom language configuration from JSON."
-resource: src/engine/config.py#load_language_config
+resource: code_search/engine/config.py#load_language_config
 tags: [config, language, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/config.py
+  - resource: code_search/engine/config.py
     id: source-code
 ---
 

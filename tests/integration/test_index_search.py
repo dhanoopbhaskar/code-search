@@ -2,17 +2,17 @@ from pathlib import Path
 
 import pytest
 
-from src.context import ContextManager
-from src.engine.audit import AuditDatabase
-from src.engine.config import Settings
-from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-from src.engine.graph import GraphDatabase, IndexMetadataStore
-from src.engine.indexer import IndexOrchestrator
-from src.engine.parser import ASTParser
-from src.engine.reranking import Reranker
-from src.engine.search import HybridSearch, tokenize
-from src.engine.session import SessionDatabase
-from src.engine.symbols import SymbolExtractor, SymbolStore
+from code_search.context import ContextManager
+from code_search.engine.audit import AuditDatabase
+from code_search.engine.config import Settings
+from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+from code_search.engine.graph import GraphDatabase, IndexMetadataStore
+from code_search.engine.indexer import IndexOrchestrator
+from code_search.engine.parser import ASTParser
+from code_search.engine.reranking import Reranker
+from code_search.engine.search import HybridSearch, tokenize
+from code_search.engine.session import SessionDatabase
+from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
 
 @pytest.fixture
@@ -321,7 +321,7 @@ def test_file_level_coherence_ranks_multimatch_file_first(
         context_dir=indexed_repo / ".context",
         relevance_gate=False,
     )
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
 
     gate_off_search = HybridSearch(
         components["db"],

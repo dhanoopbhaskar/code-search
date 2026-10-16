@@ -20,13 +20,13 @@ from tests.conftest import FIXTURES_DIR, _indexed_components
 @pytest.fixture
 def cold_components(tmp_path: Path) -> Iterator[dict[str, Any]]:
     """An indexed repo with a fresh (cold) embedding generator."""
-    from src.engine.embeddings import (
+    from code_search.engine.embeddings import (
         EmbeddingGenerator,
         VectorIndex,
         _loaded_model_path,
         _model_instance,
     )
-    from src.engine.search import HybridSearch
+    from code_search.engine.search import HybridSearch
 
     repo = tmp_path / "reduced_repo"
     shutil.copytree(FIXTURES_DIR / "relevance", repo)
@@ -77,7 +77,7 @@ def test_warm_query_takes_hybrid_path(cold_components: dict[str, Any]) -> None:
 
 
 def test_no_model_query_is_lexical_degraded(cold_components: dict[str, Any]) -> None:
-    from src.engine.search import HybridSearch
+    from code_search.engine.search import HybridSearch
 
     comps = cold_components["comps"]
     settings = cold_components["settings"]

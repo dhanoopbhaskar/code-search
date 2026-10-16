@@ -2,12 +2,12 @@
 type: Function
 title: "classify_content_intent"
 description: "Classify a query lexically into docs/config/neutral."
-resource: src/engine/intent_detection.py#classify_content_intent
+resource: code_search/engine/intent_detection.py#classify_content_intent
 tags: [query-analysis, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/intent_detection.py
+  - resource: code_search/engine/intent_detection.py
     id: source-code
 ---
 

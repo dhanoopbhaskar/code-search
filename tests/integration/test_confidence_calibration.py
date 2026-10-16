@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from src.engine.search import HybridSearch
+from code_search.engine.search import HybridSearch
 from tests.evaluation.confidence_calibration_eval import (
     FLOORS,
     build_fixture_components,

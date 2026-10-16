@@ -2,12 +2,12 @@
 type: Class
 title: "SymbolStore"
 description: "SQLite-backed CRUD, resolution, and lookup for symbol records."
-resource: src/engine/symbols.py#SymbolStore
+resource: code_search/engine/symbols.py#SymbolStore
 tags: [symbols, storage, resolution]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/symbols.py
+  - resource: code_search/engine/symbols.py
     id: source-code
 ---
 

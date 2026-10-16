@@ -2,12 +2,12 @@
 type: Function
 title: "normalize_indexed_path"
 description: "Resolve a path against the indexed repo root, collapsing symlinks and ../ segments."
-resource: src/engine/paths.py#normalize_indexed_path
+resource: code_search/engine/paths.py#normalize_indexed_path
 tags: [paths, find-related, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/paths.py
+  - resource: code_search/engine/paths.py
     id: source-code
 ---
 

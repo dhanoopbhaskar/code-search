@@ -2,12 +2,12 @@
 type: Class
 title: "MatchTier"
 description: "IntEnum ranking the strongest filename/symbol evidence connecting a query to a chunk."
-resource: src/engine/match_boost.py#MatchTier
+resource: code_search/engine/match_boost.py#MatchTier
 tags: [ranking, match-boost, enum]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/match_boost.py
+  - resource: code_search/engine/match_boost.py
     id: source-code
 ---
 

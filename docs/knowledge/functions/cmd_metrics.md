@@ -2,12 +2,12 @@
 type: Function
 title: "cmd_metrics"
 description: "Handler for the `metrics` subcommand: prints latency percentiles and redaction counts."
-resource: src/cli/main.py#cmd_metrics
+resource: code_search/cli/main.py#cmd_metrics
 tags: [cli, function, observability]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/cli/main.py
+  - resource: code_search/cli/main.py
     id: source-code
 ---
 

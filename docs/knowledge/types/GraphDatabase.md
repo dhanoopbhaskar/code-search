@@ -2,12 +2,12 @@
 type: Class
 title: "GraphDatabase"
 description: "Thread-safe SQLite database connection manager for the code graph schema."
-resource: src/engine/graph.py#GraphDatabase
+resource: code_search/engine/graph.py#GraphDatabase
 tags: [graph, database, storage]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/graph.py
+  - resource: code_search/engine/graph.py
     id: source-code
 ---
 

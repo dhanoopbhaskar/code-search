@@ -2,12 +2,12 @@
 type: Class
 title: "IndexChangeDetector"
 description: "Tracks index metadata (version, mtime, status) and decides reload vs. envelope response on detecting mtime changes."
-resource: src/engine/index_service.py#IndexChangeDetector
+resource: code_search/engine/index_service.py#IndexChangeDetector
 tags: [freshness, server]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/index_service.py
+  - resource: code_search/engine/index_service.py
     id: source-code
 ---
 

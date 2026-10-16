@@ -65,21 +65,21 @@ run() {
 
 case "$mode" in
   all)
-    run "ruff check"      ruff check src/ tests/
-    run "ruff format"     ruff format --check src/ tests/
-    run "comment refs"    python3 scripts/check_comment_refs.py src/ tests/ scripts/
-    run "mypy"            mypy src/
+    run "ruff check"      ruff check code_search/ tests/
+    run "ruff format"     ruff format --check code_search/ tests/
+    run "comment refs"    python3 scripts/check_comment_refs.py code_search/ tests/ scripts/
+    run "mypy"            mypy code_search/
     run "pytest"          pytest tests/ "$@"
     ;;
   lint)
-    run "ruff check"      ruff check src/ tests/
-    run "comment refs"    python3 scripts/check_comment_refs.py src/ tests/ scripts/
+    run "ruff check"      ruff check code_search/ tests/
+    run "comment refs"    python3 scripts/check_comment_refs.py code_search/ tests/ scripts/
     ;;
   format)
-    run "ruff format"     ruff format --check src/ tests/
+    run "ruff format"     ruff format --check code_search/ tests/
     ;;
   typecheck)
-    run "mypy"            mypy src/
+    run "mypy"            mypy code_search/
     ;;
   test)
     run "pytest"          pytest tests/ "$@"

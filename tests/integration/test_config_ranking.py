@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from src.engine.redactor import Redactor
+from code_search.engine.redactor import Redactor
 
 CONFIG_SCENT_QUERY = "database connection pool settings"
 

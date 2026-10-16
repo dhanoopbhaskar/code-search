@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from src.engine.reranking import Reranker
+from code_search.engine.reranking import Reranker
 
 
 class FakeConnection:
@@ -77,7 +77,7 @@ def test_model_file_penalty_under_behavior_intent(
 ) -> None:
     """Under a behavior-intent query, a model file is demoted
     below a same-scored code file."""
-    from src.engine.classification import FileRole
+    from code_search.engine.classification import FileRole
 
     code = _result(1, "src/service.py", score=0.5, file_role=FileRole.CODE)
     model = _result(2, "src/model.py", score=0.5, file_role=FileRole.MODEL)
@@ -90,7 +90,7 @@ def test_no_penalty_without_behavior_intent(
     reranker: Reranker,
 ) -> None:
     """A non-behavior query leaves the model file untouched at equal score."""
-    from src.engine.classification import FileRole
+    from code_search.engine.classification import FileRole
 
     model = _result(1, "src/model.py", score=0.5, file_role=FileRole.MODEL)
     reranked = reranker.rerank([model], query="model class")

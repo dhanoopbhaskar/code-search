@@ -2,12 +2,12 @@
 type: Function
 title: "content_type"
 description: "Classify a file into the content axis (code, docs, config)."
-resource: src/engine/classification.py#content_type
+resource: code_search/engine/classification.py#content_type
 tags: [classification, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/classification.py
+  - resource: code_search/engine/classification.py
     id: source-code
 ---
 

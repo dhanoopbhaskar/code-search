@@ -2,12 +2,12 @@
 type: Function
 title: "parse_reference"
 description: "Parse a query into a SymbolReference."
-resource: src/engine/symbol_resolution.py#parse_reference
+resource: code_search/engine/symbol_resolution.py#parse_reference
 tags: [symbols, resolution, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/symbol_resolution.py
+  - resource: code_search/engine/symbol_resolution.py
     id: source-code
 ---
 

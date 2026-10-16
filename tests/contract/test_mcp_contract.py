@@ -11,8 +11,8 @@ pytest.importorskip("fastmcp")
 
 from fastmcp import FastMCP
 
-from src.engine.graph import read_source_slice
-from src.mcp.server import _call_neighbors_payload, _definition_payload
+from code_search.engine.graph import read_source_slice
+from code_search.mcp.server import _call_neighbors_payload, _definition_payload
 
 EXPECTED_SEARCH_INPUT = {
     "type": "object",
@@ -443,10 +443,10 @@ async def test_implementations_tool_schema(mcp_server: FastMCP) -> None:
 def test_implementations_no_static_explanation(tmp_path: Any) -> None:
     """A resolved interface with no static implementer returns an
     explicit ``no_static_implementation`` explanation and no fabricated entry."""
-    from src.engine.config import Settings
-    from src.engine.graph import EdgeStore, GraphDatabase
-    from src.engine.symbols import SymbolStore
-    from src.mcp.server import _implementations_payload
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import EdgeStore, GraphDatabase
+    from code_search.engine.symbols import SymbolStore
+    from code_search.mcp.server import _implementations_payload
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "graph.db", settings)
@@ -492,9 +492,9 @@ def test_graph_implements_direction_returns_implementations(tmp_path: Any) -> No
     """The ``implements`` direction is an equivalent entry point to the
     shared rule (implementations content, empty callers/callees); every other
     direction is unchanged."""
-    from src.engine.config import Settings
-    from src.engine.graph import EdgeStore, GraphDatabase
-    from src.engine.symbols import SymbolStore
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import EdgeStore, GraphDatabase
+    from code_search.engine.symbols import SymbolStore
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "graph.db", settings)
@@ -1239,7 +1239,7 @@ def test_find_related_envelope_carries_vector_health(
     non-empty related set; a path outside the index must yield the ``error``
     status without raising.
     """
-    from src.mcp.server import _find_related_payload
+    from code_search.mcp.server import _find_related_payload
 
     comps = indexed_semantic_vector
     repo = comps["repo"]
@@ -1973,7 +1973,7 @@ def test_calibrated_confidence_preserves_result_contract(
 @pytest.fixture
 def resolution_contract_comps(tmp_path: Path) -> dict[str, Any]:
     """Indexed transparency fixture with a redactor for the resolution contract."""
-    from src.engine.redactor import Redactor
+    from code_search.engine.redactor import Redactor
     from tests.conftest import FIXTURES_DIR, _indexed_components
 
     repo = tmp_path / "transparency_contract_repo"

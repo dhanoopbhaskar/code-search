@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from src.engine.reranking import Reranker
+from code_search.engine.reranking import Reranker
 
 ARTIFACT = "reports/code-search-vs-grep.md"
 QUOTED_QUERIES = [

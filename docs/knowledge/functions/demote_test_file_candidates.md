@@ -2,12 +2,12 @@
 type: Function
 title: "demote_test_file_candidates"
 description: "Demote test-file chunks inside the candidate pool before fusion."
-resource: src/engine/reranking.py#demote_test_file_candidates
+resource: code_search/engine/reranking.py#demote_test_file_candidates
 tags: [ranking, reranking, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/reranking.py
+  - resource: code_search/engine/reranking.py
     id: source-code
 ---
 

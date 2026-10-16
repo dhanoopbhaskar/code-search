@@ -50,11 +50,11 @@ prod = [
 ]
 
 [project.scripts]
-code-search = "src.cli.main:main"
+code-search = "code_search.cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["code_search*"]
 
 [tool.ruff]
 target-version = "py311"

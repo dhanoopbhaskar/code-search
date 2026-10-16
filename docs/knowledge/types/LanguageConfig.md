@@ -2,12 +2,12 @@
 type: Class
 title: "LanguageConfig"
 description: "Operator-supplied overrides of the built-in language definitions (extensions and grammar modules)."
-resource: src/engine/config.py#LanguageConfig
+resource: code_search/engine/config.py#LanguageConfig
 tags: [config, language, class]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/config.py
+  - resource: code_search/engine/config.py
     id: source-code
 ---
 

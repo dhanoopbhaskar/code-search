@@ -2,12 +2,12 @@
 type: Class
 title: "QueryDaemon"
 description: "Background daemon keeping the index warm in memory and serving queries over a local socket."
-resource: src/engine/daemon.py#QueryDaemon
+resource: code_search/engine/daemon.py#QueryDaemon
 tags: [daemon, server, performance]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/daemon.py
+  - resource: code_search/engine/daemon.py
     id: source-code
 ---
 

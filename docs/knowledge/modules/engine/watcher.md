@@ -2,12 +2,12 @@
 type: Module
 title: "engine.watcher"
 description: "Polling-based filesystem change detection with SHA256 hashing and debounce-window aggregation."
-resource: src/engine/watcher.py
+resource: code_search/engine/watcher.py
 tags: [engine, watcher, filesystem]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/watcher.py
+  - resource: code_search/engine/watcher.py
     id: source-code
 ---
 

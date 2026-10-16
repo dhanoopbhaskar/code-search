@@ -2,12 +2,12 @@
 type: Class
 title: "HybridSearch"
 description: "Combines BM25 keyword search and vector semantic search via RRF fusion, with quality gates and rescue tiers."
-resource: src/engine/search.py#HybridSearch
+resource: code_search/engine/search.py#HybridSearch
 tags: [search, ranking, core]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/search.py
+  - resource: code_search/engine/search.py
     id: source-code
 ---
 

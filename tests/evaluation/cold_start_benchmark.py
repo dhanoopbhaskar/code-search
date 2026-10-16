@@ -58,7 +58,7 @@ def _counted_loader() -> tuple[Any, dict[str, int]]:
     A load is counted only when the module singleton transitions from absent to
     present, so repeated calls that reuse a cached model are not double-counted.
     """
-    from src.engine import embeddings
+    from code_search.engine import embeddings
 
     original = embeddings._load_model
     state = {"loads": 0}
@@ -95,9 +95,9 @@ def run_benchmark(
         The benchmark report with cold/warm percentiles, ``load_count``, a
         representative latency breakdown, and a ``pass``/``fail`` verdict.
     """
-    from src.engine import embeddings
-    from src.engine.embeddings import EmbeddingGenerator
-    from src.engine.search import HybridSearch
+    from code_search.engine import embeddings
+    from code_search.engine.embeddings import EmbeddingGenerator
+    from code_search.engine.search import HybridSearch
 
     original_load, load_state = _counted_loader()
     # Force a genuinely cold module singleton so the count measures the loads

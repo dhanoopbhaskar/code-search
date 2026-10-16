@@ -2,12 +2,12 @@
 type: Module
 title: "engine.search"
 description: "Hybrid BM25 + vector search engine with RRF fusion, quality gates, rescue tiers, and match-boost reranking."
-resource: src/engine/search.py
+resource: code_search/engine/search.py
 tags: [engine, search, ranking, core]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/search.py
+  - resource: code_search/engine/search.py
     id: source-code
 ---
 

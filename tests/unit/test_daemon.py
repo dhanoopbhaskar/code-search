@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from src.engine.daemon import DaemonClient, QueryDaemon, daemon_status, default_socket_path
+from code_search.engine.daemon import DaemonClient, QueryDaemon, daemon_status, default_socket_path
 
 
 class _FakeGenerator:
@@ -34,7 +34,7 @@ def _start_daemon_with_fake(
 ) -> tuple[QueryDaemon, threading.Thread, dict]:
     fake = _FakeGenerator()
     comps: dict[str, Any] = {"embedding_gen": fake}
-    monkeypatch.setattr("src.cli.main._initialize_components", lambda _ctx: comps)
+    monkeypatch.setattr("code_search.cli.main._initialize_components", lambda _ctx: comps)
 
     socket_path = default_socket_path(tmp_path)
     daemon = QueryDaemon(socket_path, tmp_path)
@@ -66,7 +66,7 @@ def test_ping_reports_warm_false_then_true(monkeypatch, tmp_path: Path) -> None:
 def test_daemon_start_is_idempotent_when_socket_exists(tmp_path: Path) -> None:
     import argparse
 
-    from src.cli.main import cmd_daemon
+    from code_search.cli.main import cmd_daemon
 
     socket_path = default_socket_path(tmp_path)
     socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,7 +110,7 @@ def test_daemon_forwarded_search_surfaces_scope_signal_and_override(
     path does."""
     import argparse
 
-    from src.cli import main as cli_main
+    from code_search.cli import main as cli_main
 
     payload = {
         "results": [],

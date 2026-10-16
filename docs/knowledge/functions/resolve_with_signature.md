@@ -2,12 +2,12 @@
 type: Function
 title: "resolve_with_signature"
 description: "Signature-aware overload disambiguation."
-resource: src/engine/symbol_resolution.py#resolve_with_signature
+resource: code_search/engine/symbol_resolution.py#resolve_with_signature
 tags: [symbols, resolution, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/symbol_resolution.py
+  - resource: code_search/engine/symbol_resolution.py
     id: source-code
 ---
 

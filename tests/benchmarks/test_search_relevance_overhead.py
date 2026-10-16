@@ -12,15 +12,15 @@ from typing import Any
 
 import pytest
 
-from src.engine.config import Settings
-from src.engine.graph import GraphDatabase
-from src.engine.search import HybridSearch
+from code_search.engine.config import Settings
+from code_search.engine.graph import GraphDatabase
+from code_search.engine.search import HybridSearch
 
 
 @pytest.fixture
 def relevance_search_index(tmp_path: Any) -> dict[str, Any]:
     """A synthetic ranked index with code + config + docs chunks."""
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "relevance_overhead.db", settings)

@@ -2,12 +2,12 @@
 type: Function
 title: "confidence_band"
 description: "Map a calibrated confidence score to a discrete band label (high/medium/low)."
-resource: src/engine/confidence.py#confidence_band
+resource: code_search/engine/confidence.py#confidence_band
 tags: [confidence, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/confidence.py
+  - resource: code_search/engine/confidence.py
     id: source-code
 ---
 

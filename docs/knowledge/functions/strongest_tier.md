@@ -2,12 +2,12 @@
 type: Function
 title: "strongest_tier"
 description: "Highest-priority tier in an iterable."
-resource: src/engine/match_boost.py#strongest_tier
+resource: code_search/engine/match_boost.py#strongest_tier
 tags: [ranking, match-boost, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/match_boost.py
+  - resource: code_search/engine/match_boost.py
     id: source-code
 ---
 

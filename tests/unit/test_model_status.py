@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.engine.model_status import report_model_status
+from code_search.engine.model_status import report_model_status
 
 
 def test_warmup_state_is_additive_key() -> None:

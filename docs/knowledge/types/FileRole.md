@@ -2,12 +2,12 @@
 type: Class
 title: "FileRole"
 description: "StrEnum classifying a file's structural role for behavior/definition reranking."
-resource: src/engine/classification.py#FileRole
+resource: code_search/engine/classification.py#FileRole
 tags: [classification, ranking, enum]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/classification.py
+  - resource: code_search/engine/classification.py
     id: source-code
 ---
 

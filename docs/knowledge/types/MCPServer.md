@@ -2,12 +2,12 @@
 type: Class
 title: "MCPServer"
 description: "FastMCP server exposing search and code-navigation tools over stdio."
-resource: src/mcp/server.py#MCPServer
+resource: code_search/mcp/server.py#MCPServer
 tags: [mcp, server, stdio]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/mcp/server.py
+  - resource: code_search/mcp/server.py
     id: source-code
 ---
 

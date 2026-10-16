@@ -2,12 +2,12 @@
 type: Module
 title: "engine.occurrence_count"
 description: "Per-line occurrence counting for exhaustive search mode, verifiable against a grep ground-truth oracle."
-resource: src/engine/occurrence_count.py
+resource: code_search/engine/occurrence_count.py
 tags: [engine, search, exhaustive-mode]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/occurrence_count.py
+  - resource: code_search/engine/occurrence_count.py
     id: source-code
 ---
 

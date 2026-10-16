@@ -23,7 +23,7 @@ MODES: list[tuple[str, list[str]]] = [
 
 
 def _run_cli_search(context_dir: str, query: list[str]) -> None:
-    from src.cli.main import main
+    from code_search.cli.main import main
 
     test_args = ["code-search", "search", f"--context-dir={context_dir}", *query]
     try:

@@ -2,12 +2,12 @@
 type: Function
 title: "build_fts_query"
 description: "Build an FTS5 MATCH expression from decomposed sub-words."
-resource: src/engine/search.py#build_fts_query
+resource: code_search/engine/search.py#build_fts_query
 tags: [search, bm25, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/search.py
+  - resource: code_search/engine/search.py
     id: source-code
 ---
 

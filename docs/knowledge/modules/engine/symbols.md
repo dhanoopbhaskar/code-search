@@ -2,12 +2,12 @@
 type: Module
 title: "engine.symbols"
 description: "AST-based symbol extraction and SQLite-backed storage for code symbols (FQNs, call/import/inheritance edges)."
-resource: src/engine/symbols.py
+resource: code_search/engine/symbols.py
 tags: [engine, symbols, ast, storage]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/symbols.py
+  - resource: code_search/engine/symbols.py
     id: source-code
 ---
 

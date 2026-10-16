@@ -1,6 +1,6 @@
 """Unit tests for the pure resolution policy (identity tiers and ranking).
 
-These tests exercise :mod:`src.engine.symbol_resolution` directly with
+These tests exercise :mod:`code_search.engine.symbol_resolution` directly with
 synthetic candidate dicts — no database, no index, no model — so the ranking
 policy, the identity tiers, the outcome mapping, deprecation detection, and the
 evidence tokens are pinned independently of the storage layer.
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.engine.symbol_resolution import (
+from code_search.engine.symbol_resolution import (
     EVIDENCE_DEFINITION_SITE,
     EVIDENCE_DEPRECATED,
     EVIDENCE_DETERMINISTIC_TIEBREAK,

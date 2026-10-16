@@ -2,12 +2,12 @@
 type: Overview
 title: "Environment Configuration"
 description: "Full enumeration of CODE_SEARCH_* environment variables: the 129 Settings fields plus the separately-read language-config path."
-resource: src/engine/config.py
+resource: code_search/engine/config.py
 tags: [config, environment, settings]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/config.py
+  - resource: code_search/engine/config.py
     id: source-code
 ---
 

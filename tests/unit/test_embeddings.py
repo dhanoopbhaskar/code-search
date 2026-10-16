@@ -4,7 +4,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src.engine.embeddings import EMBEDDING_BYTES, EMBEDDING_DIM, EmbeddingGenerator, VectorIndex
+from code_search.engine.embeddings import (
+    EMBEDDING_BYTES,
+    EMBEDDING_DIM,
+    EmbeddingGenerator,
+    VectorIndex,
+)
 
 
 @pytest.fixture
@@ -302,7 +307,7 @@ def test_encode_after_init(generator: EmbeddingGenerator) -> None:
 
 
 def test_encode_batch_matches_per_item_vectors(tmp_path: Path) -> None:
-    from src.engine.config import Settings
+    from code_search.engine.config import Settings
 
     generator = EmbeddingGenerator(Settings(context_dir=tmp_path))
     texts = ["def foo(): pass", "class Bar:\n    pass", "x = 1\n", ""]
@@ -319,8 +324,8 @@ def test_encode_batch_matches_per_item_vectors(tmp_path: Path) -> None:
 
 
 def test_is_available_sets_loaded_flag(tmp_path: Path) -> None:
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator
 
     settings = Settings(context_dir=tmp_path, embedding_model="nonexistent-model")
     gen = EmbeddingGenerator(settings)
@@ -329,7 +334,7 @@ def test_is_available_sets_loaded_flag(tmp_path: Path) -> None:
 
 
 def test_find_local_model_path_search_order(tmp_path: Path) -> None:
-    from src.engine.embeddings import _find_local_model_path
+    from code_search.engine.embeddings import _find_local_model_path
 
     model_name = "test-model"
     model_dir = tmp_path / "models" / model_name
@@ -347,7 +352,7 @@ def test_find_local_model_path_search_order(tmp_path: Path) -> None:
 
 
 def test_find_local_model_path_env_override(tmp_path: Path) -> None:
-    from src.engine.embeddings import _find_local_model_path
+    from code_search.engine.embeddings import _find_local_model_path
 
     model_name = "override-model"
     custom_path = tmp_path / "custom" / "models" / model_name
@@ -368,7 +373,7 @@ def test_find_local_model_path_env_override(tmp_path: Path) -> None:
 
 
 def test_find_local_model_path_returns_none(tmp_path: Path) -> None:
-    from src.engine.embeddings import _find_local_model_path
+    from code_search.engine.embeddings import _find_local_model_path
 
     result = _find_local_model_path("nonexistent-model-name")
     assert result is None or result.is_dir()
@@ -377,7 +382,7 @@ def test_find_local_model_path_returns_none(tmp_path: Path) -> None:
 def test_find_local_model_path_install_share_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from src.engine import embeddings as emb
+    from code_search.engine import embeddings as emb
 
     model_name = "share-model"
     prefix = tmp_path / "venv"
@@ -394,7 +399,7 @@ def test_find_local_model_path_install_share_dir(
 
 
 def test_find_local_model_path_user_base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from src.engine import embeddings as emb
+    from code_search.engine import embeddings as emb
 
     model_name = "userbase-model"
     user_base = tmp_path / "userbase"
@@ -412,7 +417,7 @@ def test_find_local_model_path_user_base(tmp_path: Path, monkeypatch: pytest.Mon
 def test_find_local_model_path_package_relative(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from src.engine import embeddings as emb
+    from code_search.engine import embeddings as emb
 
     model_name = "pkg-model"
     fake_module = tmp_path / "src" / "engine" / "embeddings.py"
@@ -431,7 +436,7 @@ def test_find_local_model_path_package_relative(
 
 
 def test_get_binary_dir(tmp_path: Path) -> None:
-    from src.engine.embeddings import _get_binary_dir
+    from code_search.engine.embeddings import _get_binary_dir
 
     result = _get_binary_dir()
     assert result is None or isinstance(result, Path)
@@ -455,7 +460,7 @@ class _FakeMetadataStore:
 
 
 def test_representation_scheme_helpers_roundtrip() -> None:
-    from src.engine.embeddings import (
+    from code_search.engine.embeddings import (
         get_representation_scheme_version,
         set_representation_scheme_version,
     )
@@ -467,7 +472,7 @@ def test_representation_scheme_helpers_roundtrip() -> None:
 
 
 def test_representation_compat_equal_scheme_passes() -> None:
-    from src.engine.embeddings import (
+    from code_search.engine.embeddings import (
         REPRESENTATION_SCHEME_VERSION,
         check_index_representation_compatibility,
     )
@@ -479,7 +484,7 @@ def test_representation_compat_equal_scheme_passes() -> None:
 
 
 def test_representation_compat_older_scheme_raises() -> None:
-    from src.engine.embeddings import check_index_representation_compatibility
+    from code_search.engine.embeddings import check_index_representation_compatibility
 
     store = _FakeMetadataStore({"representation_scheme_version": "0"})
     with pytest.raises(ValueError, match="--force"):
@@ -487,7 +492,7 @@ def test_representation_compat_older_scheme_raises() -> None:
 
 
 def test_representation_compat_newer_scheme_raises() -> None:
-    from src.engine.embeddings import check_index_representation_compatibility
+    from code_search.engine.embeddings import check_index_representation_compatibility
 
     store = _FakeMetadataStore({"representation_scheme_version": "999"})
     with pytest.raises(ValueError, match="--force"):
@@ -495,7 +500,7 @@ def test_representation_compat_newer_scheme_raises() -> None:
 
 
 def test_representation_compat_absent_marker_engine_built_raises() -> None:
-    from src.engine.embeddings import check_index_representation_compatibility
+    from code_search.engine.embeddings import check_index_representation_compatibility
 
     store = _FakeMetadataStore({"vector_model_name": "potion-code-16m-32d"})
     with pytest.raises(ValueError, match="--force"):
@@ -503,14 +508,14 @@ def test_representation_compat_absent_marker_engine_built_raises() -> None:
 
 
 def test_representation_compat_absent_marker_synthetic_compatible() -> None:
-    from src.engine.embeddings import check_index_representation_compatibility
+    from code_search.engine.embeddings import check_index_representation_compatibility
 
     store = _FakeMetadataStore({})
     check_index_representation_compatibility(store, has_vectors=True)
 
 
 def test_representation_compat_absent_marker_without_vectors_compatible() -> None:
-    from src.engine.embeddings import check_index_representation_compatibility
+    from code_search.engine.embeddings import check_index_representation_compatibility
 
     store = _FakeMetadataStore({"vector_model_name": "potion-code-16m-32d"})
     check_index_representation_compatibility(store, has_vectors=False)

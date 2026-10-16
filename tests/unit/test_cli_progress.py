@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.cli.main import _make_index_progress_reporter
+from code_search.cli.main import _make_index_progress_reporter
 
 
 def test_reporter_prints_at_each_ten_percent_milestone(

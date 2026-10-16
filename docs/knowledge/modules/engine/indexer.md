@@ -2,12 +2,12 @@
 type: Module
 title: "engine.indexer"
 description: "Orchestrates full and incremental codebase indexing: discovery, AST parsing, symbol/edge/chunk persistence, embedding generation."
-resource: src/engine/indexer.py
+resource: code_search/engine/indexer.py
 tags: [engine, indexing, pipeline]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/indexer.py
+  - resource: code_search/engine/indexer.py
     id: source-code
 ---
 

@@ -2,12 +2,12 @@
 type: Function
 title: "detect_definition_intent"
 description: "Detect definition phrasing and resolve its target."
-resource: src/engine/language.py#detect_definition_intent
+resource: code_search/engine/language.py#detect_definition_intent
 tags: [language, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/language.py
+  - resource: code_search/engine/language.py
     id: source-code
 ---
 

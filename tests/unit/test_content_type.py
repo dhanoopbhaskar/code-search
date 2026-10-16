@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from src.engine.classification import ContentType, content_type
-from src.engine.config import Settings
+from code_search.engine.classification import ContentType, content_type
+from code_search.engine.config import Settings
 
 
 class TestContentType:

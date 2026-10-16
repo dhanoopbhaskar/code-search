@@ -17,9 +17,9 @@ from typing import Any
 
 import pytest
 
-from src.engine.config import Settings
-from src.engine.paths import normalize_indexed_path
-from src.engine.search import HybridSearch
+from code_search.engine.config import Settings
+from code_search.engine.paths import normalize_indexed_path
+from code_search.engine.search import HybridSearch
 
 
 def _rg_member_set(files: list[Path], term: str) -> set[tuple[str, int]]:

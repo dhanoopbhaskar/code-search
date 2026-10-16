@@ -2,12 +2,12 @@
 type: Function
 title: "normalize_signature"
 description: "Parse and normalize a (params) signature."
-resource: src/engine/symbol_resolution.py#normalize_signature
+resource: code_search/engine/symbol_resolution.py#normalize_signature
 tags: [symbols, resolution, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/symbol_resolution.py
+  - resource: code_search/engine/symbol_resolution.py
     id: source-code
 ---
 

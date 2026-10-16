@@ -1,7 +1,7 @@
 ---
 type: Index
 title: "Types"
-description: "Index of all class/dataclass/enum concepts extracted from src/."
+description: "Index of all class/dataclass/enum concepts extracted from code_search/."
 tags: [types, index]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft

@@ -2,12 +2,12 @@
 type: Function
 title: "resolve_stored_path"
 description: "Return the stored code_chunks.file_path spelling for a candidate path."
-resource: src/engine/paths.py#resolve_stored_path
+resource: code_search/engine/paths.py#resolve_stored_path
 tags: [paths, find-related, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/paths.py
+  - resource: code_search/engine/paths.py
     id: source-code
 ---
 

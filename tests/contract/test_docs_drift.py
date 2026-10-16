@@ -7,7 +7,7 @@ excluding archived reports (``docs/archived/``). The repo ``AGENTS.md``
 documents no code-search options and is out of scope.
 
 The implemented surface is introspected from the real argparse tree
-(:func:`src.cli.main.build_parser`) so the drift check never hard-codes the
+(:func:`code_search.cli.main.build_parser`) so the drift check never hard-codes the
 option set; the documented surface is mined from the markdown prose and the
 search-flag tables the docs ship.
 """
@@ -43,7 +43,7 @@ _DOCUMENTED_SUBCOMMANDS = ("index", "search", "symbol", "graph", "implementation
 
 def _parser_choices() -> dict[str, argparse.ArgumentParser]:
     """Return the subcommand name → subparser map from the real argparse tree."""
-    from src.cli.main import build_parser
+    from code_search.cli.main import build_parser
 
     parser = build_parser()
     sub = next(

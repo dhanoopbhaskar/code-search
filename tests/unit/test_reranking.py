@@ -2,8 +2,8 @@ from typing import Any
 
 import pytest
 
-from src.engine.classification import PathClass
-from src.engine.reranking import Reranker, demote_test_file_candidates
+from code_search.engine.classification import PathClass
+from code_search.engine.reranking import Reranker, demote_test_file_candidates
 
 
 class FakeConnection:
@@ -264,7 +264,7 @@ def test_reconcile_definition_owner_infra_file(reranker: Reranker) -> None:
     """A definition-owner chunk keeps its boost even when its
     file classifies as infra, so the canonical answer still outranks a
     same-scored reference on a code file."""
-    from src.engine.classification import FileRole
+    from code_search.engine.classification import FileRole
 
     owner = {
         "chunk_id": 1,

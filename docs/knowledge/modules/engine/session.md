@@ -2,12 +2,12 @@
 type: Module
 title: "engine.session"
 description: "Session database tracking READ/WRITE navigation events with exponential decay for personalised reranking."
-resource: src/engine/session.py
+resource: code_search/engine/session.py
 tags: [engine, session, personalization]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/session.py
+  - resource: code_search/engine/session.py
     id: source-code
 ---
 

@@ -10,17 +10,17 @@ from typing import Any
 
 import pytest
 
-from src.engine.config import Settings
-from src.engine.freshness import FreshnessChecker
-from src.engine.graph import GraphDatabase, IndexMetadataStore
-from src.engine.parser import ASTParser
+from code_search.engine.config import Settings
+from code_search.engine.freshness import FreshnessChecker
+from code_search.engine.graph import GraphDatabase, IndexMetadataStore
+from code_search.engine.parser import ASTParser
 
 NUM_FILES = 5000
 
 
 @pytest.fixture
 def large_index(tmp_path: Path) -> dict[str, Any]:
-    from src.context import ContextManager
+    from code_search.context import ContextManager
 
     repo = tmp_path / "repo"
     for i in range(NUM_FILES):

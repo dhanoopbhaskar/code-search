@@ -16,8 +16,8 @@ from typing import Any
 
 import pytest
 
-from src.engine.implementations import find_implementations
-from src.mcp.server import _call_neighbors_payload
+from code_search.engine.implementations import find_implementations
+from code_search.mcp.server import _call_neighbors_payload
 
 FIXTURES_DIR = Path(__file__).resolve().parents[1] / "fixtures"
 
@@ -37,8 +37,8 @@ _DIRECT_CASES = [
 @pytest.fixture
 def impl_comps(tmp_path: Path) -> dict[str, Any]:
     """Indexed components over the implementations fixture corpus."""
-    from src.engine.metrics import MetricsCollector
-    from src.engine.redactor import Redactor
+    from code_search.engine.metrics import MetricsCollector
+    from code_search.engine.redactor import Redactor
     from tests.conftest import _indexed_components, _symbol_index
 
     repo = tmp_path / "implementations_repo"
@@ -59,7 +59,7 @@ def _names(result: dict[str, Any]) -> list[str]:
 
 
 def _call_mcp_tool(comps: dict[str, Any], name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    from src.mcp.server import MCPServer
+    from code_search.mcp.server import MCPServer
 
     server = MCPServer(comps).build_fastmcp()
 
@@ -72,7 +72,7 @@ def _call_mcp_tool(comps: dict[str, Any], name: str, arguments: dict[str, Any]) 
 
 
 def _run_cli(argv: list[str], capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
-    from src.cli.main import main
+    from code_search.cli.main import main
 
     previous = sys.argv
     sys.argv = ["code-search", *argv]
@@ -192,7 +192,7 @@ def test_cross_surface_parity(
             "implements",
         )
     )
-    from src.engine.daemon import QueryDaemon
+    from code_search.engine.daemon import QueryDaemon
 
     daemon = QueryDaemon._do_implementations(impl_comps, {"fqn": fqn})["payload"]
     cli = _run_cli(

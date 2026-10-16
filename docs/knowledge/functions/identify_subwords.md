@@ -2,12 +2,12 @@
 type: Function
 title: "identify_subwords"
 description: "Split identifier-style tokens into their constituent sub-words (camelCase/snake_case decomposition)."
-resource: src/engine/search.py#identify_subwords
+resource: code_search/engine/search.py#identify_subwords
 tags: [search, tokenization, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/search.py
+  - resource: code_search/engine/search.py
     id: source-code
 ---
 
