@@ -206,6 +206,25 @@ def _make_index_progress_reporter() -> Callable[[str, int, int], None]:
     return report
 
 
+def _make_index_status_reporter() -> Callable[[str], None]:
+    """Build a callback that prints a one-line status message for a slow step.
+
+    The post-embedding finalization (saving vectors, sweeping stale files,
+    rebuilding the keyword index, validating edges) has no progress counter, so
+    a single message per step keeps the user informed while the index appears
+    to sit at 100%.
+
+    Returns:
+        A callback suitable for ``IndexOrchestrator.index_codebase``'s
+        ``status_callback``.
+    """
+
+    def report(message: str) -> None:
+        print(f"Indexing: {message}...", file=sys.stderr)
+
+    return report
+
+
 def cmd_index(args: argparse.Namespace) -> int:
     """Run the ``index`` subcommand: build or update the code index.
 
@@ -318,6 +337,7 @@ def cmd_index(args: argparse.Namespace) -> int:
             include_resources=include_resources,
             resource_extensions=res_exts,
             progress_callback=_make_index_progress_reporter(),
+            status_callback=_make_index_status_reporter(),
         )
         print(
             f"Index complete: {result['total_files']} files, "

@@ -58,6 +58,11 @@ _EMBED_PROGRESS_BATCH = 256
 # of ``"parsing"``, ``"persisting"``, or ``"embedding"``.
 ProgressCallback = Callable[[str, int, int], None]
 
+# Reports a human-readable status message for a single, non-iterable pipeline
+# step (for example the post-embedding finalization). Used to keep the user
+# informed about work that has no natural ``(completed, total)`` counter.
+StatusCallback = Callable[[str], None]
+
 # Symbol kinds that declare a type. Used when resolving an inheritance base
 # that an import map expanded to a dotted module path (for example a Python
 # ``from pkg.animal import Animal`` -> ``pkg.animal.Animal``): the base names a
@@ -455,6 +460,7 @@ class IndexOrchestrator:
         include_resources: bool = False,
         resource_extensions: tuple[str, ...] | None = None,
         progress_callback: ProgressCallback | None = None,
+        status_callback: StatusCallback | None = None,
     ) -> dict[str, Any]:
         """Run a full or incremental index over *root_path*.
 
@@ -481,6 +487,10 @@ class IndexOrchestrator:
                 invoked periodically through the parsing, persistence, and
                 embedding phases. Phases are labelled ``parsing``,
                 ``persisting``, and ``embedding``.
+            status_callback: Optional ``(message)`` reporter invoked once per
+                non-iterable finalization step (saving vectors, sweeping stale
+                files, rebuilding the keyword index, validating edges) so the
+                user is informed about work that has no progress counter.
 
         Returns:
             A summary dict ``{total_files, total_symbols, total_chunks,
@@ -915,6 +925,8 @@ class IndexOrchestrator:
                             "embedding", min(start + len(batch), embed_total), embed_total
                         )
 
+            if status_callback is not None:
+                status_callback("Saving vectors")
             self._vector_index.save()
             duration_s = time.monotonic() - start_time
 
@@ -925,17 +937,25 @@ class IndexOrchestrator:
             if not incremental or self._indexing_policy_changed(
                 root_path, include_tests, include_resources, res_exts, exclusion_patterns
             ):
+                if status_callback is not None:
+                    status_callback("Sweeping stale files")
                 self._sweep_stale_files(root_path)
 
             # Keep the keyword index in parity with code_chunks. Full indexes
             # rebuild unconditionally; incremental ones only rebuild when the
             # FTS maintenance triggers have drifted.
+            if status_callback is not None:
+                status_callback(
+                    "Rebuilding keyword index" if not incremental else "Verifying keyword index"
+                )
             fts_count = self._ensure_fts_parity(force=not incremental)
             self._metadata.set_fts_chunks(fts_count)
 
             # Post-index edge validation sweep: remove spurious self-edges,
             # same-name mis-resolutions, and out-of-range
             # attachments while preserving genuine recursive self-calls.
+            if status_callback is not None:
+                status_callback("Validating graph edges")
             try:
                 self._edge_store.run_edge_validation_sweep()
             except Exception as exc:

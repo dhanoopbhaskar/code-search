@@ -573,3 +573,24 @@ def test_index_codebase_reports_progress(tmp_path: Path) -> None:
     persisted = [completed for phase, completed, _ in events if phase == "persisting"]
     assert persisted == sorted(persisted)
     assert persisted[-1] == len(persisted)
+
+
+def test_index_codebase_reports_finalization_status(tmp_path: Path) -> None:
+    repo = tmp_path / "status_repo"
+    (repo / "src").mkdir(parents=True)
+    for i in range(3):
+        (repo / "src" / f"mod{i}.py").write_text(f"def f{i}(): return {i}\n")
+    comps = _build_components(repo)
+
+    messages: list[str] = []
+    comps["orchestrator"].index_codebase(
+        root_path=repo,
+        force=True,
+        verbose=False,
+        status_callback=messages.append,
+    )
+
+    assert "Saving vectors" in messages
+    assert "Sweeping stale files" in messages
+    assert "Rebuilding keyword index" in messages
+    assert "Validating graph edges" in messages
