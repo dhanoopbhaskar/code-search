@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from src.engine.audit import AuditDatabase
+from code_search.engine.audit import AuditDatabase
 
 
 @pytest.fixture

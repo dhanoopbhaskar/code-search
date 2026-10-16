@@ -2,12 +2,12 @@
 type: Class
 title: "FileWatcher"
 description: "Polls the filesystem for content changes using SHA256 hashing; debounces callbacks via threading.Timer."
-resource: src/engine/watcher.py#FileWatcher
+resource: code_search/engine/watcher.py#FileWatcher
 tags: [watcher, filesystem]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/watcher.py
+  - resource: code_search/engine/watcher.py
     id: source-code
 ---
 

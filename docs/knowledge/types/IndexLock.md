@@ -2,12 +2,12 @@
 type: Class
 title: "IndexLock"
 description: "Cross-process file lock preventing concurrent index writes."
-resource: src/engine/indexer.py#IndexLock
+resource: code_search/engine/indexer.py#IndexLock
 tags: [indexer, concurrency, locking]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/indexer.py
+  - resource: code_search/engine/indexer.py
     id: source-code
 ---
 

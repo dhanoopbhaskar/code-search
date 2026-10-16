@@ -2,12 +2,12 @@
 type: Function
 title: "set_representation_scheme_version"
 description: "Persist the current chunk-representation scheme version into index metadata."
-resource: src/engine/embeddings.py#set_representation_scheme_version
+resource: code_search/engine/embeddings.py#set_representation_scheme_version
 tags: [embeddings, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/embeddings.py
+  - resource: code_search/engine/embeddings.py
     id: source-code
 ---
 

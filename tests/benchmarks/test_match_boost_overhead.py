@@ -19,9 +19,9 @@ from typing import Any
 
 import pytest
 
-from src.engine.config import Settings
-from src.engine.graph import GraphDatabase
-from src.engine.search import HybridSearch
+from code_search.engine.config import Settings
+from code_search.engine.graph import GraphDatabase
+from code_search.engine.search import HybridSearch
 
 # A corpus large enough that the fixed FTS filename lookup is a small fraction
 # of the ranked query time, mirroring the 1M-LOC target scale.
@@ -32,7 +32,7 @@ _QUERY = "handle request config"
 @pytest.fixture
 def ranked_match_boost_index(tmp_path: Any) -> dict[str, Any]:
     """A synthetic ranked index large enough for stable timing."""
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "match_boost_overhead.db", settings)

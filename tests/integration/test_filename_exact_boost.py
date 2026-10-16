@@ -43,7 +43,7 @@ def test_readme_all_scope_ranks_named_file_first(indexed_match_boost: dict[str, 
 
 def test_readme_no_model_lexical_path(indexed_match_boost: dict[str, Any]) -> None:
     """The filename boost still applies on the degraded lexical path."""
-    from src.engine.search import HybridSearch
+    from code_search.engine.search import HybridSearch
 
     components = indexed_match_boost
     degraded = HybridSearch(

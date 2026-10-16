@@ -2,12 +2,12 @@
 type: Class
 title: "VectorSearch"
 description: "Semantic search using the vector index."
-resource: src/engine/search.py#VectorSearch
+resource: code_search/engine/search.py#VectorSearch
 tags: [search, vector, semantic]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/search.py
+  - resource: code_search/engine/search.py
     id: source-code
 ---
 

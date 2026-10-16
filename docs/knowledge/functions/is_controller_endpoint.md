@@ -2,12 +2,12 @@
 type: Function
 title: "is_controller_endpoint"
 description: "Whether a symbol looks like a web controller/route endpoint (a high-trust signal for authorization-intent queries)."
-resource: src/engine/confidence.py#is_controller_endpoint
+resource: code_search/engine/confidence.py#is_controller_endpoint
 tags: [confidence, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/confidence.py
+  - resource: code_search/engine/confidence.py
     id: source-code
 ---
 

@@ -2,12 +2,12 @@
 type: Class
 title: "FreshnessChecker"
 description: "Computes a working-tree-vs-index staleness signal via stat baselines and optional rehashing."
-resource: src/engine/freshness.py#FreshnessChecker
+resource: code_search/engine/freshness.py#FreshnessChecker
 tags: [freshness, staleness]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/freshness.py
+  - resource: code_search/engine/freshness.py
     id: source-code
 ---
 

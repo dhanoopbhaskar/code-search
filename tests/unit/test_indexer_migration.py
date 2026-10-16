@@ -20,8 +20,13 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from src.engine.config import Settings
-from src.engine.graph import ALL_DDLS, CODE_CHUNKS_TABLE_DDL, SYMBOLS_TABLE_DDL, GraphDatabase
+from code_search.engine.config import Settings
+from code_search.engine.graph import (
+    ALL_DDLS,
+    CODE_CHUNKS_TABLE_DDL,
+    SYMBOLS_TABLE_DDL,
+    GraphDatabase,
+)
 
 V7_FILE_CHECKSUMS_DDL = """
 CREATE TABLE IF NOT EXISTS file_checksums (

@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from src.engine.config import Settings
-from src.engine.session import SessionDatabase
+from code_search.engine.config import Settings
+from code_search.engine.session import SessionDatabase
 
 
 @pytest.fixture

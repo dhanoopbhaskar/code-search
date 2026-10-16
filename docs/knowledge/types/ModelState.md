@@ -2,12 +2,12 @@
 type: Class
 title: "ModelState"
 description: "StrEnum for the current embedding model state (WARM, COLD, INITIALIZING)."
-resource: src/engine/model_status.py#ModelState
+resource: code_search/engine/model_status.py#ModelState
 tags: [embeddings, observability, enum]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/model_status.py
+  - resource: code_search/engine/model_status.py
     id: source-code
 ---
 

@@ -2,12 +2,12 @@
 type: Function
 title: "daemon_status"
 description: "Report {running, warm, socket, pid} for a context directory's daemon."
-resource: src/engine/daemon.py#daemon_status
+resource: code_search/engine/daemon.py#daemon_status
 tags: [daemon, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/daemon.py
+  - resource: code_search/engine/daemon.py
     id: source-code
 ---
 

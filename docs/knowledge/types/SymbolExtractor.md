@@ -2,12 +2,12 @@
 type: Class
 title: "SymbolExtractor"
 description: "Extracts symbols and edges (calls, imports, inheritance) from tree-sitter ASTs."
-resource: src/engine/symbols.py#SymbolExtractor
+resource: code_search/engine/symbols.py#SymbolExtractor
 tags: [symbols, ast]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/symbols.py
+  - resource: code_search/engine/symbols.py
     id: source-code
 ---
 

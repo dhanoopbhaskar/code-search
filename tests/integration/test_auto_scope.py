@@ -14,7 +14,7 @@ import dataclasses
 from pathlib import Path
 from typing import Any
 
-from src.engine.search import HybridSearch
+from code_search.engine.search import HybridSearch
 
 DOCS_QUERY = "how to deploy"
 DOCS_QUERY_NO_PROSE = "readme documentation"

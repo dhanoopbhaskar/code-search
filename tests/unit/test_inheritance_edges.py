@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from src.engine.parser import ASTParser
-from src.engine.symbols import SymbolExtractor
+from code_search.engine.parser import ASTParser
+from code_search.engine.symbols import SymbolExtractor
 
 
 @pytest.fixture

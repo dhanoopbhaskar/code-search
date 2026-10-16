@@ -2,12 +2,12 @@
 type: Function
 title: "query_symbol_identifier"
 description: "Extract a candidate symbol identifier from a query, if it looks like one."
-resource: src/engine/search.py#query_symbol_identifier
+resource: code_search/engine/search.py#query_symbol_identifier
 tags: [search, query-analysis, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/search.py
+  - resource: code_search/engine/search.py
     id: source-code
 ---
 

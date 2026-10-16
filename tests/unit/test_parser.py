@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from src.engine.config import Settings
-from src.engine.parser import SUPPORTED_LANGUAGES, ASTParser
+from code_search.engine.config import Settings
+from code_search.engine.parser import SUPPORTED_LANGUAGES, ASTParser
 
 
 @pytest.fixture
@@ -212,7 +212,7 @@ def test_detect_language_toml(parser: ASTParser) -> None:
 
 
 def test_warning_deduplication(parser: ASTParser) -> None:
-    from src.engine.parser import _reset_warned_keys, _warned_keys
+    from code_search.engine.parser import _reset_warned_keys, _warned_keys
 
     _reset_warned_keys()
     assert len(_warned_keys) == 0

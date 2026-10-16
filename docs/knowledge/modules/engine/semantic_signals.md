@@ -2,12 +2,12 @@
 type: Module
 title: "engine.semantic_signals"
 description: "Package overlap, type sharing, and call-graph proximity signals for find_related relevance ranking."
-resource: src/engine/semantic_signals.py
+resource: code_search/engine/semantic_signals.py
 tags: [engine, ranking, find-related]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/semantic_signals.py
+  - resource: code_search/engine/semantic_signals.py
     id: source-code
 ---
 

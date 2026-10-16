@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from src.engine.index_metadata import IndexMetadata, IndexStatus
-from src.engine.index_service import IndexChangeDetector
-from src.engine.model_status import ModelState, report_model_status
+from code_search.engine.index_metadata import IndexMetadata, IndexStatus
+from code_search.engine.index_service import IndexChangeDetector
+from code_search.engine.model_status import ModelState, report_model_status
 
 
 class _FakeMetadataStore:

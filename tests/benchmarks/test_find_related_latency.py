@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from src.mcp.server import _find_related_payload
+from code_search.mcp.server import _find_related_payload
 from tests.conftest import FIXTURES_DIR, _indexed_components
 
 _ANCHOR_REL_PATH = Path("src", "main", "java", "com", "example", "article", "ArticleService.java")

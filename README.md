@@ -276,13 +276,13 @@ The default sample repo contains Python, JavaScript, Java, XML, SQL, and propert
 
 ```bash
 # Lint
-ruff check src/ tests/
+ruff check code_search/ tests/
 
 # Type check
-mypy src/
+mypy code_search/
 
 # Format
-ruff format src/ tests/
+ruff format code_search/ tests/
 
 # Run all quality checks
 make check
@@ -297,7 +297,7 @@ make check
 ├── scripts/
 │   ├── bundle.py              # Cross-platform bundle builder (Windows/Mac/Linux)
 │   └── install-from-bundle.py # Cross-platform bundle installer
-├── src/
+├── code_search/
 │   ├── engine/       # Core engine modules
 │   ├── parser.py       # Tree-sitter AST parsing
 │   ├── symbols.py      # Symbol extraction & FQN resolution

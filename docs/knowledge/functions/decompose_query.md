@@ -2,12 +2,12 @@
 type: Function
 title: "decompose_query"
 description: "Tokenize and decompose a full query into its sub-word set."
-resource: src/engine/search.py#decompose_query
+resource: code_search/engine/search.py#decompose_query
 tags: [search, tokenization, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/search.py
+  - resource: code_search/engine/search.py
     id: source-code
 ---
 

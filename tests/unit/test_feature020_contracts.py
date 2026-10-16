@@ -8,10 +8,10 @@ the serving response service, and the file-role/rescue-floor classifiers.
 
 from __future__ import annotations
 
-from src.engine.file_role import FileRole, classify_file_role
-from src.engine.occurrence_count import count_occurrences_per_line
-from src.engine.rescue_floor import evaluate_rescue_floor
-from src.engine.scent_detection import compute_scent_adjustment, detect_config_ddl_scent
+from code_search.engine.file_role import FileRole, classify_file_role
+from code_search.engine.occurrence_count import count_occurrences_per_line
+from code_search.engine.rescue_floor import evaluate_rescue_floor
+from code_search.engine.scent_detection import compute_scent_adjustment, detect_config_ddl_scent
 
 
 class TestOccurrenceCount:

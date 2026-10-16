@@ -2,12 +2,12 @@
 type: Class
 title: "PathClass"
 description: "StrEnum giving a file path's rank-relevant structural classification."
-resource: src/engine/classification.py#PathClass
+resource: code_search/engine/classification.py#PathClass
 tags: [classification, paths, enum]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/classification.py
+  - resource: code_search/engine/classification.py
     id: source-code
 ---
 

@@ -2,12 +2,12 @@
 type: Class
 title: "QueryMatchContext"
 description: "Query-level name-resolution facts (identifier, qualified name, ambiguity, resolution outcome) computed once per request for confidence scoring."
-resource: src/engine/confidence.py#QueryMatchContext
+resource: code_search/engine/confidence.py#QueryMatchContext
 tags: [confidence, ranking, dataclass]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/confidence.py
+  - resource: code_search/engine/confidence.py
     id: source-code
 ---
 

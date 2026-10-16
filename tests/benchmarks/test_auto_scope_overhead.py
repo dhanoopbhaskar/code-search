@@ -16,9 +16,9 @@ from typing import Any
 
 import pytest
 
-from src.engine.config import Settings
-from src.engine.graph import GraphDatabase
-from src.engine.search import HybridSearch
+from code_search.engine.config import Settings
+from code_search.engine.graph import GraphDatabase
+from code_search.engine.search import HybridSearch
 
 BASELINE_PATH = Path(__file__).resolve().parents[1] / "evaluation" / "auto_scope_baseline.json"
 
@@ -33,7 +33,7 @@ def _load_baseline() -> dict[str, Any]:
 
 
 def _build_benchmark_index(root: Path) -> HybridSearch:
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
 
     root.mkdir(parents=True, exist_ok=True)
     settings = Settings(context_dir=root)

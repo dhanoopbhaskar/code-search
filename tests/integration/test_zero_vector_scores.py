@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from src.engine.embed_representation import REPRESENTATION_SCHEME_VERSION
+from code_search.engine.embed_representation import REPRESENTATION_SCHEME_VERSION
 
 QUERIES: tuple[str, ...] = (
     "how long can a user stay signed in before their session token expires",

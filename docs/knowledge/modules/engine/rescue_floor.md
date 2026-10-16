@@ -2,12 +2,12 @@
 type: Module
 title: "engine.rescue_floor"
 description: "Lexical relevance threshold for the rescue tier, distinguishing gibberish queries from borderline-real ones."
-resource: src/engine/rescue_floor.py
+resource: code_search/engine/rescue_floor.py
 tags: [engine, ranking, rescue]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/rescue_floor.py
+  - resource: code_search/engine/rescue_floor.py
     id: source-code
 ---
 

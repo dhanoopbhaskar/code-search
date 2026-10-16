@@ -2,12 +2,12 @@
 type: Class
 title: "ASTParser"
 description: "Tree-sitter based multi-language AST parser producing chunk boundaries and node trees."
-resource: src/engine/parser.py#ASTParser
+resource: code_search/engine/parser.py#ASTParser
 tags: [parsing, tree-sitter, ast]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/parser.py
+  - resource: code_search/engine/parser.py
     id: source-code
 ---
 

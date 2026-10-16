@@ -14,7 +14,7 @@ import pytest
 
 @pytest.fixture
 def table() -> object:
-    from src.engine.expansions import ExpansionTable
+    from code_search.engine.expansions import ExpansionTable
 
     return ExpansionTable(config_path="")
 
@@ -51,7 +51,7 @@ def test_expanded_text_produces_extra_terms(table: object) -> None:
 
 def test_empty_config_is_noop(tmp_path: Path) -> None:
     """An empty/``""`` expansion file leaves built-in defaults active."""
-    from src.engine.expansions import ExpansionTable
+    from code_search.engine.expansions import ExpansionTable
 
     t = ExpansionTable(config_path="")
     assert t.expand("cors") == {"cors", "cross origin", "cross-origin"}
@@ -69,7 +69,7 @@ def test_genuinely_absent_acronym_unchanged(table: object) -> None:
 
 def test_expansion_file_merge_over_defaults(tmp_path: Path) -> None:
     """CODE_SEARCH_EXPANSION_FILE entries merge over (and extend) defaults."""
-    from src.engine.expansions import ExpansionTable
+    from code_search.engine.expansions import ExpansionTable
 
     cfg = tmp_path / "expansions.json"
     cfg.write_text('{"expansions": {"websocket": ["ws"]}}')

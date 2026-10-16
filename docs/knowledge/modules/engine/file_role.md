@@ -2,12 +2,12 @@
 type: Module
 title: "engine.file_role"
 description: "File role classification with evidence-based overrides (e.g., promoting infra files carrying DB connection strings)."
-resource: src/engine/file_role.py
+resource: code_search/engine/file_role.py
 tags: [engine, ranking, classification]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/file_role.py
+  - resource: code_search/engine/file_role.py
     id: source-code
 ---
 

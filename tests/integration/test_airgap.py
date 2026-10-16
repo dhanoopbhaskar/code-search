@@ -1,6 +1,6 @@
 import pytest
 
-from src.engine.redactor import air_gap_enforcement, allow_downloads
+from code_search.engine.redactor import air_gap_enforcement, allow_downloads
 
 
 @pytest.mark.integration

@@ -1,4 +1,4 @@
-"""Unit tests for ``src.engine.classification.file_role``.
+"""Unit tests for ``code_search.engine.classification.file_role``.
 
 The role classification drives the declared-rule boost and the infra/plumbing
 demotions, so the path-shape resolver is pinned down here independently of the
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.engine.classification import FileRole, file_role
+from code_search.engine.classification import FileRole, file_role
 
 
 @pytest.mark.parametrize(

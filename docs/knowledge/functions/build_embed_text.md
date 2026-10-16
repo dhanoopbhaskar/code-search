@@ -2,12 +2,12 @@
 type: Function
 title: "build_embed_text"
 description: "Compose bounded embedding input text (context prefix + body)."
-resource: src/engine/embed_representation.py#build_embed_text
+resource: code_search/engine/embed_representation.py#build_embed_text
 tags: [embeddings, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/embed_representation.py
+  - resource: code_search/engine/embed_representation.py
     id: source-code
 ---
 

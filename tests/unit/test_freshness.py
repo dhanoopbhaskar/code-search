@@ -11,19 +11,19 @@ from typing import Any
 
 import pytest
 
-from src.engine.config import Settings
-from src.engine.freshness import FreshnessChecker
+from code_search.engine.config import Settings
+from code_search.engine.freshness import FreshnessChecker
 
 
 def _build_env(tmp_path: Path, ttl: float = 0.0) -> dict[str, Any]:
-    from src.context import ContextManager
-    from src.engine.audit import AuditDatabase
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import GraphDatabase, IndexMetadataStore
-    from src.engine.indexer import IndexOrchestrator
-    from src.engine.parser import ASTParser
-    from src.engine.session import SessionDatabase
-    from src.engine.symbols import SymbolExtractor, SymbolStore
+    from code_search.context import ContextManager
+    from code_search.engine.audit import AuditDatabase
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import GraphDatabase, IndexMetadataStore
+    from code_search.engine.indexer import IndexOrchestrator
+    from code_search.engine.parser import ASTParser
+    from code_search.engine.session import SessionDatabase
+    from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
     repo = tmp_path / "repo"
     (repo / "src").mkdir(parents=True)

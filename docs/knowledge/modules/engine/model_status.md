@@ -2,12 +2,12 @@
 type: Module
 title: "engine.model_status"
 description: "Generates model warm/cold status reports with per-request latency breakdown for MCP responses."
-resource: src/engine/model_status.py
+resource: code_search/engine/model_status.py
 tags: [engine, embeddings, observability]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/model_status.py
+  - resource: code_search/engine/model_status.py
     id: source-code
 ---
 

@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from src.engine.parser import ASTParser
+from code_search.engine.parser import ASTParser
 
 JAVA_GUARD = """
 package com.example;
@@ -80,7 +80,7 @@ def test_java_annotation_rules_captured_on_method(parser: ASTParser, tmp_path: P
 
 
 def test_java_symbol_carries_declared_rules(parser: ASTParser, tmp_path: Path) -> None:
-    from src.engine.symbols import SymbolExtractor
+    from code_search.engine.symbols import SymbolExtractor
 
     path = tmp_path / "ArticleAuthorization.java"
     path.write_text(JAVA_GUARD)

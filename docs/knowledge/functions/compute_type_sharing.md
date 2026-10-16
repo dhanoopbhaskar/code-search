@@ -2,12 +2,12 @@
 type: Function
 title: "compute_type_sharing"
 description: "Normalized signature comparison score."
-resource: src/engine/semantic_signals.py#compute_type_sharing
+resource: code_search/engine/semantic_signals.py#compute_type_sharing
 tags: [ranking, semantics, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/semantic_signals.py
+  - resource: code_search/engine/semantic_signals.py
     id: source-code
 ---
 

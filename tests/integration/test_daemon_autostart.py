@@ -53,8 +53,13 @@ def test_one_shot_autostarts_then_forwards_warm(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from src.cli.main import cmd_search
-    from src.engine.daemon import DaemonClient, QueryDaemon, daemon_status, default_socket_path
+    from code_search.cli.main import cmd_search
+    from code_search.engine.daemon import (
+        DaemonClient,
+        QueryDaemon,
+        daemon_status,
+        default_socket_path,
+    )
 
     context_dir = autostart_env["context_dir"]
     socket_path = default_socket_path(context_dir)
@@ -109,8 +114,8 @@ def test_one_shot_autostarts_then_forwards_warm(
 def test_dead_socket_does_not_hang_next_query(
     autostart_env: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from src.cli.main import cmd_search
-    from src.engine.daemon import default_socket_path
+    from code_search.cli.main import cmd_search
+    from code_search.engine.daemon import default_socket_path
 
     context_dir = autostart_env["context_dir"]
     socket_path = default_socket_path(context_dir)

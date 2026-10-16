@@ -2,12 +2,12 @@
 type: Function
 title: "cmd_serve"
 description: "Handler for the `serve` subcommand: starts the MCP stdio server."
-resource: src/cli/main.py#cmd_serve
+resource: code_search/cli/main.py#cmd_serve
 tags: [cli, function, mcp]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/cli/main.py
+  - resource: code_search/cli/main.py
     id: source-code
 ---
 

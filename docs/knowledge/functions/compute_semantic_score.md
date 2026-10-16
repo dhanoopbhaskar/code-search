@@ -2,12 +2,12 @@
 type: Function
 title: "compute_semantic_score"
 description: "Compute all three semantic signals for a candidate."
-resource: src/engine/semantic_signals.py#compute_semantic_score
+resource: code_search/engine/semantic_signals.py#compute_semantic_score
 tags: [ranking, semantics, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/semantic_signals.py
+  - resource: code_search/engine/semantic_signals.py
     id: source-code
 ---
 

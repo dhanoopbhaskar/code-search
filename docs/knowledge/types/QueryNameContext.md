@@ -2,12 +2,12 @@
 type: Class
 title: "QueryNameContext"
 description: "Query-level facts about named-symbol tokens extracted from the query, computed once per request."
-resource: src/engine/match_boost.py#QueryNameContext
+resource: code_search/engine/match_boost.py#QueryNameContext
 tags: [ranking, match-boost, dataclass]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/match_boost.py
+  - resource: code_search/engine/match_boost.py
     id: source-code
 ---
 

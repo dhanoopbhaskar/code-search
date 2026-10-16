@@ -11,20 +11,20 @@ pytest.importorskip("fastmcp")
 
 from fastmcp import FastMCP
 
-from src.context import ContextManager
-from src.engine.audit import AuditDatabase
-from src.engine.config import Settings
-from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-from src.engine.graph import EdgeStore, GraphDatabase, IndexMetadataStore
-from src.engine.indexer import IndexOrchestrator
-from src.engine.metrics import MetricsCollector
-from src.engine.parser import ASTParser
-from src.engine.redactor import Redactor
-from src.engine.reranking import Reranker
-from src.engine.search import HybridSearch
-from src.engine.session import SessionDatabase
-from src.engine.symbols import SymbolExtractor, SymbolStore
-from src.mcp.server import (
+from code_search.context import ContextManager
+from code_search.engine.audit import AuditDatabase
+from code_search.engine.config import Settings
+from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+from code_search.engine.graph import EdgeStore, GraphDatabase, IndexMetadataStore
+from code_search.engine.indexer import IndexOrchestrator
+from code_search.engine.metrics import MetricsCollector
+from code_search.engine.parser import ASTParser
+from code_search.engine.redactor import Redactor
+from code_search.engine.reranking import Reranker
+from code_search.engine.search import HybridSearch
+from code_search.engine.session import SessionDatabase
+from code_search.engine.symbols import SymbolExtractor, SymbolStore
+from code_search.mcp.server import (
     _call_neighbors_payload,
     _definition_payload,
     _implementations_payload,
@@ -142,7 +142,7 @@ def mcp_components(indexed_repo: Path) -> dict[str, Any]:
 
 
 def _freshness_envelope(comps: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any]:
-    from src.engine.freshness import FreshnessChecker
+    from code_search.engine.freshness import FreshnessChecker
 
     checker = comps.get("freshness")
     if checker is None:
@@ -173,7 +173,7 @@ def _build_mcp_server(comps: dict[str, Any]) -> FastMCP:
         content: str = "all",
         no_model: bool = False,
     ) -> str:
-        from src.engine.search import HybridSearch
+        from code_search.engine.search import HybridSearch
 
         if no_model:
             hs: HybridSearch = HybridSearch(
@@ -241,7 +241,7 @@ def _build_mcp_server(comps: dict[str, Any]) -> FastMCP:
     ) -> str:
         from pathlib import Path
 
-        from src.engine.paths import normalize_indexed_path, resolve_stored_path
+        from code_search.engine.paths import normalize_indexed_path, resolve_stored_path
 
         embedding_gen = comps["embedding_gen"]
         vector_index = comps["vector_index"]
@@ -624,7 +624,7 @@ def test_find_related_semantic_fixture_returns_related_set_excluding_anchor(
     indexed locations in the semantic fixture, excluding the anchor chunk
     itself.
     """
-    from src.mcp.server import _find_related_payload
+    from code_search.mcp.server import _find_related_payload
 
     comps = indexed_semantic_vector
     repo = comps["repo"]
@@ -1081,7 +1081,7 @@ async def test_mcp_search_content_filter_returns_only_config_chunks(tmp_path: Pa
     shutil.copytree(FIXTURES_DIR / "transparency", repo)
     comps = _indexed_components(repo, repo / ".context", settings_kwargs={"index_prose": True})
     comps["redactor"] = Redactor()
-    from src.engine.reranking import Reranker
+    from code_search.engine.reranking import Reranker
 
     comps["reranker"] = Reranker(comps["db"], comps["session_db"], comps["settings"])
     mcp = _build_mcp_server(comps)
@@ -1112,7 +1112,7 @@ async def test_mcp_search_no_model_skips_vector_model(tmp_path: Path) -> None:
     shutil.copytree(FIXTURES_DIR / "transparency", repo)
     comps = _indexed_components(repo, repo / ".context", settings_kwargs={"index_prose": True})
     comps["redactor"] = Redactor()
-    from src.engine.reranking import Reranker
+    from code_search.engine.reranking import Reranker
 
     comps["reranker"] = Reranker(comps["db"], comps["session_db"], comps["settings"])
     mcp = _build_mcp_server(comps)

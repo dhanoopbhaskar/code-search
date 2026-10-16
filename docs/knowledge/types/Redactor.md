@@ -2,12 +2,12 @@
 type: Class
 title: "Redactor"
 description: "Regex-based secret redactor that applies patterns to text and returns redaction counts."
-resource: src/engine/redactor.py#Redactor
+resource: code_search/engine/redactor.py#Redactor
 tags: [security, redaction, compliance]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/redactor.py
+  - resource: code_search/engine/redactor.py
     id: source-code
 ---
 

@@ -2,12 +2,12 @@
 type: Module
 title: "engine.symbol_resolution"
 description: "Deterministic, database-free symbol reference parsing and disambiguation policy."
-resource: src/engine/symbol_resolution.py
+resource: code_search/engine/symbol_resolution.py
 tags: [engine, symbols, resolution]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/symbol_resolution.py
+  - resource: code_search/engine/symbol_resolution.py
     id: source-code
 ---
 

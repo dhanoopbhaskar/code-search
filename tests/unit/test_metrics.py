@@ -1,4 +1,4 @@
-from src.engine.metrics import MetricsCollector
+from code_search.engine.metrics import MetricsCollector
 
 
 def test_metrics_empty() -> None:
@@ -92,7 +92,7 @@ def test_metrics_thread_safety() -> None:
 def test_metrics_window_size() -> None:
     from dataclasses import replace
 
-    from src.engine.config import Settings
+    from code_search.engine.config import Settings
 
     m = MetricsCollector(settings=replace(Settings(), metrics_window_size=5))
     for i in range(10):

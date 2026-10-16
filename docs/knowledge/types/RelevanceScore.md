@@ -2,12 +2,12 @@
 type: Class
 title: "RelevanceScore"
 description: "Final combined relevance score from structural semantic signals and vector similarity."
-resource: src/engine/semantic_signals.py#RelevanceScore
+resource: code_search/engine/semantic_signals.py#RelevanceScore
 tags: [ranking, semantics, dataclass]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/semantic_signals.py
+  - resource: code_search/engine/semantic_signals.py
     id: source-code
 ---
 

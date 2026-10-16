@@ -12,9 +12,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from src.engine.config import Settings
-from src.engine.graph import EdgeStore, GraphDatabase
-from src.engine.symbols import SymbolStore
+from code_search.engine.config import Settings
+from code_search.engine.graph import EdgeStore, GraphDatabase
+from code_search.engine.symbols import SymbolStore
 
 
 def _insert_symbol(

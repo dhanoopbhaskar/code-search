@@ -2,12 +2,12 @@
 type: Function
 title: "check_index_model_compatibility"
 description: "Raise when the index was built by a different embedding model."
-resource: src/engine/embeddings.py#check_index_model_compatibility
+resource: code_search/engine/embeddings.py#check_index_model_compatibility
 tags: [embeddings, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/embeddings.py
+  - resource: code_search/engine/embeddings.py
     id: source-code
 ---
 

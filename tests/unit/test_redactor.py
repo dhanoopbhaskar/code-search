@@ -1,6 +1,6 @@
 import pytest
 
-from src.engine.redactor import Redactor
+from code_search.engine.redactor import Redactor
 
 
 def test_redact_api_key() -> None:
@@ -214,7 +214,7 @@ def test_redact_connection_string_stays_masked() -> None:
 def test_air_gap_exemption() -> None:
     import socket
 
-    from src.engine.redactor import air_gap_enforcement, allow_downloads
+    from code_search.engine.redactor import air_gap_enforcement, allow_downloads
 
     with air_gap_enforcement(), pytest.raises(RuntimeError, match="Air-gap violation"):
         socket.socket().connect(("example.com", 80))

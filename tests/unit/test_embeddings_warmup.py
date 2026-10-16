@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from src.engine import embeddings
-from src.engine.config import Settings
-from src.engine.embeddings import EmbeddingGenerator, WarmupState
+from code_search.engine import embeddings
+from code_search.engine.config import Settings
+from code_search.engine.embeddings import EmbeddingGenerator, WarmupState
 
 
 @pytest.fixture

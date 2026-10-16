@@ -2,12 +2,12 @@
 type: Function
 title: "infer_query_language"
 description: "Infer a query's language."
-resource: src/engine/language.py#infer_query_language
+resource: code_search/engine/language.py#infer_query_language
 tags: [language, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/language.py
+  - resource: code_search/engine/language.py
     id: source-code
 ---
 

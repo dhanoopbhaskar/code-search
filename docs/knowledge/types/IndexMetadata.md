@@ -2,12 +2,12 @@
 type: Class
 title: "IndexMetadata"
 description: "Metadata tracking for index change detection (version, mtime, timestamp, status)."
-resource: src/engine/index_metadata.py#IndexMetadata
+resource: code_search/engine/index_metadata.py#IndexMetadata
 tags: [freshness, metadata, class]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/index_metadata.py
+  - resource: code_search/engine/index_metadata.py
     id: source-code
 ---
 

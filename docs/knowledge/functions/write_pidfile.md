@@ -2,12 +2,12 @@
 type: Function
 title: "write_pidfile"
 description: "Write the daemon's pidfile for lifecycle tracking."
-resource: src/engine/daemon.py#write_pidfile
+resource: code_search/engine/daemon.py#write_pidfile
 tags: [daemon, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/daemon.py
+  - resource: code_search/engine/daemon.py
     id: source-code
 ---
 

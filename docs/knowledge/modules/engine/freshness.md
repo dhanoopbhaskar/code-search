@@ -2,12 +2,12 @@
 type: Module
 title: "engine.freshness"
 description: "Computes index-freshness signals via stat fast-path baselines and self-healing re-hash on change."
-resource: src/engine/freshness.py
+resource: code_search/engine/freshness.py
 tags: [engine, freshness, staleness]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/freshness.py
+  - resource: code_search/engine/freshness.py
     id: source-code
 ---
 

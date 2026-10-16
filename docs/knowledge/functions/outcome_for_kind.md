@@ -2,12 +2,12 @@
 type: Function
 title: "outcome_for_kind"
 description: "Map an envelope kind to a user-visible outcome."
-resource: src/engine/symbol_resolution.py#outcome_for_kind
+resource: code_search/engine/symbol_resolution.py#outcome_for_kind
 tags: [symbols, resolution, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/symbol_resolution.py
+  - resource: code_search/engine/symbol_resolution.py
     id: source-code
 ---
 

@@ -2,12 +2,12 @@
 type: Function
 title: "profile_model_available"
 description: "Whether the active model profile is available locally."
-resource: src/engine/embeddings.py#profile_model_available
+resource: code_search/engine/embeddings.py#profile_model_available
 tags: [embeddings, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/embeddings.py
+  - resource: code_search/engine/embeddings.py
     id: source-code
 ---
 

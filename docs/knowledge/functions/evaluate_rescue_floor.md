@@ -2,12 +2,12 @@
 type: Function
 title: "evaluate_rescue_floor"
 description: "Evaluate whether the rescue tier should return results."
-resource: src/engine/rescue_floor.py#evaluate_rescue_floor
+resource: code_search/engine/rescue_floor.py#evaluate_rescue_floor
 tags: [ranking, rescue, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/rescue_floor.py
+  - resource: code_search/engine/rescue_floor.py
     id: source-code
 ---
 

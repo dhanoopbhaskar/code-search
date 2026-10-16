@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.engine.redactor import Redactor
-from src.mcp.server import _find_related_payload
+from code_search.engine.redactor import Redactor
+from code_search.mcp.server import _find_related_payload
 
 
 def _indexed_components_unit(tmp_path: Any, n_chunks: int = 2) -> dict[str, Any]:
@@ -23,9 +23,9 @@ def _indexed_components_unit(tmp_path: Any, n_chunks: int = 2) -> dict[str, Any]
     to return; ``n_chunks=1`` builds the single-chunk index used to assert
     the no-candidates-after-self-match-exclusion status.
     """
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import GraphDatabase, IndexMetadataStore
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import GraphDatabase, IndexMetadataStore
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "test.db", settings)
@@ -122,10 +122,10 @@ def test_implementations_payload_shape_and_no_snippet(tmp_path: Any) -> None:
     envelope has no source snippet and reports the shared keys."""
     import json
 
-    from src.engine.config import Settings
-    from src.engine.graph import EdgeStore, GraphDatabase
-    from src.engine.symbols import SymbolStore
-    from src.mcp.server import _implementations_payload
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import EdgeStore, GraphDatabase
+    from code_search.engine.symbols import SymbolStore
+    from code_search.mcp.server import _implementations_payload
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "impl.db", settings)

@@ -2,12 +2,12 @@
 type: Function
 title: "embedded_symbols"
 description: "Resolved symbol short names embedded in a natural-language query."
-resource: src/engine/language.py#embedded_symbols
+resource: code_search/engine/language.py#embedded_symbols
 tags: [language, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/language.py
+  - resource: code_search/engine/language.py
     id: source-code
 ---
 

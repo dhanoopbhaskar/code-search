@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.cli.main import _make_index_progress_reporter
+from code_search.cli.main import _make_index_progress_reporter, _make_index_status_reporter
 
 
 def test_reporter_prints_at_each_ten_percent_milestone(
@@ -38,3 +38,17 @@ def test_reporter_ignores_empty_and_below_threshold_totals(
     report("parsing", 5, 100)
 
     assert capsys.readouterr().err == ""
+
+
+def test_status_reporter_prints_one_line_per_message(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = _make_index_status_reporter()
+    report("Rebuilding keyword index")
+    report("Saving vectors")
+
+    lines = capsys.readouterr().err.strip().splitlines()
+    assert lines == [
+        "Indexing: Rebuilding keyword index...",
+        "Indexing: Saving vectors...",
+    ]

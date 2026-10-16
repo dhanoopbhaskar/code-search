@@ -2,12 +2,12 @@
 type: Module
 title: "engine.response_service"
 description: "Response envelope display for index-change notifications and code-scoped config hints."
-resource: src/engine/response_service.py
+resource: code_search/engine/response_service.py
 tags: [engine, freshness, response]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/response_service.py
+  - resource: code_search/engine/response_service.py
     id: source-code
 ---
 

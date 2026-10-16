@@ -2,12 +2,12 @@
 type: Function
 title: "verify_air_gap"
 description: "Verify that air-gap enforcement is active."
-resource: src/engine/redactor.py#verify_air_gap
+resource: code_search/engine/redactor.py#verify_air_gap
 tags: [security, compliance, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/redactor.py
+  - resource: code_search/engine/redactor.py
     id: source-code
 ---
 

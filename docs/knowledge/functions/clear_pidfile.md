@@ -2,12 +2,12 @@
 type: Function
 title: "clear_pidfile"
 description: "Remove the daemon's pidfile on clean shutdown."
-resource: src/engine/daemon.py#clear_pidfile
+resource: code_search/engine/daemon.py#clear_pidfile
 tags: [daemon, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/daemon.py
+  - resource: code_search/engine/daemon.py
     id: source-code
 ---
 

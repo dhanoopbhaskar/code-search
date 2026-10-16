@@ -21,8 +21,8 @@ from typing import Any
 
 import pytest
 
-from src.engine.redactor import air_gap_enforcement
-from src.engine.reranking import Reranker
+from code_search.engine.redactor import air_gap_enforcement
+from code_search.engine.reranking import Reranker
 
 
 def _top_results(comps: dict[str, Any], query: str, limit: int = 5) -> list[dict[str, Any]]:

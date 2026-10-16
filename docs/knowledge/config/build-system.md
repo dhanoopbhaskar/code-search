@@ -38,7 +38,7 @@ Optional dependency groups (`[project.optional-dependencies]`):
 
 # Entry Point
 
-`code-search = "src.cli.main:main"` — installs the `code-search` console
+`code-search = "code_search.cli.main:main"` — installs the `code-search` console
 script backed by [`main`](../functions/main.md).
 
 # Tooling Configuration

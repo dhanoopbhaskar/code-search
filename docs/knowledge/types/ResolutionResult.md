@@ -2,12 +2,12 @@
 type: Class
 title: "ResolutionResult"
 description: "Outcome of resolving a name query to a symbol: exact match, ambiguous candidates, or not found."
-resource: src/engine/symbol_resolution.py#ResolutionResult
+resource: code_search/engine/symbol_resolution.py#ResolutionResult
 tags: [symbols, resolution, dataclass]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/symbol_resolution.py
+  - resource: code_search/engine/symbol_resolution.py
     id: source-code
 ---
 

@@ -2,12 +2,12 @@
 type: Function
 title: "strip_params"
 description: "Remove the parameter-list suffix from a symbol name-shape string."
-resource: src/engine/symbol_resolution.py#strip_params
+resource: code_search/engine/symbol_resolution.py#strip_params
 tags: [symbols, resolution, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/symbol_resolution.py
+  - resource: code_search/engine/symbol_resolution.py
     id: source-code
 ---
 

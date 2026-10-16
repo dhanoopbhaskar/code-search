@@ -2,12 +2,12 @@
 type: Function
 title: "compute_scent_adjustment"
 description: "Multiplicative ranking adjustment for a file under config/DDL scent."
-resource: src/engine/scent_detection.py#compute_scent_adjustment
+resource: code_search/engine/scent_detection.py#compute_scent_adjustment
 tags: [ranking, scent, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/scent_detection.py
+  - resource: code_search/engine/scent_detection.py
     id: source-code
 ---
 

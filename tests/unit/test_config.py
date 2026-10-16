@@ -2,7 +2,7 @@ import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from src.engine.config import Settings, _is_non_canonical, _is_test_file
+from code_search.engine.config import Settings, _is_non_canonical, _is_test_file
 
 
 @contextmanager
@@ -412,7 +412,7 @@ def test_index_model_mismatch_raises() -> None:
     """A recorded model different from the active profile raises explicitly."""
     import pytest
 
-    from src.engine.embeddings import check_index_model_compatibility
+    from code_search.engine.embeddings import check_index_model_compatibility
 
     class _Meta:
         def __init__(self, value: str | None) -> None:
@@ -429,7 +429,7 @@ def test_index_model_mismatch_raises() -> None:
 
 def test_fast_profile_is_withheld_without_qualifying_candidate() -> None:
     """No candidate met the required floors, so the fast profile is not shipped."""
-    from src.engine.embeddings import profile_model_available
+    from code_search.engine.embeddings import profile_model_available
 
     with _env_override("CODE_SEARCH_MODEL_PROFILE", "fast"):
         settings = Settings()

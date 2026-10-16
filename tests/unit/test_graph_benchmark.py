@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from src.engine.config import Settings
-from src.engine.graph import EdgeStore, GraphDatabase
+from code_search.engine.config import Settings
+from code_search.engine.graph import EdgeStore, GraphDatabase
 
 
 @pytest.fixture

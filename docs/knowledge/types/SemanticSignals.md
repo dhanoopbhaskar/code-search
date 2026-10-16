@@ -2,12 +2,12 @@
 type: Class
 title: "SemanticSignals"
 description: "Structural semantic signals (package overlap, type sharing, call proximity) between an anchor and a candidate symbol."
-resource: src/engine/semantic_signals.py#SemanticSignals
+resource: code_search/engine/semantic_signals.py#SemanticSignals
 tags: [ranking, semantics, dataclass]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/semantic_signals.py
+  - resource: code_search/engine/semantic_signals.py
     id: source-code
 ---
 

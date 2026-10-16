@@ -2,7 +2,13 @@ from typing import Any
 
 import pytest
 
-from src.engine.classification import ContentType, FileRole, PathClass, content_type, file_role
+from code_search.engine.classification import (
+    ContentType,
+    FileRole,
+    PathClass,
+    content_type,
+    file_role,
+)
 
 
 class BarrelConnection:

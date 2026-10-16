@@ -2,12 +2,12 @@
 type: Function
 title: "cmd_graph"
 description: "Handler for the `graph` subcommand: prints callers/callees of a symbol."
-resource: src/cli/main.py#cmd_graph
+resource: code_search/cli/main.py#cmd_graph
 tags: [cli, function, graph]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/cli/main.py
+  - resource: code_search/cli/main.py
     id: source-code
 ---
 

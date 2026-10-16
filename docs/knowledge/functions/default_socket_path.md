@@ -2,12 +2,12 @@
 type: Function
 title: "default_socket_path"
 description: "The daemon's socket path convention for a context directory."
-resource: src/engine/daemon.py#default_socket_path
+resource: code_search/engine/daemon.py#default_socket_path
 tags: [daemon, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/daemon.py
+  - resource: code_search/engine/daemon.py
     id: source-code
 ---
 

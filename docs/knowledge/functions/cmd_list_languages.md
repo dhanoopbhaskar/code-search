@@ -2,12 +2,12 @@
 type: Function
 title: "cmd_list_languages"
 description: "Handler for the `list-languages` subcommand: prints supported languages."
-resource: src/cli/main.py#cmd_list_languages
+resource: code_search/cli/main.py#cmd_list_languages
 tags: [cli, function, language]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/cli/main.py
+  - resource: code_search/cli/main.py
     id: source-code
 ---
 

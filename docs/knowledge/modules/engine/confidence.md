@@ -2,12 +2,12 @@
 type: Module
 title: "engine.confidence"
 description: "Per-result search confidence calibration with match-type evidence (definition boosts, exact-match floors, ambiguity cap)."
-resource: src/engine/confidence.py
+resource: code_search/engine/confidence.py
 tags: [engine, ranking, confidence]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/confidence.py
+  - resource: code_search/engine/confidence.py
     id: source-code
 ---
 

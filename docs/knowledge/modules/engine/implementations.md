@@ -2,12 +2,12 @@
 type: Module
 title: "engine.implementations"
 description: "Interface implementation lookup — the single shared resolution/traversal rule for get_implementations."
-resource: src/engine/implementations.py
+resource: code_search/engine/implementations.py
 tags: [engine, graph, implementations]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/implementations.py
+  - resource: code_search/engine/implementations.py
     id: source-code
 ---
 

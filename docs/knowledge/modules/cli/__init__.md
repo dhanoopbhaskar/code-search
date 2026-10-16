@@ -1,13 +1,13 @@
 ---
 type: Module
-title: "src.cli"
+title: "code_search.cli"
 description: "Command-line interface package for code-search."
-resource: src/cli/__init__.py
+resource: code_search/cli/__init__.py
 tags: [cli, package]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/cli/__init__.py
+  - resource: code_search/cli/__init__.py
     id: source-code
 ---
 

@@ -2,12 +2,12 @@
 type: Class
 title: "AuditDatabase"
 description: "Append-only SQLite database for the query audit trail; enforces immutability via SQLite triggers."
-resource: src/engine/audit.py#AuditDatabase
+resource: code_search/engine/audit.py#AuditDatabase
 tags: [audit, compliance, storage]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/audit.py
+  - resource: code_search/engine/audit.py
     id: source-code
 ---
 

@@ -235,7 +235,7 @@ def evaluate(
         The ranking report (``corpus``, ``limit``, ``cases``, ``metrics``,
         ``baseline``, ``failures``).
     """
-    from src.engine.search import HybridSearch
+    from code_search.engine.search import HybridSearch
 
     search = components["search"]
     metrics, failures = _compute_metrics(search, cases, limit)
@@ -286,12 +286,12 @@ def _legacy_resolution(case: ResolutionCase, components: dict[str, Any]) -> tupl
     auto-selects the first storage-ordered match; anything else is a ranked
     storage-ordered list.
     """
-    from src.engine.graph import (
+    from code_search.engine.graph import (
         _resolve_symbol_candidates,
         _strip_params,
         _symbol_leaf,
     )
-    from src.engine.symbols import _attach_row_signature
+    from code_search.engine.symbols import _attach_row_signature
 
     with components["db"].connect() as conn:
         candidates = [

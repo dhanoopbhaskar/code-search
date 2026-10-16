@@ -2,12 +2,12 @@
 type: Function
 title: "subword_overlap"
 description: "Compute the fraction of query sub-words present in a candidate's text."
-resource: src/engine/confidence.py#subword_overlap
+resource: code_search/engine/confidence.py#subword_overlap
 tags: [confidence, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/confidence.py
+  - resource: code_search/engine/confidence.py
     id: source-code
 ---
 

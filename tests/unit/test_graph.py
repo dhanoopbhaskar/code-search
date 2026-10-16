@@ -2,9 +2,9 @@ from pathlib import Path
 
 import pytest
 
-from src.engine.config import Settings
-from src.engine.graph import EdgeStore, GraphDatabase
-from src.engine.symbols import SymbolStore
+from code_search.engine.config import Settings
+from code_search.engine.graph import EdgeStore, GraphDatabase
+from code_search.engine.symbols import SymbolStore
 
 
 @pytest.fixture
@@ -885,7 +885,7 @@ def test_fts_trigger_syncs_update(db: GraphDatabase) -> None:
 
 
 def test_fts_metadata_store(db: GraphDatabase) -> None:
-    from src.engine.graph import IndexMetadataStore
+    from code_search.engine.graph import IndexMetadataStore
 
     meta = IndexMetadataStore(db)
     assert meta.get_fts_chunks() is None
@@ -894,7 +894,7 @@ def test_fts_metadata_store(db: GraphDatabase) -> None:
 
 
 def test_cross_file_edge_batch_resolution(db: GraphDatabase) -> None:
-    from src.engine.symbols import SymbolStore
+    from code_search.engine.symbols import SymbolStore
 
     store = SymbolStore(db)
     syms_file_a = [
@@ -949,7 +949,7 @@ def test_cross_file_edge_batch_resolution(db: GraphDatabase) -> None:
         ).fetchall()
     resolved_targets = {r["fqn"]: r["id"] for r in rows}
 
-    from src.engine.graph import EdgeStore
+    from code_search.engine.graph import EdgeStore
 
     edge_store = EdgeStore(db)
     batch_edges = []
@@ -1233,7 +1233,7 @@ def test_edge_validation_sweep_removes_spurious_and_keeps_recursive(
 
 def test_resolve_symbol_prefix_and_substring_stages(db: GraphDatabase) -> None:
     """Prefix/substring fallback stages resolve partial names."""
-    from src.engine.graph import _resolve_symbol_candidates
+    from code_search.engine.graph import _resolve_symbol_candidates
 
     with db.write_transaction() as conn:
         conn.execute(
@@ -1260,7 +1260,7 @@ def test_resolve_symbol_prefix_and_substring_stages(db: GraphDatabase) -> None:
 
 def test_resolve_symbol_edit_distance_suggestions(db: GraphDatabase) -> None:
     """Edit-distance <= 2 fallback returns 'did you mean' candidates."""
-    from src.engine.graph import _resolve_symbol_candidates
+    from code_search.engine.graph import _resolve_symbol_candidates
 
     with db.write_transaction() as conn:
         conn.execute(
@@ -1648,7 +1648,7 @@ class TestResolveNameEnvelope:
 
 class TestEdgeSignature:
     def test_signature_from_fqn_generic_arity(self) -> None:
-        from src.engine.graph import _signature_from_fqn
+        from code_search.engine.graph import _signature_from_fqn
 
         sig = _signature_from_fqn("save(Article,Profile,List<Tag>)")
         assert sig is not None
@@ -1656,7 +1656,7 @@ class TestEdgeSignature:
         assert sig["param_types"] == ["Article", "Profile", "List"]
 
     def test_signature_from_fqn_generic_body_comma(self) -> None:
-        from src.engine.graph import _signature_from_fqn
+        from code_search.engine.graph import _signature_from_fqn
 
         sig = _signature_from_fqn("generateToken(Map<String,Object>,String)")
         assert sig is not None
@@ -1664,7 +1664,7 @@ class TestEdgeSignature:
         assert sig["param_types"] == ["Map", "String"]
 
     def test_signature_from_fqn_none_for_class(self) -> None:
-        from src.engine.graph import _signature_from_fqn
+        from code_search.engine.graph import _signature_from_fqn
 
         assert _signature_from_fqn("com.example.ArticleService") is None
         assert _signature_from_fqn(None) is None

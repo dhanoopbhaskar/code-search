@@ -1,13 +1,13 @@
 ---
 type: Module
-title: "src.context"
+title: "code_search.context"
 description: "Manages the on-disk context directory holding all persistent index data."
-resource: src/context/__init__.py
+resource: code_search/context/__init__.py
 tags: [context, storage, package]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/context/__init__.py
+  - resource: code_search/context/__init__.py
     id: source-code
 ---
 

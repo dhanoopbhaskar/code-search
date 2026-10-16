@@ -2,12 +2,12 @@
 type: Module
 title: "engine.redactor"
 description: "Secret redaction and air-gap enforcement (blocks outbound sockets) for enterprise compliance."
-resource: src/engine/redactor.py
+resource: code_search/engine/redactor.py
 tags: [engine, security, compliance]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/redactor.py
+  - resource: code_search/engine/redactor.py
     id: source-code
 ---
 

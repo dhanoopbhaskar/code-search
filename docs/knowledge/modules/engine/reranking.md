@@ -2,12 +2,12 @@
 type: Module
 title: "engine.reranking"
 description: "Post-retrieval result reranking: definition boost, test-file penalty, session weighting, file-role penalties."
-resource: src/engine/reranking.py
+resource: code_search/engine/reranking.py
 tags: [engine, ranking, reranking]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/reranking.py
+  - resource: code_search/engine/reranking.py
     id: source-code
 ---
 

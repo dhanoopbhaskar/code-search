@@ -2,12 +2,12 @@
 type: Class
 title: "QueryAnalysis"
 description: "The query-time trust-signal entity produced by analyze_query and consumed by the search/rerank pipeline."
-resource: src/engine/language.py#QueryAnalysis
+resource: code_search/engine/language.py#QueryAnalysis
 tags: [language, query-analysis, dataclass]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/language.py
+  - resource: code_search/engine/language.py
     id: source-code
 ---
 

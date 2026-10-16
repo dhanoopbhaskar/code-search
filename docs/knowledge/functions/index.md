@@ -1,7 +1,7 @@
 ---
 type: Index
 title: "Functions"
-description: "Index of all public top-level function concepts extracted from src/, grouped by module."
+description: "Index of all public top-level function concepts extracted from code_search/, grouped by module."
 tags: [functions, index]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft

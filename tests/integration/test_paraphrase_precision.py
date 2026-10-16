@@ -15,7 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from src.engine.reranking import Reranker
+from code_search.engine.reranking import Reranker
 
 P1 = "what happens when an article is saved"
 P2 = "how is the article stored"

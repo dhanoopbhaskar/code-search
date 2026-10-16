@@ -2,12 +2,12 @@
 type: Module
 title: "engine.graph"
 description: "SQLite schema and CRUD layer for the code graph: symbols, typed edges, code chunks (FTS5), and index metadata."
-resource: src/engine/graph.py
+resource: code_search/engine/graph.py
 tags: [engine, graph, database, storage]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/graph.py
+  - resource: code_search/engine/graph.py
     id: source-code
 ---
 

@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from src.mcp.server import _call_neighbors_payload
+from code_search.mcp.server import _call_neighbors_payload
 
 
 @pytest.fixture

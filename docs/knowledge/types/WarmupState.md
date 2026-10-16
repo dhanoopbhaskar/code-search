@@ -2,12 +2,12 @@
 type: Class
 title: "WarmupState"
 description: "Lifecycle state of the in-process embedding model (cold, warming, warm, failed, disabled)."
-resource: src/engine/embeddings.py#WarmupState
+resource: code_search/engine/embeddings.py#WarmupState
 tags: [embeddings, model, state]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/embeddings.py
+  - resource: code_search/engine/embeddings.py
     id: source-code
 ---
 

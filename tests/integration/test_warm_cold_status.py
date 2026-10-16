@@ -17,13 +17,13 @@ def cold_search(tmp_path):
     """A ``HybridSearch`` whose embedding model is not yet loaded."""
     import shutil
 
-    from src.engine.embeddings import (
+    from code_search.engine.embeddings import (
         EmbeddingGenerator,
         VectorIndex,
         _loaded_model_path,
         _model_instance,
     )
-    from src.engine.search import HybridSearch
+    from code_search.engine.search import HybridSearch
 
     repo = tmp_path / "cold_repo"
     shutil.copytree(FIXTURES_DIR / "relevance", repo)

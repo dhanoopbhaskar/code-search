@@ -2,12 +2,12 @@
 type: Module
 title: "cli.main"
 description: "CLI entry point: subcommands for indexing, searching, graph traversal, symbol lookup, metrics, serving, and the daemon."
-resource: src/cli/main.py
+resource: code_search/cli/main.py
 tags: [cli, entry-point]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/cli/main.py
+  - resource: code_search/cli/main.py
     id: source-code
 ---
 

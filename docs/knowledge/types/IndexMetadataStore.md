@@ -2,12 +2,12 @@
 type: Class
 title: "IndexMetadataStore"
 description: "Key-value store for index metadata (status, version, counts, etc.)."
-resource: src/engine/graph.py#IndexMetadataStore
+resource: code_search/engine/graph.py#IndexMetadataStore
 tags: [graph, metadata, storage]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/graph.py
+  - resource: code_search/engine/graph.py
     id: source-code
 ---
 

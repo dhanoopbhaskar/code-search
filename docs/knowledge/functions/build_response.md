@@ -2,12 +2,12 @@
 type: Function
 title: "build_response"
 description: "Build a search response, checking for the index-change envelope and code-scoped config hints."
-resource: src/engine/response_service.py#build_response
+resource: code_search/engine/response_service.py#build_response
 tags: [freshness, response, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/response_service.py
+  - resource: code_search/engine/response_service.py
     id: source-code
 ---
 

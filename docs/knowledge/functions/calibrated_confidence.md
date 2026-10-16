@@ -2,12 +2,12 @@
 type: Function
 title: "calibrated_confidence"
 description: "Full calibrated confidence for one candidate, combining base score with exact-match evidence boosts."
-resource: src/engine/confidence.py#calibrated_confidence
+resource: code_search/engine/confidence.py#calibrated_confidence
 tags: [confidence, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/confidence.py
+  - resource: code_search/engine/confidence.py
     id: source-code
 ---
 

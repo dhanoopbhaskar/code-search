@@ -65,7 +65,7 @@ def _run_cs(
     timeout: int = 60,
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run code-search CLI from the project root (so 'src' is importable).
+    """Run code-search CLI from the project root (so 'code_search' is importable).
 
     The CLI uses ``--path`` to locate the repo and ``--context-dir`` to
     point to its ``.context/`` directory. Both must be passed explicitly
@@ -75,7 +75,7 @@ def _run_cs(
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
-        [sys.executable, "-m", "src.cli.main", *args],
+        [sys.executable, "-m", "code_search.cli.main", *args],
         capture_output=True,
         text=True,
         timeout=timeout,

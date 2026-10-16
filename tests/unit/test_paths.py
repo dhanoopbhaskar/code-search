@@ -1,4 +1,4 @@
-"""Unit tests for ``src/engine/paths.py``.
+"""Unit tests for ``code_search/engine/paths.py``.
 
 ``normalize_indexed_path`` maps a caller-supplied absolute or project-relative
 path onto the indexed repo root; ``resolve_stored_path`` maps a normalized
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from src.engine.paths import normalize_indexed_path, resolve_stored_path
+from code_search.engine.paths import normalize_indexed_path, resolve_stored_path
 
 
 def _build_sqlite(tmp_path: Path, stored_paths: list[str]) -> sqlite3.Connection:

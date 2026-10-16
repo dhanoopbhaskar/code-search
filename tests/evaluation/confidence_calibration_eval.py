@@ -27,7 +27,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.engine.confidence import confidence_band, confidence_score
+from code_search.engine.confidence import confidence_band, confidence_score
 from tests.conftest import FIXTURES_DIR, _indexed_components
 from tests.evaluation.confidence_ground_truth import (
     GROUND_TRUTH_CASES,
@@ -135,7 +135,7 @@ def evaluate(
     Returns:
         The calibration report (``summary`` + per-query ``cases``).
     """
-    from src.engine.search import decompose_query
+    from code_search.engine.search import decompose_query
 
     search = components["search"]
     settings = components["settings"]

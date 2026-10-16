@@ -2,12 +2,12 @@
 type: Module
 title: "engine.index_metadata"
 description: "Tracks index version, mtime, timestamp, and status for server-side change detection."
-resource: src/engine/index_metadata.py
+resource: code_search/engine/index_metadata.py
 tags: [engine, freshness, metadata]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/index_metadata.py
+  - resource: code_search/engine/index_metadata.py
     id: source-code
 ---
 

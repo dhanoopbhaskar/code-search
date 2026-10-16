@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from src.engine.embed_representation import (
+from code_search.engine.embed_representation import (
     REPRESENTATION_SCHEME_VERSION,
     EnclosingContext,
     build_embed_text,

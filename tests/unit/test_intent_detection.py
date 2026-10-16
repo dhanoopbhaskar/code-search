@@ -8,7 +8,7 @@ the effective scope already includes the intent's content type.
 
 from __future__ import annotations
 
-from src.engine.intent_detection import (
+from code_search.engine.intent_detection import (
     ContentIntent,
     build_scope_signal,
     classify_content_intent,
@@ -37,7 +37,7 @@ class TestClassifyConfigIntent:
             assert classify_content_intent(query) is ContentIntent.CONFIG, query
 
     def test_config_vocabulary_comes_from_shared_scent_detector(self) -> None:
-        from src.engine.scent_detection import detect_config_ddl_scent
+        from code_search.engine.scent_detection import detect_config_ddl_scent
 
         query = "connection pool settings"
         assert detect_config_ddl_scent(query)["has_scent"] is True

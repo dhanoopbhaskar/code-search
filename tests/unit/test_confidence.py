@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.engine.confidence import (
+from code_search.engine.confidence import (
     AMBIGUOUS_CAP,
     BOOST_CONTROLLER_ENDPOINT,
     BOOST_DEFINITION,

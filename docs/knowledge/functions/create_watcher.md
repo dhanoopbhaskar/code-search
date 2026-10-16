@@ -2,12 +2,12 @@
 type: Function
 title: "create_watcher"
 description: "Convenience factory returning a fully-configured FileWatcher."
-resource: src/engine/watcher.py#create_watcher
+resource: code_search/engine/watcher.py#create_watcher
 tags: [watcher, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/watcher.py
+  - resource: code_search/engine/watcher.py
     id: source-code
 ---
 

@@ -2,12 +2,12 @@
 type: Overview
 title: "System Overview"
 description: "How code-search's indexing, hybrid search, and serving surfaces (CLI, MCP, daemon) fit together."
-resource: src/
+resource: code_search/
 tags: [architecture, overview]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/
+  - resource: code_search/
     id: source-code
 ---
 

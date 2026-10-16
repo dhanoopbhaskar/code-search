@@ -2,12 +2,12 @@
 type: Function
 title: "symbol_leaf"
 description: "Return the trailing (leaf) segment of a dotted or qualified symbol name."
-resource: src/engine/symbol_resolution.py#symbol_leaf
+resource: code_search/engine/symbol_resolution.py#symbol_leaf
 tags: [symbols, resolution, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/symbol_resolution.py
+  - resource: code_search/engine/symbol_resolution.py
     id: source-code
 ---
 

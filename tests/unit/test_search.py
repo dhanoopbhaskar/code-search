@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from src.engine.search import rrf_fusion, tokenize
+from code_search.engine.search import rrf_fusion, tokenize
 
 
 class _MockBM25Search:
@@ -31,8 +31,8 @@ def _build_gate_db(tmp_path: Path) -> object:
     is rare (1/8 chunks -> high IDF), and ``tok_a`` carries the boilerplate
     sub-word ``this`` so a nonsense query shares a lexical hit with real code.
     """
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "gate.db", settings)
@@ -64,9 +64,9 @@ def _build_gate_db(tmp_path: Path) -> object:
 
 
 def _gate_search(tmp_path: Path):
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path)
     db = _build_gate_db(tmp_path)
@@ -83,8 +83,8 @@ def _build_rare_token_db(tmp_path: Path) -> object:
     corpora it reads as informative (mirroring the fixture's df=2/11). A
     gibberish multi-token query sharing only that single token must still be
     rejected by concept-signal coverage."""
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "rare.db", settings)
@@ -111,9 +111,9 @@ def _build_rare_token_db(tmp_path: Path) -> object:
 
 
 def _rare_gate_search(tmp_path: Path):
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path)
     db = _build_rare_token_db(tmp_path)
@@ -148,8 +148,8 @@ def test_gate_rejects_gibberish_sharing_common_token(tmp_path: Path) -> None:
 
 
 def test_gate_informative_tokens(tmp_path: Path) -> None:
-    from src.engine.config import Settings
-    from src.engine.search import BM25Search
+    from code_search.engine.config import Settings
+    from code_search.engine.search import BM25Search
 
     settings = Settings(context_dir=tmp_path)
     db = _build_gate_db(tmp_path)
@@ -189,10 +189,10 @@ def _trust_gate_search(
     Lets the gate tests control the exact-token coverage signal directly
     while keeping the real BM25/corpus layer underneath.
     """
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.language import QueryAnalysis
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.language import QueryAnalysis
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path, relevance_gate=relevance_gate)
     db = _build_gate_db(tmp_path)
@@ -290,7 +290,7 @@ def test_trust_gate_disabled_bypasses_coverage(tmp_path: Path) -> None:
 
 
 def test_decompose_query_preserves_camel_case_boundaries() -> None:
-    from src.engine.search import decompose_query
+    from code_search.engine.search import decompose_query
 
     words = decompose_query("findAnyMethodThatDoesNotExist")
     assert "find" in words
@@ -300,9 +300,9 @@ def test_decompose_query_preserves_camel_case_boundaries() -> None:
 
 
 def test_gate_can_be_disabled(tmp_path: Path) -> None:
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path, relevance_gate=False)
     db = _build_gate_db(tmp_path)
@@ -342,7 +342,7 @@ def test_tokenize_camel_case() -> None:
 
 
 def test_decompose_query_splits_identifiers() -> None:
-    from src.engine.search import decompose_query
+    from code_search.engine.search import decompose_query
 
     words = decompose_query("token valid")
     assert "token" in words
@@ -350,21 +350,21 @@ def test_decompose_query_splits_identifiers() -> None:
 
 
 def test_decompose_query_subwords_match_identifier() -> None:
-    from src.engine.search import decompose_query, identify_subwords
+    from code_search.engine.search import decompose_query, identify_subwords
 
     words = set(decompose_query("token valid"))
     assert words.issubset(identify_subwords("isTokenValid"))
 
 
 def test_build_fts_query_prefix_expansion() -> None:
-    from src.engine.search import build_fts_query
+    from code_search.engine.search import build_fts_query
 
     query = build_fts_query(["pagination"], exact_terms=set())
     assert "pag*" in query
 
 
 def test_build_fts_query_exact_term_no_expansion() -> None:
-    from src.engine.search import build_fts_query
+    from code_search.engine.search import build_fts_query
 
     query = build_fts_query(["token"], exact_terms={"token"})
     assert "token" in query
@@ -372,7 +372,7 @@ def test_build_fts_query_exact_term_no_expansion() -> None:
 
 
 def test_build_fts_query_matches_pageable_subwords() -> None:
-    from src.engine.search import build_fts_query, decompose_query, identify_subwords
+    from code_search.engine.search import build_fts_query, decompose_query, identify_subwords
 
     corpus_tokens = set(identify_subwords("Pageable")) | set(identify_subwords("PageRequest"))
     query = build_fts_query(decompose_query("pagination"), exact_terms=corpus_tokens)
@@ -471,13 +471,13 @@ def test_stopword_token_search() -> None:
 
 
 def test_test_files_included_by_default() -> None:
-    from src.engine.config import _is_test_file
+    from code_search.engine.config import _is_test_file
 
     assert _is_test_file("tests/test_auth.py") is True
 
 
 def test_bm25_weight_configuration(tmp_path: Path) -> None:
-    from src.engine.config import Settings
+    from code_search.engine.config import Settings
 
     settings = Settings(
         bm25_content_weight=2.0,
@@ -490,9 +490,9 @@ def test_bm25_weight_configuration(tmp_path: Path) -> None:
 
 
 def test_bm25_search_with_fts5(tmp_path: Path) -> None:
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase
-    from src.engine.search import BM25Search
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
+    from code_search.engine.search import BM25Search
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "test.db", settings)
@@ -512,10 +512,10 @@ def test_bm25_search_with_fts5(tmp_path: Path) -> None:
 
 
 def test_relevance_threshold_filters_low_scores(tmp_path: Path) -> None:
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import GraphDatabase
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import GraphDatabase
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(
         context_dir=tmp_path,
@@ -559,10 +559,10 @@ def test_relevance_threshold_filters_low_scores(tmp_path: Path) -> None:
 
 
 def test_relevance_threshold_zero_returns_all(tmp_path: Path) -> None:
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import GraphDatabase
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import GraphDatabase
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path, relevance_threshold=0.0, relevance_gate=False)
     db = GraphDatabase(tmp_path / "test.db", settings)
@@ -595,7 +595,7 @@ def test_relevance_threshold_zero_returns_all(tmp_path: Path) -> None:
 
 
 def test_relevance_threshold_clamping(tmp_path: Path) -> None:
-    from src.engine.config import Settings
+    from code_search.engine.config import Settings
 
     settings = Settings(
         context_dir=tmp_path,
@@ -611,10 +611,10 @@ def test_relevance_threshold_clamping(tmp_path: Path) -> None:
 
 
 def test_below_threshold_field_present(tmp_path: Path) -> None:
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import GraphDatabase
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import GraphDatabase
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path, relevance_threshold=0.3, relevance_gate=False)
     db = GraphDatabase(tmp_path / "test.db", settings)
@@ -649,10 +649,10 @@ def test_vector_degraded_false_when_layer_healthy_but_no_vector_overlap(tmp_path
     """
     import numpy as np
 
-    from src.engine.config import Settings
-    from src.engine.embeddings import EMBEDDING_DIM, EmbeddingGenerator, VectorIndex
-    from src.engine.graph import GraphDatabase, IndexMetadataStore
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EMBEDDING_DIM, EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import GraphDatabase, IndexMetadataStore
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path, relevance_threshold=0.0, relevance_gate=False)
     db = GraphDatabase(tmp_path / "test.db", settings)
@@ -691,10 +691,10 @@ def test_vector_degraded_true_when_index_unpopulated(tmp_path: Path) -> None:
     """An unpopulated vector index is genuinely unavailable, so the
     BM25-only fallback must still report degradation.
     """
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import GraphDatabase, IndexMetadataStore
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import GraphDatabase, IndexMetadataStore
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path, relevance_threshold=0.0, relevance_gate=False)
     db = GraphDatabase(tmp_path / "test.db", settings)
@@ -730,9 +730,9 @@ def test_vector_degraded_true_when_index_unpopulated(tmp_path: Path) -> None:
 def test_bm25_fts5_memory_constant(tmp_path: Path) -> None:
     import tracemalloc
 
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase
-    from src.engine.search import BM25Search
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
+    from code_search.engine.search import BM25Search
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "test.db", settings)
@@ -778,9 +778,9 @@ def test_bm25_fts5_memory_constant(tmp_path: Path) -> None:
 
 def test_apply_file_coherence_dedups_one_result_per_file(tmp_path: Path) -> None:
     """File-first grouping keeps only the best chunk per file."""
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "dedup.db", settings)
@@ -845,8 +845,8 @@ def _mixed_db(tmp_path: Path) -> object:
 
     Each chunk also gets a matching FTS5 row so a real BM25 search can run.
     """
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "mixed.db", settings)
@@ -883,9 +883,9 @@ def _mixed_db(tmp_path: Path) -> object:
 
 def _hybrid_search(tmp_path: Path, **settings_kwargs: object):
     """A HybridSearch over :func:`_mixed_db` with a mocked vector arm."""
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path, **settings_kwargs)
     db = _mixed_db(tmp_path)
@@ -916,27 +916,27 @@ def _search_with_mocks(
 
 
 def test_chunk_rank_class_code() -> None:
-    from src.engine.search import chunk_rank_class
+    from code_search.engine.search import chunk_rank_class
 
     assert chunk_rank_class("ast", "function") == "code"
     assert chunk_rank_class(None, None) == "code"
 
 
 def test_chunk_rank_class_resource() -> None:
-    from src.engine.search import chunk_rank_class
+    from code_search.engine.search import chunk_rank_class
 
     assert chunk_rank_class("resource", "raw_text") == "resource"
 
 
 def test_chunk_rank_class_boilerplate() -> None:
-    from src.engine.search import chunk_rank_class
+    from code_search.engine.search import chunk_rank_class
 
     assert chunk_rank_class("ast", "field_declaration") == "boilerplate"
 
 
 def test_class_weights_deboost_resource_and_boilerplate(tmp_path: Path) -> None:
-    from src.engine.config import Settings
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path)
     hs = HybridSearch(_mixed_db(tmp_path), None, None, settings)
@@ -948,8 +948,8 @@ def test_class_weights_deboost_resource_and_boilerplate(tmp_path: Path) -> None:
 
 
 def test_class_weights_resource_intent_lifts_resource(tmp_path: Path) -> None:
-    from src.engine.config import Settings
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path)
     hs = HybridSearch(_mixed_db(tmp_path), None, None, settings)
@@ -958,8 +958,8 @@ def test_class_weights_resource_intent_lifts_resource(tmp_path: Path) -> None:
 
 
 def test_class_weights_enforce_min_lift_separation(tmp_path: Path) -> None:
-    from src.engine.config import Settings
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(
         context_dir=tmp_path,
@@ -975,8 +975,8 @@ def test_class_weights_enforce_min_lift_separation(tmp_path: Path) -> None:
 
 
 def test_resource_intent_detected(tmp_path: Path) -> None:
-    from src.engine.config import Settings
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.search import HybridSearch
 
     hs = HybridSearch(_mixed_db(tmp_path), None, None, Settings(context_dir=tmp_path))
     assert hs._resource_intent("how are migrations ordered") is True
@@ -985,7 +985,7 @@ def test_resource_intent_detected(tmp_path: Path) -> None:
 
 
 def test_exact_precheck_annotation() -> None:
-    from src.engine.search import exact_precheck
+    from code_search.engine.search import exact_precheck
 
     p = exact_precheck("@Transactional readOnly = true")
     assert p is not None
@@ -993,7 +993,7 @@ def test_exact_precheck_annotation() -> None:
 
 
 def test_exact_precheck_quoted_literal() -> None:
-    from src.engine.search import exact_precheck
+    from code_search.engine.search import exact_precheck
 
     p = exact_precheck('setToken "abc123"')
     assert p is not None
@@ -1001,7 +1001,7 @@ def test_exact_precheck_quoted_literal() -> None:
 
 
 def test_exact_precheck_identifier() -> None:
-    from src.engine.search import exact_precheck
+    from code_search.engine.search import exact_precheck
 
     p = exact_precheck("setToken")
     assert p is not None
@@ -1009,21 +1009,21 @@ def test_exact_precheck_identifier() -> None:
 
 
 def test_exact_precheck_plain_word_is_none() -> None:
-    from src.engine.search import exact_precheck
+    from code_search.engine.search import exact_precheck
 
     assert exact_precheck("pagination") is None
 
 
 def test_exact_precheck_prose_does_not_misfire() -> None:
-    from src.engine.search import exact_precheck
+    from code_search.engine.search import exact_precheck
 
     # Prose merely mentioning a symbol among other words has no exact form.
     assert exact_precheck("the setToken method returns") is None
 
 
 def test_query_exact_ids_returns_set(tmp_path: Path) -> None:
-    from src.engine.config import Settings
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.search import HybridSearch
 
     hs = HybridSearch(_mixed_db(tmp_path), None, None, Settings(context_dir=tmp_path))
     p = {"annotations": ["Transactional"], "quotes": [], "identifier": "token"}
@@ -1105,8 +1105,8 @@ def test_pattern_query_skips_vector_arm(tmp_path: Path) -> None:
 
 def test_no_model_never_runs_vector(tmp_path: Path) -> None:
     """--no-model skips the vector arm entirely."""
-    from src.engine.config import Settings
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.search import HybridSearch
 
     calls: list[str] = []
     settings = Settings(context_dir=tmp_path, relevance_gate=False)
@@ -1135,8 +1135,8 @@ def _stem_rescue_db(tmp_path: Path) -> object:
     ``OrderService`` — the name-sharing non-defining file must never be
     rescued.
     """
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "stem.db", settings)
@@ -1212,9 +1212,9 @@ def _stem_rescue_search(tmp_path: Path):
     No chunk matches the query by content, so the only way a definition
     surfaces is through the file-stem rescue.
     """
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path, relevance_gate=False, relevance_threshold=0.0)
     db = _stem_rescue_db(tmp_path)
@@ -1284,8 +1284,8 @@ def test_us1_stem_rescue_multi_file_deterministic(tmp_path: Path) -> None:
 
 def _stem_rescue_db_case_variant(tmp_path: Path) -> object:
     """Like :func:`_stem_rescue_db` but the defining file stem is upper-case."""
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "stem_case.db", settings)
@@ -1331,8 +1331,8 @@ def _path_boost_db(tmp_path: Path) -> object:
     (via the ``auth`` prefix) and ``service``; the ``core/`` decoys share no
     path signal, so only the auth chunk is boosted.
     """
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "path.db", settings)
@@ -1363,9 +1363,9 @@ def _path_boost_db(tmp_path: Path) -> object:
 
 def _path_boost_search(tmp_path: Path, bm25_results: list[tuple[int, float]]):
     """A HybridSearch over :func:`_path_boost_db` with a mocked vector arm."""
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(
         context_dir=tmp_path, relevance_gate=False, relevance_threshold=0.0, filter_stopwords=True
@@ -1434,8 +1434,8 @@ def _path_gate_db(tmp_path: Path) -> object:
     would prefix-match too but its one-char term must stay gated.
     ``nl_boost_keywords_min`` defaults to 2.
     """
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "pgate.db", settings)
@@ -1464,9 +1464,9 @@ def _path_gate_search(tmp_path: Path, bm25_results: list[tuple[int, float]]):
     single-keyword queries, isolating the two ``stem_min_prefix`` length gates
     from the keyword-count skip.
     """
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(
         context_dir=tmp_path,
@@ -1532,8 +1532,8 @@ def _embedded_db(tmp_path: Path) -> object:
     ``PaymentGateway`` is defined only in ``payment_gateway.py``; the decoy
     ``payment.py`` chunk is a plain BM25 hit with no symbol embedded in prose.
     """
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "embedded.db", settings)
@@ -1586,9 +1586,9 @@ def _embedded_db(tmp_path: Path) -> object:
 
 def _embedded_search(tmp_path: Path):
     """A HybridSearch over :func:`_embedded_db` with a mocked vector arm."""
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path, relevance_gate=False, relevance_threshold=0.0)
     db = _embedded_db(tmp_path)
@@ -1603,9 +1603,9 @@ def _embedded_search(tmp_path: Path):
 
 def test_us5_embedded_symbols_extracts_only_definition_symbols(tmp_path: Path) -> None:
     """Only identifier-shaped tokens that resolve exactly are picked."""
-    from src.engine.config import Settings
-    from src.engine.language import embedded_symbols
-    from src.engine.symbols import SymbolStore
+    from code_search.engine.config import Settings
+    from code_search.engine.language import embedded_symbols
+    from code_search.engine.symbols import SymbolStore
 
     store = SymbolStore(_embedded_db(tmp_path), Settings(context_dir=tmp_path))
     assert embedded_symbols("the PaymentGateway integration is ready", store) == ["PaymentGateway"]
@@ -1631,8 +1631,8 @@ def test_us5_embedded_pass_pulls_definition_into_pool(tmp_path: Path) -> None:
 
 def test_us5_embedded_pass_boost_value(tmp_path: Path) -> None:
     """The embedded boost is ``embedded_symbol_boost * pool_max``."""
-    from src.engine.config import Settings
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path)
     hs = HybridSearch(_embedded_db(tmp_path), None, None, settings)
@@ -1659,8 +1659,8 @@ def test_us5_embedded_pass_skipped_for_symbol_intent(tmp_path: Path) -> None:
 
 def _path_class_db(tmp_path: Path) -> object:
     """Controlled corpus for the path-class classification."""
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "class.db", settings)
@@ -1754,10 +1754,10 @@ def test_us1_conceptual_query_deterministic_scores_and_order(tmp_path: Path) -> 
     The query rides the live vector arm (real model + populated index) fused
     with BM25 — determinism must hold through the full hybrid path.
     """
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import GraphDatabase
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import GraphDatabase
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path, relevance_threshold=0.0, relevance_gate=False)
     db = GraphDatabase(tmp_path / "test.db", settings)
@@ -1816,7 +1816,7 @@ def test_us3_resolve_alpha_override_wins_over_intent(tmp_path: Path) -> None:
 
 
 def test_us6_dts_classifier() -> None:
-    from src.engine.config import _is_dts_file
+    from code_search.engine.config import _is_dts_file
 
     assert _is_dts_file("src/types/foo.d.ts") is True
     assert _is_dts_file("src/foo.ts") is False
@@ -1824,7 +1824,7 @@ def test_us6_dts_classifier() -> None:
 
 
 def test_us6_barrel_classifier(tmp_path: Path) -> None:
-    from src.engine.classification import PathClass
+    from code_search.engine.classification import PathClass
 
     db = _path_class_db(tmp_path)
     assert PathClass.is_barrel(db, "pkg/__init__.py") is True, (
@@ -1836,9 +1836,9 @@ def test_us6_barrel_classifier(tmp_path: Path) -> None:
 
 def test_us6_path_class_assigned_in_results(tmp_path: Path) -> None:
     """Results carry a path_class: dts/barrel demoted, plain code canonical."""
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path, relevance_gate=False, relevance_threshold=0.0)
     db = _path_class_db(tmp_path)
@@ -1865,8 +1865,8 @@ def _alpha_rank_db(tmp_path: Path) -> object:
     ``SessionValidator`` chunk is the incidental semantic neighbour: the mocked
     vector arm ranks it above the exact definition.
     """
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "alpha.db", settings)
@@ -1914,9 +1914,9 @@ def _alpha_rank_db(tmp_path: Path) -> object:
 def _alpha_rank_search(tmp_path: Path):
     """A HybridSearch over :func:`_alpha_rank_db` whose mocked vector arm ranks
     the semantic neighbour (chunk 2) above the exact definition (chunk 1)."""
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(
         context_dir=tmp_path,
@@ -1963,8 +1963,8 @@ def _crowd_db(tmp_path: Path) -> object:
     ``service`` through their file stem — exactly the crowding case the guard
     must contain.
     """
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "crowd.db", settings)
@@ -2000,9 +2000,9 @@ def _crowd_search(tmp_path: Path):
     match; the ``service_*`` files are weak content matches whose only signal
     is their generic shared stem.
     """
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(
         context_dir=tmp_path,
@@ -2045,9 +2045,9 @@ def test_us5_embedded_symbols_ignore_capitalized_common_words(tmp_path: Path) ->
     """Capitalized common words that are not actual
     symbols never fire the embedded-symbol pass — recognition requires an exact
     ``SymbolStore`` resolution."""
-    from src.engine.config import Settings
-    from src.engine.language import embedded_symbols
-    from src.engine.symbols import SymbolStore
+    from code_search.engine.config import Settings
+    from code_search.engine.language import embedded_symbols
+    from code_search.engine.symbols import SymbolStore
 
     store = SymbolStore(_embedded_db(tmp_path), Settings(context_dir=tmp_path))
     assert embedded_symbols("The PaymentGateway implementation is ready", store) == [
@@ -2075,7 +2075,9 @@ def test_definition_lookup_sql_and_pool_max_helper_once() -> None:
     skeleton and the ``_pool_max`` fallback it relies on appear exactly once
     each in search.py, so future passes reuse the helper instead of forking
     the query or the boost cap."""
-    source = (Path(__file__).resolve().parents[2] / "src" / "engine" / "search.py").read_text()
+    source = (
+        Path(__file__).resolve().parents[2] / "code_search" / "engine" / "search.py"
+    ).read_text()
     skeleton = "SELECT id, file_path FROM code_chunks"
     assert source.count(skeleton) == 1, "the definition-lookup SQL must appear once"
     assert (
@@ -2154,8 +2156,8 @@ def _exhaustive_db(tmp_path: Path) -> object:
     The files exist on disk because exhaustive mode scans the indexed files
     from local disk.
     """
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
 
     gen_py = tmp_path / "gen.py"
     gen_py.write_text("\n".join(f"token {i} abc" for i in range(12)) + "\n")
@@ -2186,8 +2188,8 @@ def _exhaustive_db(tmp_path: Path) -> object:
 
 
 def _exhaustive_search(tmp_path: Path, **settings_kwargs: object) -> object:
-    from src.engine.config import Settings
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path, **settings_kwargs)  # type: ignore[arg-type]
     hs = HybridSearch(_exhaustive_db(tmp_path), None, None, settings, no_model=True)
@@ -2220,8 +2222,8 @@ def test_exhaustive_within_cap_is_complete(tmp_path: Path) -> None:
 
 def _enumeration_db(tmp_path: Path) -> object:
     """Controlled corpus for enumerate-mode semantics."""
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
 
     settings = Settings(context_dir=tmp_path)
     db = GraphDatabase(tmp_path / "enumeration.db", settings)
@@ -2259,8 +2261,8 @@ def _enumeration_db(tmp_path: Path) -> object:
 
 
 def _enumeration_search(tmp_path: Path) -> object:
-    from src.engine.config import Settings
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.search import HybridSearch
 
     settings = Settings(context_dir=tmp_path)
     hs = HybridSearch(_enumeration_db(tmp_path), None, None, settings, no_model=True)
@@ -2398,8 +2400,8 @@ def test_ranked_results_carry_low_confidence_tag(tmp_path: Path) -> None:
 def test_no_match_envelope_shape_direct() -> None:
     """The no-match envelope reports ``no_match: true`` with the reason and
     the tiers tried."""
-    from src.engine.config import Settings
-    from src.engine.search import HybridSearch
+    from code_search.engine.config import Settings
+    from code_search.engine.search import HybridSearch
 
     settings = Settings()
     hs = HybridSearch(None, None, None, settings)  # type: ignore[arg-type]
@@ -2415,7 +2417,7 @@ def test_ranked_score_floor_default_matches_relevance_threshold() -> None:
     """The ranked score floor default is aligned with the existing
     relevance threshold so a score exactly at the floor is low-confidence,
     never no-match."""
-    from src.engine.config import Settings
+    from code_search.engine.config import Settings
 
     settings = Settings()
     assert settings.ranked_score_floor == settings.relevance_threshold

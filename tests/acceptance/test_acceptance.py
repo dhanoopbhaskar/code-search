@@ -662,18 +662,18 @@ class TestMCPTools:
     @pytest.fixture(scope="class")
     @classmethod
     def comps(cls, repo_path: Path, indexed: dict) -> dict[str, Any]:
-        from src.context import ContextManager
-        from src.engine.audit import AuditDatabase
-        from src.engine.config import Settings
-        from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-        from src.engine.graph import EdgeStore, GraphDatabase
-        from src.engine.metrics import MetricsCollector
-        from src.engine.parser import ASTParser
-        from src.engine.redactor import Redactor
-        from src.engine.reranking import Reranker
-        from src.engine.search import HybridSearch
-        from src.engine.session import SessionDatabase
-        from src.engine.symbols import SymbolExtractor, SymbolStore
+        from code_search.context import ContextManager
+        from code_search.engine.audit import AuditDatabase
+        from code_search.engine.config import Settings
+        from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+        from code_search.engine.graph import EdgeStore, GraphDatabase
+        from code_search.engine.metrics import MetricsCollector
+        from code_search.engine.parser import ASTParser
+        from code_search.engine.redactor import Redactor
+        from code_search.engine.reranking import Reranker
+        from code_search.engine.search import HybridSearch
+        from code_search.engine.session import SessionDatabase
+        from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
         ctx_dir = _context_dir(repo_path)
         settings = Settings(context_dir=ctx_dir)
@@ -779,7 +779,7 @@ class TestMCPTools:
         """A project-relative find_related file_path resolves to
         the same stored indexed location as the absolute form and produces the
         same non-error result set."""
-        from src.engine.paths import normalize_indexed_path, resolve_stored_path
+        from code_search.engine.paths import normalize_indexed_path, resolve_stored_path
 
         repo_root = Path(comps["context_dir"]).parent
         chunks = _discover_chunks(repo_root)
@@ -820,7 +820,7 @@ class TestAuditLogging:
     """Append-only audit log."""
 
     def test_audit_db_has_entries(self, repo_path: Path, indexed: dict) -> None:
-        from src.engine.audit import AuditDatabase
+        from code_search.engine.audit import AuditDatabase
 
         audit = AuditDatabase(_context_dir(repo_path) / "audit.db")
         audit.initialize()
@@ -828,7 +828,7 @@ class TestAuditLogging:
         assert total >= 0, "Audit log should be queryable"
 
     def test_audit_entries_after_search(self, repo_path: Path, indexed: dict) -> None:
-        from src.engine.audit import AuditDatabase
+        from code_search.engine.audit import AuditDatabase
 
         audit = AuditDatabase(_context_dir(repo_path) / "audit.db")
         audit.initialize()
@@ -840,7 +840,7 @@ class TestAuditLogging:
         assert after > before, "Search should create an audit entry"
 
     def test_audit_entry_schema(self, repo_path: Path, indexed: dict) -> None:
-        from src.engine.audit import AuditDatabase
+        from code_search.engine.audit import AuditDatabase
 
         audit = AuditDatabase(_context_dir(repo_path) / "audit.db")
         audit.initialize()
@@ -853,7 +853,7 @@ class TestAuditLogging:
             assert col in row.keys(), f"Missing column '{col}' in audit entry"  # noqa: SIM118  # sqlite3.Row.__contains__ checks values, not keys
 
     def test_audit_append_only_update_blocked(self, repo_path: Path, indexed: dict) -> None:
-        from src.engine.audit import AuditDatabase
+        from code_search.engine.audit import AuditDatabase
 
         audit = AuditDatabase(_context_dir(repo_path) / "audit.db")
         audit.initialize()
@@ -864,7 +864,7 @@ class TestAuditLogging:
             conn.execute("UPDATE audit_log_entries SET result_count = 999 WHERE id = 1")
 
     def test_audit_append_only_delete_blocked(self, repo_path: Path, indexed: dict) -> None:
-        from src.engine.audit import AuditDatabase
+        from code_search.engine.audit import AuditDatabase
 
         audit = AuditDatabase(_context_dir(repo_path) / "audit.db")
         audit.initialize()
@@ -875,7 +875,7 @@ class TestAuditLogging:
             conn.execute("DELETE FROM audit_log_entries")
 
     def test_audit_query_type_constraint(self, repo_path: Path, indexed: dict) -> None:
-        from src.engine.audit import AuditDatabase
+        from code_search.engine.audit import AuditDatabase
 
         audit = AuditDatabase(_context_dir(repo_path) / "audit.db")
         audit.initialize()
@@ -883,7 +883,7 @@ class TestAuditLogging:
             audit.write_entry(query_type="invalid_type")
 
     def test_audit_filter_by_type(self, repo_path: Path, indexed: dict) -> None:
-        from src.engine.audit import AuditDatabase
+        from code_search.engine.audit import AuditDatabase
 
         audit = AuditDatabase(_context_dir(repo_path) / "audit.db")
         audit.initialize()
@@ -891,7 +891,7 @@ class TestAuditLogging:
         assert all(e["query_type"] == "search" for e in entries)
 
     def test_audit_count_entries(self, repo_path: Path, indexed: dict) -> None:
-        from src.engine.audit import AuditDatabase
+        from code_search.engine.audit import AuditDatabase
 
         audit = AuditDatabase(_context_dir(repo_path) / "audit.db")
         audit.initialize()
@@ -908,7 +908,7 @@ class TestSessionTracking:
         assert sess_path.exists()
 
     def test_session_record_read_event(self, repo_path: Path, indexed: dict) -> None:
-        from src.engine.session import SessionDatabase
+        from code_search.engine.session import SessionDatabase
 
         sess_path = _context_dir(repo_path) / "session.db"
         if sess_path.exists():
@@ -919,7 +919,7 @@ class TestSessionTracking:
         assert sid and isinstance(sid, str) and len(sid) > 0
 
     def test_session_record_write_event(self, repo_path: Path, indexed: dict) -> None:
-        from src.engine.session import SessionDatabase
+        from code_search.engine.session import SessionDatabase
 
         sess_path = _context_dir(repo_path) / "session.db"
         if sess_path.exists():
@@ -930,7 +930,7 @@ class TestSessionTracking:
         assert sid and isinstance(sid, str)
 
     def test_session_invalid_event_type(self, repo_path: Path, indexed: dict) -> None:
-        from src.engine.session import SessionDatabase
+        from code_search.engine.session import SessionDatabase
 
         sess_path = _context_dir(repo_path) / "session.db"
         if sess_path.exists():
@@ -941,8 +941,8 @@ class TestSessionTracking:
             sess.record_event("file.py", "DELETE")
 
     def test_session_weights_decay(self, repo_path: Path, indexed: dict) -> None:
-        from src.engine.config import Settings
-        from src.engine.session import SessionDatabase
+        from code_search.engine.config import Settings
+        from code_search.engine.session import SessionDatabase
 
         sess_path = _context_dir(repo_path) / "session.db"
         if sess_path.exists():
@@ -956,7 +956,7 @@ class TestSessionTracking:
             assert 0.0 <= w <= 1.0, f"Weight {w} out of range"
 
     def test_session_get_active_sessions(self, repo_path: Path, indexed: dict) -> None:
-        from src.engine.session import SessionDatabase
+        from code_search.engine.session import SessionDatabase
 
         sess_path = _context_dir(repo_path) / "session.db"
         if sess_path.exists():
@@ -972,7 +972,7 @@ class TestRedaction:
     """Secret/PII redaction."""
 
     def test_redact_api_key(self) -> None:
-        from src.engine.redactor import Redactor
+        from code_search.engine.redactor import Redactor
 
         r = Redactor()
         text = "API_KEY = 'sk-proj-0123456789abcdef'"
@@ -981,7 +981,7 @@ class TestRedaction:
         assert "[REDACTED]" in redacted
 
     def test_redact_jwt_token(self) -> None:
-        from src.engine.redactor import Redactor
+        from code_search.engine.redactor import Redactor
 
         r = Redactor()
         text = (
@@ -993,7 +993,7 @@ class TestRedaction:
         assert count >= 1
 
     def test_redact_aws_key(self) -> None:
-        from src.engine.redactor import Redactor
+        from code_search.engine.redactor import Redactor
 
         r = Redactor()
         text = "aws_access_key = AKIAIOSFODNN7EXAMPLE"
@@ -1001,7 +1001,7 @@ class TestRedaction:
         assert count >= 1
 
     def test_redact_connection_string(self) -> None:
-        from src.engine.redactor import Redactor
+        from code_search.engine.redactor import Redactor
 
         r = Redactor()
         text = "db_url = 'postgres://admin:secretpass@localhost:5432/db'"
@@ -1009,7 +1009,7 @@ class TestRedaction:
         assert count >= 1
 
     def test_redact_password(self) -> None:
-        from src.engine.redactor import Redactor
+        from code_search.engine.redactor import Redactor
 
         r = Redactor()
         text = "password = 'supersecret123'"
@@ -1017,7 +1017,7 @@ class TestRedaction:
         assert count >= 1
 
     def test_redact_no_secrets(self) -> None:
-        from src.engine.redactor import Redactor
+        from code_search.engine.redactor import Redactor
 
         r = Redactor()
         text = "def hello_world(): print('hello')"
@@ -1026,7 +1026,7 @@ class TestRedaction:
         assert redacted == text
 
     def test_redact_results_applies_to_all(self) -> None:
-        from src.engine.redactor import Redactor
+        from code_search.engine.redactor import Redactor
 
         r = Redactor()
         results = [
@@ -1043,7 +1043,7 @@ class TestAirGapEnforcement:
     """Air-gapped operation compliance."""
 
     def test_air_gap_blocks_socket_connect(self) -> None:
-        from src.engine.redactor import air_gap_enforcement
+        from code_search.engine.redactor import air_gap_enforcement
 
         with pytest.raises(RuntimeError, match="Air-gap violation"), air_gap_enforcement():
             import socket
@@ -1051,7 +1051,7 @@ class TestAirGapEnforcement:
             socket.socket().connect(("127.0.0.1", 1))
 
     def test_air_gap_blocks_socket_connect_ex(self) -> None:
-        from src.engine.redactor import air_gap_enforcement
+        from code_search.engine.redactor import air_gap_enforcement
 
         with pytest.raises(RuntimeError, match="Air-gap violation"), air_gap_enforcement():
             import socket
@@ -1059,12 +1059,12 @@ class TestAirGapEnforcement:
             socket.socket().connect_ex(("8.8.8.8", 53))
 
     def test_air_gap_verify_returns_true(self) -> None:
-        from src.engine.redactor import verify_air_gap
+        from code_search.engine.redactor import verify_air_gap
 
         assert verify_air_gap() is True
 
     def test_allow_downloads_exempts_socket(self) -> None:
-        from src.engine.redactor import air_gap_enforcement, allow_downloads
+        from code_search.engine.redactor import air_gap_enforcement, allow_downloads
 
         with air_gap_enforcement():
             with pytest.raises(RuntimeError):
@@ -1086,7 +1086,7 @@ class TestAirGapEnforcement:
     def test_air_gap_restores_socket_after_context(self) -> None:
         import socket as sock_mod
 
-        from src.engine.redactor import air_gap_enforcement
+        from code_search.engine.redactor import air_gap_enforcement
 
         original = sock_mod.socket
         with air_gap_enforcement():
@@ -1098,7 +1098,7 @@ class TestConfigSettings:
     """Configuration and settings behaviour."""
 
     def test_settings_defaults(self) -> None:
-        from src.engine.config import Settings
+        from code_search.engine.config import Settings
 
         s = Settings()
         assert s.rrf_k == 60
@@ -1111,7 +1111,7 @@ class TestConfigSettings:
 
     def test_settings_env_override(self) -> None:
 
-        from src.engine.config import Settings
+        from code_search.engine.config import Settings
 
         os.environ["CODE_SEARCH_RRF_K"] = "42"
         os.environ["CODE_SEARCH_MAX_RESULTS"] = "30"
@@ -1124,7 +1124,7 @@ class TestConfigSettings:
             del os.environ["CODE_SEARCH_MAX_RESULTS"]
 
     def test_relevance_threshold_clamping(self) -> None:
-        from src.engine.config import Settings
+        from code_search.engine.config import Settings
 
         s_high = Settings(relevance_threshold=1.5)
         assert s_high.relevance_threshold == 1.0
@@ -1132,7 +1132,7 @@ class TestConfigSettings:
         assert s_low.relevance_threshold == 0.0
 
     def test_is_test_file_detection(self) -> None:
-        from src.engine.config import _is_non_canonical, _is_test_file
+        from code_search.engine.config import _is_non_canonical, _is_test_file
 
         assert _is_test_file("tests/test_auth.py") is True
         assert _is_test_file("src/test_utils.py") is True
@@ -1156,7 +1156,7 @@ class TestMetricsCollector:
     """In-memory metrics collector."""
 
     def test_record_and_read_latency(self) -> None:
-        from src.engine.metrics import MetricsCollector
+        from code_search.engine.metrics import MetricsCollector
 
         m = MetricsCollector()
         m.record_query(10)
@@ -1168,7 +1168,7 @@ class TestMetricsCollector:
         assert m.get_total_queries() == 3
 
     def test_no_latency_returns_zero(self) -> None:
-        from src.engine.metrics import MetricsCollector
+        from code_search.engine.metrics import MetricsCollector
 
         m = MetricsCollector()
         stats = m.get_latency_stats()
@@ -1177,7 +1177,7 @@ class TestMetricsCollector:
         assert stats["p99"] == 0.0
 
     def test_redaction_counting(self) -> None:
-        from src.engine.metrics import MetricsCollector
+        from code_search.engine.metrics import MetricsCollector
 
         m = MetricsCollector()
         m.record_redaction(5)
@@ -1185,7 +1185,7 @@ class TestMetricsCollector:
         assert m.get_total_redactions() == 8
 
     def test_snapshot_includes_all(self) -> None:
-        from src.engine.metrics import MetricsCollector
+        from code_search.engine.metrics import MetricsCollector
 
         m = MetricsCollector()
         m.record_query(15)
@@ -1195,7 +1195,7 @@ class TestMetricsCollector:
         assert "total_redactions" in snap
 
     def test_reset_clears_all(self) -> None:
-        from src.engine.metrics import MetricsCollector
+        from code_search.engine.metrics import MetricsCollector
 
         m = MetricsCollector()
         m.record_query(10)
@@ -1209,7 +1209,7 @@ class TestLanguageConfig:
     """Custom language configuration."""
 
     def test_load_defaults(self) -> None:
-        from src.engine.parser import LANGUAGE_GRAMMAR_MAP, LANGUAGE_MAP
+        from code_search.engine.parser import LANGUAGE_GRAMMAR_MAP, LANGUAGE_MAP
 
         assert len(LANGUAGE_MAP) > 0
         assert len(LANGUAGE_GRAMMAR_MAP) > 0
@@ -1217,7 +1217,7 @@ class TestLanguageConfig:
         assert ".py" in LANGUAGE_MAP
 
     def test_language_config_merge(self) -> None:
-        from src.engine.config import LanguageConfig
+        from code_search.engine.config import LanguageConfig
 
         lc = LanguageConfig(config_path=Path("/nonexistent/config.json"))
         merged = lc.merge_with_defaults({"python": {"extensions": [".py"]}})
@@ -1225,7 +1225,7 @@ class TestLanguageConfig:
         assert ".py" in merged["python"]["extensions"]
 
     def test_language_config_extensions_map(self) -> None:
-        from src.engine.config import LanguageConfig
+        from code_search.engine.config import LanguageConfig
 
         lc = LanguageConfig(config_path=Path("/nonexistent/config.json"))
         lc.merge_with_defaults({"python": {"extensions": [".py"]}})

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.engine.semantic_signals import (
+from code_search.engine.semantic_signals import (
     RelevanceScore,
     SemanticSignals,
     _is_structural_false_positive,

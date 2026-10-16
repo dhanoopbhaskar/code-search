@@ -2,12 +2,12 @@
 type: Function
 title: "detect_config_ddl_scent"
 description: "Detect config/DDL scent signals in a query string."
-resource: src/engine/scent_detection.py#detect_config_ddl_scent
+resource: code_search/engine/scent_detection.py#detect_config_ddl_scent
 tags: [ranking, scent, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/scent_detection.py
+  - resource: code_search/engine/scent_detection.py
     id: source-code
 ---
 

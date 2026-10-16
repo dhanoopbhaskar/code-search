@@ -2,12 +2,12 @@
 type: Function
 title: "index_mtime"
 description: "Extract the index's last build time from the metadata store."
-resource: src/engine/index_service.py#index_mtime
+resource: code_search/engine/index_service.py#index_mtime
 tags: [freshness, function]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/index_service.py
+  - resource: code_search/engine/index_service.py
     id: source-code
 ---
 

@@ -3,10 +3,10 @@ from typing import Any
 
 import pytest
 
-from src.engine.config import Settings
-from src.engine.graph import EdgeStore, GraphDatabase
-from src.engine.parser import ASTParser
-from src.engine.symbols import SymbolExtractor, SymbolStore
+from code_search.engine.config import Settings
+from code_search.engine.graph import EdgeStore, GraphDatabase
+from code_search.engine.parser import ASTParser
+from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
 
 @pytest.fixture

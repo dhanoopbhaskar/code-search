@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from src.engine.search import HybridSearch
+from code_search.engine.search import HybridSearch
 
 
 class TestDegradedModeEnvelope:
@@ -47,7 +47,7 @@ class TestDegradedModeEnvelope:
         # vector layer is unusable even with the model loaded.
         from pathlib import Path
 
-        from src.engine.embeddings import VectorIndex
+        from code_search.engine.embeddings import VectorIndex
 
         empty = Path(comps["context_dir"]) / "empty_vectors.bin"
         meta = Path(comps["context_dir"]) / "empty_vectors.meta.json"
@@ -67,7 +67,7 @@ class TestDegradedModeWarning:
     ) -> None:
         """The ``--no-model`` fast path emits a prominent stderr warning that
         semantic/vector signals are disabled."""
-        from src.cli.main import cmd_search
+        from code_search.cli.main import cmd_search
 
         args = type(
             "Args",

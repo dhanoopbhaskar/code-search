@@ -162,7 +162,7 @@ def _indexed_feature(tmp_path: Path) -> dict[str, Any]:
 
 
 def _reranked(search: Any, query: str, limit: int = 10) -> list[dict[str, Any]]:
-    from src.engine.reranking import Reranker
+    from code_search.engine.reranking import Reranker
 
     envelope = search.search(query, limit=limit, content="all")
     reranker = Reranker(search._db, settings=search._settings)  # type: ignore[arg-type]
@@ -174,7 +174,7 @@ def _reranked(search: Any, query: str, limit: int = 10) -> list[dict[str, Any]]:
 
 def test_file_role_root_shell_script_is_infra() -> None:
     """A root-level ``*.sh`` file classifies ``infra``."""
-    from src.engine.classification import FileRole, file_role
+    from code_search.engine.classification import FileRole, file_role
 
     assert file_role("wait-for-it.sh") == FileRole.INFRA
     assert file_role("scripts/deploy.sh") == FileRole.INFRA
@@ -282,8 +282,8 @@ def test_config_scent_ranks_properties_above_build_noise(tmp_path: Path) -> None
 def test_code_scoped_config_intent_appends_hint(tmp_path: Path) -> None:
     """A code-scoped config-shaped query appends a visible config hint to the
     response envelope."""
-    from src.engine.index_service import IndexChangeDetector
-    from src.engine.response_service import build_response
+    from code_search.engine.index_service import IndexChangeDetector
+    from code_search.engine.response_service import build_response
 
     comps = _indexed_feature(tmp_path)
     detector = IndexChangeDetector.from_metadata_store(comps["metadata"])
@@ -301,8 +301,8 @@ def test_code_scoped_config_intent_appends_hint(tmp_path: Path) -> None:
 
 def test_code_scoped_code_query_no_hint(tmp_path: Path) -> None:
     """A genuinely code-only query gets no config hint."""
-    from src.engine.index_service import IndexChangeDetector
-    from src.engine.response_service import build_response
+    from code_search.engine.index_service import IndexChangeDetector
+    from code_search.engine.response_service import build_response
 
     comps = _indexed_feature(tmp_path)
     detector = IndexChangeDetector.from_metadata_store(comps["metadata"])
@@ -322,8 +322,8 @@ def test_code_scoped_code_query_no_hint(tmp_path: Path) -> None:
 def test_index_change_detected_after_rebuild(tmp_path: Path) -> None:
     """A rebuilt index surfaces the visible "index changed — restart required"
     envelope instead of a silent empty/stale result."""
-    from src.engine.index_service import IndexChangeDetector
-    from src.engine.response_service import build_response
+    from code_search.engine.index_service import IndexChangeDetector
+    from code_search.engine.response_service import build_response
 
     comps = _indexed_feature(tmp_path)
     detector = IndexChangeDetector.from_metadata_store(comps["metadata"])
@@ -349,8 +349,8 @@ def test_index_change_detected_after_rebuild(tmp_path: Path) -> None:
 
 def test_session_started_after_index_has_no_spurious_change(tmp_path: Path) -> None:
     """A session started on a current index reports no change."""
-    from src.engine.index_service import IndexChangeDetector
-    from src.engine.response_service import build_response
+    from code_search.engine.index_service import IndexChangeDetector
+    from code_search.engine.response_service import build_response
 
     comps = _indexed_feature(tmp_path)
     detector = IndexChangeDetector.from_metadata_store(comps["metadata"])

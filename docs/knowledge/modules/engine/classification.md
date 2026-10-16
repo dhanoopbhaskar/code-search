@@ -2,12 +2,12 @@
 type: Module
 title: "engine.classification"
 description: "Shared file-class classification (FileRole, ContentType, PathClass) used by all ranking passes."
-resource: src/engine/classification.py
+resource: code_search/engine/classification.py
 tags: [engine, ranking, classification]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/classification.py
+  - resource: code_search/engine/classification.py
     id: source-code
 ---
 

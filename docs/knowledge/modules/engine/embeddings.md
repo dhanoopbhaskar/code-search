@@ -2,12 +2,12 @@
 type: Module
 title: "engine.embeddings"
 description: "Model2Vec embedding generation and flat-file vector index with cosine search and tombstone-based removal."
-resource: src/engine/embeddings.py
+resource: code_search/engine/embeddings.py
 tags: [engine, embeddings, vector-search]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/embeddings.py
+  - resource: code_search/engine/embeddings.py
     id: source-code
 ---
 

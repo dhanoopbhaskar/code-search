@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from src.engine.config import Settings
-from src.engine.graph import EdgeStore, GraphDatabase
-from src.engine.implementations import find_implementations
-from src.engine.symbols import SymbolStore
+from code_search.engine.config import Settings
+from code_search.engine.graph import EdgeStore, GraphDatabase
+from code_search.engine.implementations import find_implementations
+from code_search.engine.symbols import SymbolStore
 
 _SYMBOLS: list[tuple[str, str, str, str | None]] = [
     ("src/i.py::I", "I", "interface", None),

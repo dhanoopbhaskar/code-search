@@ -2,12 +2,12 @@
 type: Class
 title: "Settings"
 description: "Central configuration dataclass with 129 CODE_SEARCH_* environment-variable-backed fields."
-resource: src/engine/config.py#Settings
+resource: code_search/engine/config.py#Settings
 tags: [config, settings, dataclass]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/config.py
+  - resource: code_search/engine/config.py
     id: source-code
 ---
 

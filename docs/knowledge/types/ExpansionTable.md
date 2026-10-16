@@ -2,12 +2,12 @@
 type: Class
 title: "ExpansionTable"
 description: "Two-way, case-insensitive acronym/phrase to expansion-terms table with fuzzy matching."
-resource: src/engine/expansions.py#ExpansionTable
+resource: code_search/engine/expansions.py#ExpansionTable
 tags: [query-analysis, expansion]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/expansions.py
+  - resource: code_search/engine/expansions.py
     id: source-code
 ---
 

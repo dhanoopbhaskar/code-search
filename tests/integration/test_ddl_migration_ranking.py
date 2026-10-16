@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from src.engine.reranking import Reranker
+from code_search.engine.reranking import Reranker
 
 DDL_SCENT_QUERY = "database schema"
 MIGRATION_QUERY = "add a column to the articles table"

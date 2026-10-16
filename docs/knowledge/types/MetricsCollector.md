@@ -2,12 +2,12 @@
 type: Class
 title: "MetricsCollector"
 description: "Sliding-window metrics collector computing latency percentiles and tracking redaction counts."
-resource: src/engine/metrics.py#MetricsCollector
+resource: code_search/engine/metrics.py#MetricsCollector
 tags: [metrics, observability]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/metrics.py
+  - resource: code_search/engine/metrics.py
     id: source-code
 ---
 

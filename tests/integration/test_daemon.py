@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from src.engine.daemon import (
+from code_search.engine.daemon import (
     DaemonClient,
     QueryDaemon,
     default_socket_path,
@@ -26,13 +26,13 @@ from src.engine.daemon import (
 @pytest.fixture
 def indexed_env(tmp_path: Path) -> dict[str, Any]:
     """A small indexed repo plus its context dir (no daemon running)."""
-    from src.context import ContextManager
-    from src.engine.config import Settings
-    from src.engine.embeddings import EmbeddingGenerator, VectorIndex
-    from src.engine.graph import GraphDatabase, IndexMetadataStore
-    from src.engine.indexer import IndexOrchestrator
-    from src.engine.parser import ASTParser
-    from src.engine.symbols import SymbolExtractor, SymbolStore
+    from code_search.context import ContextManager
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.graph import GraphDatabase, IndexMetadataStore
+    from code_search.engine.indexer import IndexOrchestrator
+    from code_search.engine.parser import ASTParser
+    from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
     repo = tmp_path / "repo"
     (repo / "src").mkdir(parents=True)
@@ -182,7 +182,7 @@ def test_daemon_uses_unix_socket_only(daemon_env: dict[str, Any]) -> None:
 
 
 def test_daemon_status_running(daemon_env: dict[str, Any]) -> None:
-    from src.engine.daemon import DaemonClient
+    from code_search.engine.daemon import DaemonClient
 
     # daemon_status() checks the default code-search.sock; the fixture daemon
     # runs on test.sock, so assert the client sees it running instead.
@@ -254,7 +254,7 @@ def test_search_cold_path_returns_reduced_without_hint(
     (stubbed here) and serves the labelled reduced path within budget; the
     superseded "performance hint" is no longer emitted.
     """
-    from src.cli.main import cmd_search
+    from code_search.cli.main import cmd_search
 
     context_dir = indexed_env["context_dir"]
     assert not default_socket_path(context_dir).exists()
@@ -286,7 +286,7 @@ def test_search_warm_path_omits_performance_hint(
     When the daemon is running, ``cmd_search`` forwards to it and must not
     emit the cold-path performance hint in either JSON or human output.
     """
-    from src.cli.main import cmd_search
+    from code_search.cli.main import cmd_search
 
     context_dir = daemon_env["context_dir"]
     assert default_socket_path(context_dir).exists()
@@ -326,9 +326,9 @@ def test_daemon_index_reload_across_rebuilds(daemon_env: dict[str, Any]) -> None
     assert not resp1["payload"].get("reload_required", False), "first search should not need reload"
 
     # Simulate out-of-band index rebuild by updating last_indexed_at
-    from src.context import ContextManager
-    from src.engine.config import Settings
-    from src.engine.graph import GraphDatabase, IndexMetadataStore
+    from code_search.context import ContextManager
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase, IndexMetadataStore
 
     settings = Settings(context_dir=context_dir)
     ctx = ContextManager(settings)

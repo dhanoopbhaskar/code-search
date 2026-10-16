@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from src.mcp.server import _find_related_payload
+from code_search.mcp.server import _find_related_payload
 
 
 def _comps_with(

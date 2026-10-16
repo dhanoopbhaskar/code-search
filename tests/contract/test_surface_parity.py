@@ -45,7 +45,7 @@ def _result_files(results: list[dict[str, Any]]) -> set[str]:
 
 def _cli_search_options(argv: list[str]) -> dict[str, Any]:
     """Parse *argv* with the real CLI parser and return the search options."""
-    from src.cli.main import build_parser
+    from code_search.cli.main import build_parser
 
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -143,7 +143,7 @@ def test_identical_results_for_identical_input_across_surfaces() -> None:
     # inspecting the envelope keys each passes through unchanged.
     import inspect
 
-    from src.cli.main import cmd_search
+    from code_search.cli.main import cmd_search
 
     mcp_src = inspect.getsource(cmd_search)
     # The CLI forwards content/mode/language/include_tests/limit; MCP forwards
@@ -210,7 +210,7 @@ def test_effective_scope_matches_content_across_envelope_paths(
 def test_cli_and_engine_default_scope_agree(indexed_transparency: dict[str, Any]) -> None:
     """The CLI's omitted ``--content`` and the direct engine call apply
     the same effective scope for the same input."""
-    from src.cli.main import build_parser
+    from code_search.cli.main import build_parser
 
     args = build_parser().parse_args(["search", "database configuration"])
     assert getattr(args, "content", None) is None
@@ -232,16 +232,16 @@ def test_real_mcp_cli_and_engine_agree_on_scope_and_results(
 
     Unlike ``test_identical_results_for_identical_input_across_surfaces`` (which
     only inspects ``cmd_search`` source) this drives the real MCP tool built by
-    :meth:`src.mcp.server.MCPServer.build_fastmcp` over the indexed fixture.
+    :meth:`code_search.mcp.server.MCPServer.build_fastmcp` over the indexed fixture.
     """
     import argparse
     import asyncio
 
-    from src.cli import main as cli_main
-    from src.engine.index_service import IndexChangeDetector
-    from src.engine.redactor import Redactor
-    from src.engine.reranking import Reranker
-    from src.mcp.server import create_server
+    from code_search.cli import main as cli_main
+    from code_search.engine.index_service import IndexChangeDetector
+    from code_search.engine.redactor import Redactor
+    from code_search.engine.reranking import Reranker
+    from code_search.mcp.server import create_server
 
     comps = dict(indexed_transparency)
     comps["redactor"] = Redactor()
@@ -313,10 +313,10 @@ def test_mcp_inferred_docs_response_omits_redundant_override(
     documentation."""
     import asyncio
 
-    from src.engine.index_service import IndexChangeDetector
-    from src.engine.redactor import Redactor
-    from src.engine.reranking import Reranker
-    from src.mcp.server import create_server
+    from code_search.engine.index_service import IndexChangeDetector
+    from code_search.engine.redactor import Redactor
+    from code_search.engine.reranking import Reranker
+    from code_search.mcp.server import create_server
 
     comps = dict(indexed_transparency)
     comps["redactor"] = Redactor()

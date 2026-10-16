@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from src.mcp.server import _call_neighbors_payload
+from code_search.mcp.server import _call_neighbors_payload
 
 _SOURCE = """\
 def leaf():
@@ -213,7 +213,7 @@ def _cli_payload(
     max_depth: int,
     transitive: bool,
 ) -> dict[str, Any]:
-    from src.cli import main as cli_main
+    from code_search.cli import main as cli_main
 
     monkeypatch.setattr(cli_main, "_initialize_components", lambda _ctx: comps)
     args = argparse.Namespace(
@@ -238,7 +238,7 @@ def _daemon_payload(
     max_depth: int,
     transitive: bool,
 ) -> dict[str, Any]:
-    from src.engine.daemon import QueryDaemon
+    from code_search.engine.daemon import QueryDaemon
 
     resp = QueryDaemon._do_graph(
         comps,
@@ -312,7 +312,7 @@ def test_audit_result_count_matches_deduplicated_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The CLI audit entry records the deduplicated neighbor count."""
-    from src.cli import main as cli_main
+    from code_search.cli import main as cli_main
 
     monkeypatch.setattr(cli_main, "_initialize_components", lambda _ctx: dedup_comps)
     args = argparse.Namespace(
@@ -340,7 +340,7 @@ def test_audit_result_count_matches_deduplicated_count(
 def test_no_schema_or_column_change(dedup_comps: dict[str, Any]) -> None:
     """This feature changes query shape only: the schema version and the
     ``symbols``/``graph_edges`` columns are unchanged."""
-    from src.engine.graph import SCHEMA_VERSION
+    from code_search.engine.graph import SCHEMA_VERSION
 
     assert SCHEMA_VERSION == 13
     with dedup_comps["db"].connect() as conn:

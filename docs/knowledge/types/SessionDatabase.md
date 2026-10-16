@@ -2,12 +2,12 @@
 type: Class
 title: "SessionDatabase"
 description: "Tracks code navigation events to enable session-based personalised reranking with exponential decay."
-resource: src/engine/session.py#SessionDatabase
+resource: code_search/engine/session.py#SessionDatabase
 tags: [session, personalization, storage]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
 status: draft
 sources:
-  - resource: src/engine/session.py
+  - resource: code_search/engine/session.py
     id: source-code
 ---
 

@@ -148,7 +148,7 @@ def test_representation_scheme_marker_recorded(
     """The index records the representation scheme that produced its embeddings
     so stale-scheme vectors are never served as current.
     """
-    from src.engine.embed_representation import REPRESENTATION_SCHEME_VERSION
+    from code_search.engine.embed_representation import REPRESENTATION_SCHEME_VERSION
 
     meta = indexed_semantic_vector["meta"]
     assert meta.get_int("representation_scheme_version") == REPRESENTATION_SCHEME_VERSION
