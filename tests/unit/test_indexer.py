@@ -546,3 +546,30 @@ def test_indexer_writes_nonempty_file_path_and_fqn_to_vector_metadata(tmp_path: 
         assert file_path.strip(), "vector metadata entry missing file_path"
         assert fqn.strip(), "vector metadata entry missing fqn"
         assert file_path in real_paths, f"file_path {file_path!r} not from indexed repo"
+
+
+def test_index_codebase_reports_progress(tmp_path: Path) -> None:
+    repo = tmp_path / "progress_repo"
+    (repo / "src").mkdir(parents=True)
+    for i in range(3):
+        (repo / "src" / f"mod{i}.py").write_text(f"def f{i}(): return {i}\n")
+    comps = _build_components(repo)
+
+    events: list[tuple[str, int, int]] = []
+    comps["orchestrator"].index_codebase(
+        root_path=repo,
+        force=True,
+        verbose=False,
+        progress_callback=lambda phase, completed, total: events.append((phase, completed, total)),
+    )
+
+    assert events
+    phases = {phase for phase, _, _ in events}
+    assert phases <= {"parsing", "persisting", "embedding"}
+    assert {"parsing", "persisting"} <= phases
+    for _, completed, total in events:
+        assert 1 <= completed <= total
+
+    persisted = [completed for phase, completed, _ in events if phase == "persisting"]
+    assert persisted == sorted(persisted)
+    assert persisted[-1] == len(persisted)

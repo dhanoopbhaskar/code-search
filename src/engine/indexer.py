@@ -11,6 +11,7 @@ import logging
 import multiprocessing
 import os
 import time
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -47,6 +48,15 @@ _POOL_CTX = multiprocessing.get_context("spawn")
 # footprint. Below that, running in-process is faster and avoids pathologically
 # slow indexing on memory-constrained machines.
 _PARSE_MIN_BATCH_PER_WORKER = 50
+
+# Chunks per ``encode_batch`` call during the embedding phase. Encoding runs
+# one sentence at a time regardless (``batch_size=1``), so splitting the call
+# yields identical vectors while giving the progress callback a periodic tick.
+_EMBED_PROGRESS_BATCH = 256
+
+# Reports pipeline progress as ``(phase, completed, total)``. ``phase`` is one
+# of ``"parsing"``, ``"persisting"``, or ``"embedding"``.
+ProgressCallback = Callable[[str, int, int], None]
 
 # Symbol kinds that declare a type. Used when resolving an inheritance base
 # that an import map expanded to a dotted module path (for example a Python
@@ -444,6 +454,7 @@ class IndexOrchestrator:
         include_tests: bool = True,
         include_resources: bool = False,
         resource_extensions: tuple[str, ...] | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> dict[str, Any]:
         """Run a full or incremental index over *root_path*.
 
@@ -466,6 +477,10 @@ class IndexOrchestrator:
             include_resources: Whether resource files matching
                 *resource_extensions* are indexed.
             resource_extensions: Extension allowlist for resource files.
+            progress_callback: Optional ``(phase, completed, total)`` reporter
+                invoked periodically through the parsing, persistence, and
+                embedding phases. Phases are labelled ``parsing``,
+                ``persisting``, and ``embedding``.
 
         Returns:
             A summary dict ``{total_files, total_symbols, total_chunks,
@@ -661,18 +676,23 @@ class IndexOrchestrator:
 
             processed_results: list[dict[str, Any]] = []
             if worker_args:
-                num_workers = min(os.cpu_count() or 4, len(worker_args))
-                if (
-                    num_workers > 1
-                    and len(worker_args) >= num_workers * _PARSE_MIN_BATCH_PER_WORKER
-                ):
+                parse_total = len(worker_args)
+                num_workers = min(os.cpu_count() or 4, parse_total)
+                if num_workers > 1 and parse_total >= num_workers * _PARSE_MIN_BATCH_PER_WORKER:
                     with ProcessPoolExecutor(
                         mp_context=_POOL_CTX, max_workers=num_workers
                     ) as executor:
-                        processed_results = list(executor.map(_process_file_worker, worker_args))
+                        for done, result in enumerate(
+                            executor.map(_process_file_worker, worker_args), start=1
+                        ):
+                            processed_results.append(result)
+                            if progress_callback is not None:
+                                progress_callback("parsing", done, parse_total)
                 else:
-                    for args in worker_args:
+                    for done, args in enumerate(worker_args, start=1):
                         processed_results.append(_process_file_worker(args))
+                        if progress_callback is not None:
+                            progress_callback("parsing", done, parse_total)
 
             # Phase 3 (serial): DB writes
             total_symbols = 0
@@ -681,7 +701,8 @@ class IndexOrchestrator:
             unresolved_edges: list[dict[str, Any]] = []
             has_resource_files = False
 
-            for result in processed_results:
+            persist_total = len(processed_results)
+            for done, result in enumerate(processed_results, start=1):
                 file_path_str = result["file_path"]
                 syms = result["symbols"]
                 edges = result["edges"]
@@ -759,6 +780,9 @@ class IndexOrchestrator:
                             1 if result.get("parse_failed") else 0,
                         ),
                     )
+
+                if progress_callback is not None:
+                    progress_callback("persisting", done, persist_total)
 
             # Cross-file edge resolution: batch-resolve unresolved edges against persisted symbols
             if unresolved_edges:
@@ -872,16 +896,23 @@ class IndexOrchestrator:
                             )
 
             if embed_args:
-                embed_texts = [text for text, _, _, _, _ in embed_args]
-                embed_vectors = self._embedding_generator.encode_batch(embed_texts)
-                for (_, chunk_id, file_path, fqn, content_type), embedding in zip(
-                    embed_args, embed_vectors, strict=True
-                ):
-                    if embedding is not None:
-                        self._vector_index.add(
-                            chunk_id,
-                            embedding,
-                            {"file_path": file_path, "fqn": fqn, "content_type": content_type},
+                embed_total = len(embed_args)
+                for start in range(0, embed_total, _EMBED_PROGRESS_BATCH):
+                    batch = embed_args[start : start + _EMBED_PROGRESS_BATCH]
+                    embed_texts = [text for text, _, _, _, _ in batch]
+                    embed_vectors = self._embedding_generator.encode_batch(embed_texts)
+                    for (_, chunk_id, file_path, fqn, content_type), embedding in zip(
+                        batch, embed_vectors, strict=True
+                    ):
+                        if embedding is not None:
+                            self._vector_index.add(
+                                chunk_id,
+                                embedding,
+                                {"file_path": file_path, "fqn": fqn, "content_type": content_type},
+                            )
+                    if progress_callback is not None:
+                        progress_callback(
+                            "embedding", min(start + len(batch), embed_total), embed_total
                         )
 
             self._vector_index.save()

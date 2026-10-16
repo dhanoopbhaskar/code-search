@@ -12,6 +12,7 @@ import logging
 import os
 import signal
 import sys
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -179,6 +180,32 @@ def _check_model_profile(settings: Settings) -> int | None:
     return None
 
 
+def _make_index_progress_reporter() -> Callable[[str, int, int], None]:
+    """Build a callback that prints indexing progress at 10% milestones.
+
+    The returned callback accepts ``(phase, completed, total)`` and writes a
+    line to stderr the first time completion in each phase reaches a new
+    multiple of ten percent, keeping output sparse for long indexes.
+
+    Returns:
+        A stateful progress callback suitable for
+        ``IndexOrchestrator.index_codebase``.
+    """
+    milestones: dict[str, int] = {}
+
+    def report(phase: str, completed: int, total: int) -> None:
+        if total <= 0:
+            return
+        pct = min(100, (completed * 100) // total)
+        milestone = (pct // 10) * 10
+        if milestone < 10 or milestone <= milestones.get(phase, -1):
+            return
+        milestones[phase] = milestone
+        print(f"Indexing {phase}: {milestone}% ({completed}/{total})", file=sys.stderr)
+
+    return report
+
+
 def cmd_index(args: argparse.Namespace) -> int:
     """Run the ``index`` subcommand: build or update the code index.
 
@@ -290,6 +317,7 @@ def cmd_index(args: argparse.Namespace) -> int:
             include_tests=args.include_tests,
             include_resources=include_resources,
             resource_extensions=res_exts,
+            progress_callback=_make_index_progress_reporter(),
         )
         print(
             f"Index complete: {result['total_files']} files, "
