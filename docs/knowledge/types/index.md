@@ -50,7 +50,7 @@ status: draft
 * [ResolutionResult](ResolutionResult.md) - Outcome of resolving a name query to a symbol: exact match, ambiguous candidates, or not found.
 * [SemanticSignals](SemanticSignals.md) - Structural semantic signals (package overlap, type sharing, call proximity) between an anchor and a candidate symbol.
 * [SessionDatabase](SessionDatabase.md) - Tracks code navigation events to enable session-based personalised reranking with exponential decay.
-* [Settings](Settings.md) - Central configuration dataclass with 129 CODE_SEARCH_* environment-variable-backed fields.
+* [Settings](Settings.md) - Central configuration dataclass with 144 CODE_SEARCH_* environment-variable-backed fields.
 * [SymbolExtractor](SymbolExtractor.md) - Extracts symbols and edges (calls, imports, inheritance) from tree-sitter ASTs.
 * [SymbolReference](SymbolReference.md) - A caller-supplied name parsed into its matching components (raw, leaf, qualifier, signature, form).
 * [SymbolStore](SymbolStore.md) - SQLite-backed CRUD, resolution, and lookup for symbol records.

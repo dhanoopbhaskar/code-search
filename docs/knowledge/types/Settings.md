@@ -1,10 +1,10 @@
 ---
 type: Class
 title: "Settings"
-description: "Central configuration dataclass with 129 CODE_SEARCH_* environment-variable-backed fields."
+description: "Central configuration dataclass with 144 CODE_SEARCH_* environment-variable-backed fields."
 resource: code_search/engine/config.py#Settings
 tags: [config, settings, dataclass]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-19T00:00:00Z }
 status: draft
 sources:
   - resource: code_search/engine/config.py
@@ -13,7 +13,7 @@ sources:
 
 # Overview
 
-Central configuration dataclass with 129 fields, each overridable via a
+Central configuration dataclass with 144 fields, each overridable via a
 `CODE_SEARCH_*` environment variable. Loaded once via `Settings.from_env()`
 and threaded through nearly every engine component. Defined in
 [`engine.config`](../modules/engine/config.md). The full field list is
@@ -34,8 +34,10 @@ concept summarises the major field groups.
 | Confidence | `confidence_high_floor`, `confidence_medium_floor` | Calibrated confidence band boundaries. |
 | Reranking | `definition_boost`, `noise_penalty`, `non_canonical_penalty` | Post-fusion reranking weights. |
 | Session | `session_ttl_hours`, `decay_constant`, `session_read_weight` | Session-based personalisation decay parameters. |
-| Indexing / watcher / graph | `lock_timeout`, `max_chunk_lines`, `watch_poll_interval`, `max_graph_depth` | Indexing, file-watch, and graph-traversal limits. |
+| Indexing / watcher / graph | `respect_gitignore`, `lock_timeout`, `max_chunk_lines`, `watch_poll_interval`, `max_graph_depth`, `index_doc_links`, `doc_link_top_k` | Indexing, `.gitignore` handling, doc-link computation, file-watch, and graph-traversal limits. |
 | Match-boost layer | `match_boost_enabled`, `match_boost_cap`, `match_boost_exact_fqn` | Bounded additive name-match boosting. |
+| Concept-symbol pass | `concept_symbol_boost`, `concept_symbol_anchor_boost`, `concept_symbol_min_ratio`, `concept_symbol_pool_max_share` | Symbol-name concept matching for natural-language queries. |
+| Endpoint-intent pass | `endpoint_intent_boost`, `endpoint_intent_cap` | HTTP-verb annotated controller-method boosting. |
 | Rescue ladder | `rescue_t1_enabled`, `rescue_literal_enabled` | Tiered rescue thresholds. |
 
 # Methods

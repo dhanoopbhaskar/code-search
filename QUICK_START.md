@@ -76,6 +76,9 @@ code-search index
 ```
 
 Creates a `.context/` directory with all index data (SQLite databases + vector files).
+Discovery honours the repository's `.gitignore` files and built-in build/tool
+directories by default; `--exclude` patterns are additive. Set
+`CODE_SEARCH_RESPECT_GITIGNORE=false` to index ignored paths.
 
 **Useful flags:**
 

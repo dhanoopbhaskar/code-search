@@ -1,10 +1,10 @@
 ---
 type: Overview
 title: "Environment Configuration"
-description: "Full enumeration of CODE_SEARCH_* environment variables: the 129 Settings fields plus the separately-read language-config path."
+description: "Full enumeration of CODE_SEARCH_* environment variables: the 144 Settings fields plus the separately-read language-config path."
 resource: code_search/engine/config.py
 tags: [config, environment, settings]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-19T00:00:00Z }
 status: draft
 sources:
   - resource: code_search/engine/config.py
@@ -128,7 +128,7 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_EXACT_PRECHECK_TAGS` | `on` | Enables the exact-match pre-check pass. |
 | `CODE_SEARCH_SCORE_BREAKDOWN` | `true` | Include per-signal score breakdown in responses. |
 | `CODE_SEARCH_CONFIDENCE_HIGH_FLOOR` | `0.7` | Calibrated score at/above this is the `high` confidence band. |
-| `CODE_SEARCH_CONFIDENCE_MEDIUM_FLOOR` | `0.45` | Calibrated score at/above this (below high) is `medium`; below is `low`. |
+| `CODE_SEARCH_CONFIDENCE_MEDIUM_FLOOR` | `0.40` | Calibrated score at/above this (below high) is `medium`; below is `low`. |
 
 # File Coherence, Scent, Suggestions, Reranking
 
@@ -156,6 +156,7 @@ path controls per-language parsing settings via
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `CODE_SEARCH_RESPECT_GITIGNORE` | `true` | Honour repository `.gitignore` files during discovery and stale pruning; set to `false` to index ignored paths. |
 | `CODE_SEARCH_LOCK_TIMEOUT` | `30.0` | Timeout for acquiring the index lock. |
 | `CODE_SEARCH_MAX_CHUNK_LINES` | `100` | Maximum lines per indexed chunk; defined but currently not consumed by the engine (the chunker uses a hard-coded default of 100). |
 | `CODE_SEARCH_WATCH_DEBOUNCE` | `1.0` | Debounce window (seconds) for [`FileWatcher`](../types/FileWatcher.md). |
@@ -164,6 +165,10 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_MAX_GRAPH_DEPTH` | `5` | Maximum traversal depth for call-graph queries. |
 | `CODE_SEARCH_CALL_GRAPH_LIMIT` | `50` | Maximum nodes returned per call-graph query; defined but currently not consumed by the engine. |
 | `CODE_SEARCH_MAX_RESOLUTION_CANDIDATES` | `10` | Maximum candidates considered when resolving a symbol reference. |
+| `CODE_SEARCH_INDEX_DOC_LINKS` | `false` | Compute offline docs/config-to-code links at index time from the local embedding model; the all-pairs cost is only worthwhile on documentation-heavy repositories. |
+| `CODE_SEARCH_DOC_LINK_TOP_K` | `3` | Maximum documentation/config-to-code links recorded per chunk. |
+| `CODE_SEARCH_DOC_LINK_MIN_SCORE` | `0.35` | Minimum cosine similarity for a documentation/config-to-code link. |
+| `CODE_SEARCH_DOC_LINK_MAX_CHUNKS` | `2000` | Maximum documentation/config chunks considered when computing doc links. |
 | `CODE_SEARCH_METRICS_WINDOW_SIZE` | `1000` | Rolling window size for [`MetricsCollector`](../types/MetricsCollector.md) latency percentiles. |
 
 # MCP Server / Display
@@ -187,6 +192,16 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_STEM_MIN_PREFIX` | `3` | Minimum prefix length for stem matching. |
 | `CODE_SEARCH_NL_BOOST_MAX` | `1.0` | Cap on the natural-language boost. |
 | `CODE_SEARCH_NL_BOOST_KEYWORDS_MIN` | `2` | Minimum keyword overlap to apply the NL boost. |
+| `CODE_SEARCH_CONCEPT_SYMBOL_BOOST` | `0.7` | Pool-max-scaled boost for definitions whose symbol name carries the query's distinctive terms. |
+| `CODE_SEARCH_CONCEPT_SYMBOL_CAP` | `0.6` | Upper bound (as a fraction of the pool maximum) on the ordinary concept-symbol boost. |
+| `CODE_SEARCH_CONCEPT_SYMBOL_ANCHOR_BOOST` | `1.8` | Stronger boost when the concept appears in the method/member name (the named answer). |
+| `CODE_SEARCH_CONCEPT_SYMBOL_ANCHOR_CAP` | `2.0` | Upper bound on the anchor concept-symbol boost. |
+| `CODE_SEARCH_CONCEPT_SYMBOL_MIN_RATIO` | `0.2` | Minimum IDF-weighted concept ratio required for any concept-symbol boost. |
+| `CODE_SEARCH_CONCEPT_SYMBOL_COMMON_DF` | `0.25` | Corpus document-frequency share above which a term is too common to be a concept. |
+| `CODE_SEARCH_CONCEPT_SYMBOL_TERMS_MAX` | `6` | Maximum number of distinctive concept terms considered. |
+| `CODE_SEARCH_CONCEPT_SYMBOL_POOL_MAX_SHARE` | `0.35` | Candidate-pool share above which a term is not a discriminator. |
+| `CODE_SEARCH_ENDPOINT_INTENT_BOOST` | `2.0` | Boost for a controller method annotated for the query's HTTP verb. |
+| `CODE_SEARCH_ENDPOINT_INTENT_CAP` | `1.5` | Upper bound (as a fraction of the pool maximum) on the endpoint-intent boost. |
 | `CODE_SEARCH_EMBEDDED_SYMBOL_BOOST` | `0.5` | Boost for chunks containing an embedded symbol match. |
 | `CODE_SEARCH_DTS_PENALTY` | `0.7` | Penalty for `.d.ts`-style declaration files. |
 | `CODE_SEARCH_BARREL_PENALTY` | `0.5` | Penalty for barrel/re-export files. |

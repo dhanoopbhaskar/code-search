@@ -73,7 +73,7 @@ def _concept_subwords(text: str) -> list[str]:
 
     return [
         w
-        for w in decompose_query(text)
+        for w in decompose_query(text, expand_variants=False)
         if len(w) >= 3 and w not in STOPWORDS and w not in NON_INFORMATIVE_CODE_TERMS
     ]
 

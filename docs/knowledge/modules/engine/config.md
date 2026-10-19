@@ -31,7 +31,7 @@ reference.
 # Key Classes
 
 - [`LanguageConfig`](../../types/LanguageConfig.md) — merges user JSON overrides into built-in language definitions.
-- [`Settings`](../../types/Settings.md) — the frozen dataclass carrying 129 tunable fields.
+- [`Settings`](../../types/Settings.md) — the frozen dataclass carrying 144 tunable fields.
 
 # Key Functions
 

@@ -2444,3 +2444,237 @@ def test_model_status_warm_on_healthy_vector_layer(tmp_path: Path) -> None:
     assert env["mode"] == "ranked"
     assert "model_status" in env
     assert "degraded_reason" in env
+
+
+def test_leader_matches_concept_when_best_candidate_states_it(tmp_path: Path) -> None:
+    """The concept pass is skipped when the pool leader already carries the term.
+
+    This keeps the pass as a rescue for semantic misses instead of a
+    re-ranking of results that already surface the concept (which previously
+    displaced redacted config/test chunks for literal queries).
+    """
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
+
+    settings = Settings(context_dir=tmp_path)
+    db = _build_gate_db(tmp_path)
+    hs = HybridSearch(
+        db,
+        VectorIndex(tmp_path / "concept.bin", tmp_path / "concept.meta.json"),
+        EmbeddingGenerator(settings),
+        settings,
+    )
+
+    # Chunk 1 is ``mod.tok_a``; its own name carries the concept term.
+    assert hs._leader_matches_concept({1: 5.0, 2: 3.0}, ["tok"]) is True
+    # Chunk 6 is ``mod.pag``; it does not carry ``pageable``.
+    assert hs._leader_matches_concept({6: 9.0, 1: 5.0}, ["pageable"]) is False
+
+
+def _build_pass_db(tmp_path: Path) -> tuple[object, dict[str, int]]:
+    """Corpus for the concept-symbol and endpoint-intent ranking passes.
+
+    ``user`` is a high-DF domain word (5/10 chunks), ``follow`` is rare (2/10),
+    and the follow definitions are split between a production and a test file
+    so the test-intent penalty can be exercised. ``ArticleController.create``
+    carries a ``PostMapping`` declared rule for the endpoint pass.
+
+    Returns:
+        The initialized graph database and a mapping of FQN to chunk id.
+    """
+    from code_search.engine.config import Settings
+    from code_search.engine.graph import GraphDatabase
+
+    settings = Settings(context_dir=tmp_path)
+    db = GraphDatabase(tmp_path / "pass.db", settings)
+    db.initialize()
+    rows: list[tuple[str, str, str, str, str, str | None]] = [
+        (
+            "ProfileService.follow",
+            "src/main/java/com/example/profile/ProfileService.java",
+            '@PostMapping("/profiles/{username}/follow")\n'
+            "public Profile follow(String username) { return null; }",
+            "profile service follow public string username",
+            "method_declaration",
+            '@PostMapping("/profiles/{username}/follow")',
+        ),
+        (
+            "UserService.getUser",
+            "src/main/java/com/example/user/UserService.java",
+            "public User getUser(String username) { return null; }",
+            "user service get public string username",
+            "method_declaration",
+            None,
+        ),
+        (
+            "UserService.listUsers",
+            "src/main/java/com/example/user/UserService.java",
+            "public List<User> listUsers() { return null; }",
+            "user service list public",
+            "method_declaration",
+            None,
+        ),
+        (
+            "UserService.createUser",
+            "src/main/java/com/example/user/UserService.java",
+            "public User createUser(User user) { return user; }",
+            "user service create public",
+            "method_declaration",
+            None,
+        ),
+        (
+            "UserService.updateUser",
+            "src/main/java/com/example/user/UserService.java",
+            "public User updateUser(User user) { return user; }",
+            "user service update public",
+            "method_declaration",
+            None,
+        ),
+        (
+            "UserService.deleteUser",
+            "src/main/java/com/example/user/UserService.java",
+            "public void deleteUser(String username) {}",
+            "user service delete public string username",
+            "method_declaration",
+            None,
+        ),
+        (
+            "ProfileServiceTest.follow",
+            "src/test/java/com/example/profile/ProfileServiceTest.java",
+            'void follow() { service.follow("alice"); }',
+            "profile service test follow public",
+            "method_declaration",
+            None,
+        ),
+        (
+            "ArticleController.create",
+            "src/main/java/com/example/article/ArticleController.java",
+            '@PostMapping("/articles")\npublic Article create(Article article) { return article; }',
+            "article controller create public",
+            "method_declaration",
+            '@PostMapping("/articles")',
+        ),
+        (
+            "CommentService.listComments",
+            "src/main/java/com/example/comment/CommentService.java",
+            "public List<Comment> listComments() { return null; }",
+            "comment service list public",
+            "method_declaration",
+            None,
+        ),
+        (
+            "TagService.listTags",
+            "src/main/java/com/example/tag/TagService.java",
+            "public List<Tag> listTags() { return null; }",
+            "tag service list public",
+            "method_declaration",
+            None,
+        ),
+    ]
+    ids: dict[str, int] = {}
+    with db.write_transaction() as conn:
+        for line_start, (fqn, path, content, subwords, node_type, rules) in enumerate(
+            rows, start=1
+        ):
+            cursor = conn.execute(
+                "INSERT INTO code_chunks (fqn, file_path, line_start, line_end, "
+                "content, language, is_definition, chunk_type, chunk_node_type, subwords, "
+                "declared_rules) VALUES (?, ?, ?, ?, ?, 'java', 1, 'ast', ?, ?, ?);",
+                (fqn, path, line_start, line_start + 1, content, node_type, subwords, rules),
+            )
+            ids[fqn] = int(cursor.lastrowid)
+    return db, ids
+
+
+def _pass_search(tmp_path: Path) -> tuple[object, dict[str, int]]:
+    """Build a HybridSearch over the ranking-pass corpus with the gate disabled."""
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
+
+    settings = Settings(context_dir=tmp_path, relevance_gate=False)
+    db, ids = _build_pass_db(tmp_path)
+    vector_index = VectorIndex(tmp_path / "pass.bin", tmp_path / "pass.meta.json")
+    vector_index.load()
+    hs = HybridSearch(db, vector_index, EmbeddingGenerator(settings), settings)
+    hs._vector_search = _MockVectorSearch([])
+    return hs, ids
+
+
+def test_symbol_concept_pass_lifts_rare_concept_over_domain_word(tmp_path: Path) -> None:
+    """``follow`` (rare) lifts ``ProfileService.follow`` above high-DF ``user``."""
+    hs, ids = _pass_search(tmp_path)
+    follow_id = ids["ProfileService.follow"]
+    user_id = ids["UserService.getUser"]
+    fused = {user_id: 10.0, ids["UserService.listUsers"]: 9.0}
+
+    evidence = hs._symbol_concept_pass("how does following a user work", fused, "code_focused")
+
+    assert follow_id in evidence
+    assert evidence[follow_id]["terms"] == ["follow"]
+    assert evidence[follow_id]["ratio"] >= 0.34
+    assert evidence[follow_id]["anchor"] is True
+    assert fused[follow_id] > fused[user_id]
+
+
+def test_symbol_concept_pass_surfaces_in_score_sources(tmp_path: Path) -> None:
+    """The winning definition carries ``score_sources.symbol_concept`` evidence."""
+    hs, ids = _pass_search(tmp_path)
+
+    env = hs.search("how does following a user work", limit=10)
+
+    assert env["results"], "expected ranked results"
+    top = env["results"][0]
+    assert top["fqn"].endswith("ProfileService.follow")
+    assert top["score_sources"]["symbol_concept"]["terms"] == ["follow"]
+    assert top["score_sources"]["symbol_concept"]["anchor"] is True
+    assert ids["ProfileService.follow"] == top["chunk_id"]
+
+
+def test_symbol_concept_pass_injects_definition_missing_from_pool(tmp_path: Path) -> None:
+    """A concept-only definition enters the pool when its ratio clears 0.34."""
+    hs, ids = _pass_search(tmp_path)
+    follow_id = ids["ProfileService.follow"]
+    fused = {ids["UserService.getUser"]: 10.0}
+    assert follow_id not in fused  # precondition: not retrieved
+
+    evidence = hs._symbol_concept_pass("how does following a user work", fused, "code_focused")
+
+    assert follow_id in fused
+    assert evidence[follow_id]["ratio"] >= 0.34
+
+
+def test_endpoint_intent_pass_lifts_annotated_controller_method(tmp_path: Path) -> None:
+    """A ``PostMapping`` method is boosted only for an endpoint-shaped query."""
+    hs, ids = _pass_search(tmp_path)
+    create_id = ids["ArticleController.create"]
+    fused = {ids["UserService.getUser"]: 1.0}
+
+    evidence = hs._endpoint_intent_pass(
+        "POST endpoint that creates an article", fused, "code_focused"
+    )
+
+    assert create_id in evidence
+    assert evidence[create_id]["annotation"] == "PostMapping"
+    assert any(term.startswith("creat") for term in evidence[create_id]["terms"])
+    assert "article" in evidence[create_id]["terms"]
+    assert fused[create_id] > 1.0
+    assert hs._endpoint_intent_pass("create an article", fused, "code_focused") == {}
+
+
+def test_symbol_concept_pass_demotes_test_file_without_test_intent(tmp_path: Path) -> None:
+    """The test definition is penalised only when the query does not ask for tests."""
+    hs, ids = _pass_search(tmp_path)
+    test_id = ids["ProfileServiceTest.follow"]
+    production_id = ids["ProfileService.follow"]
+
+    plain_fused = {ids["UserService.getUser"]: 5.0}
+    plain = hs._symbol_concept_pass("how does following a user work", plain_fused, "code_focused")
+    test_fused = {ids["UserService.getUser"]: 5.0}
+    requested = hs._symbol_concept_pass(
+        "how does following a user work in a unit suite", test_fused, "code_focused"
+    )
+
+    assert plain[test_id]["boost"] < requested[test_id]["boost"]
+    assert plain[production_id]["boost"] == requested[production_id]["boost"]

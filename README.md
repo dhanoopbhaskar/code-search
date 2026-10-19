@@ -52,6 +52,12 @@ pip install code-search-*.whl
 code-search index --path /path/to/project
 ```
 
+Indexing honours the repository's `.gitignore` files (plus built-in build and
+tool directories such as `target/`, `graphify-out/`, and `.opencode/`), so
+generated artifacts do not pollute results. Explicit `--exclude` patterns are
+additive. To index ignored paths anyway, set
+`CODE_SEARCH_RESPECT_GITIGNORE=false`.
+
 ### Search with natural language
 
 ```bash

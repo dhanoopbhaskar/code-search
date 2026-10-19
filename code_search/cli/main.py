@@ -18,26 +18,12 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from code_search.context import ContextManager
-from code_search.engine.audit import AuditDatabase
 from code_search.engine.config import Settings, _is_test_file
-from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
-from code_search.engine.graph import EdgeStore, GraphDatabase, IndexMetadataStore
-from code_search.engine.indexer import IndexOrchestrator
-from code_search.engine.metrics import MetricsCollector
-from code_search.engine.parser import ASTParser
-from code_search.engine.redactor import Redactor
-from code_search.engine.reranking import Reranker
-from code_search.engine.search import (
-    DEFAULT_CONTENT_SCOPE,
-    HybridSearch,
-    query_symbol_identifier,
-)
-from code_search.engine.session import SessionDatabase
-from code_search.engine.symbols import SymbolExtractor, SymbolStore
-from code_search.engine.watcher import create_watcher
+
+if TYPE_CHECKING:
+    from code_search.engine.audit import AuditDatabase
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +44,25 @@ def _setup_logging(verbose: bool = False) -> None:
 
 def _initialize_components(context_dir: Path) -> dict[str, Any]:
     """Create and wire up all engine components for a given context directory."""
-    from code_search.engine.embeddings import _reset_warned_keys as _reset_embedding_warnings
+    from code_search.context import ContextManager
+    from code_search.engine.audit import AuditDatabase
+    from code_search.engine.embeddings import (
+        EmbeddingGenerator,
+        VectorIndex,
+    )
+    from code_search.engine.embeddings import (
+        _reset_warned_keys as _reset_embedding_warnings,
+    )
+    from code_search.engine.graph import EdgeStore, GraphDatabase, IndexMetadataStore
+    from code_search.engine.indexer import IndexOrchestrator
+    from code_search.engine.metrics import MetricsCollector
+    from code_search.engine.parser import ASTParser
     from code_search.engine.parser import _reset_warned_keys as _reset_parser_warnings
+    from code_search.engine.redactor import Redactor
+    from code_search.engine.reranking import Reranker
+    from code_search.engine.search import HybridSearch
+    from code_search.engine.session import SessionDatabase
+    from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
     _reset_parser_warnings()
     _reset_embedding_warnings()
@@ -72,7 +75,7 @@ def _initialize_components(context_dir: Path) -> dict[str, Any]:
 
     metadata_store = IndexMetadataStore(db)
     edge_store = EdgeStore(db)
-    parser = ASTParser()
+    parser = ASTParser(settings=settings)
     symbol_extractor = SymbolExtractor(parser)
     symbol_store = SymbolStore(db, settings)
 
@@ -162,10 +165,10 @@ def _check_model_profile(settings: Settings) -> int | None:
     Returns:
         ``None`` when the profile can be used, else a non-zero exit code.
     """
-    from code_search.engine.embeddings import profile_model_available
-
     if settings.model_profile == "default":
         return None
+    from code_search.engine.embeddings import profile_model_available
+
     try:
         settings.resolve_embedding_profile()
     except ValueError as exc:
@@ -397,6 +400,7 @@ def _start_watcher(
             ``.context`` directory is always excluded.
         comps: The shared component registry (see ``_initialize_components``).
     """
+    from code_search.engine.watcher import create_watcher
 
     def on_change(files: list[Path]) -> None:
         """Run an incremental re-index after the watcher detects changes."""
@@ -573,6 +577,7 @@ def cmd_search(args: argparse.Namespace) -> int:
     best_effort = bool(search_envelope.get("best_effort", False))
 
     from code_search.engine.response_service import build_response
+    from code_search.engine.search import DEFAULT_CONTENT_SCOPE
 
     serving_envelope = build_response(
         raw_results,
@@ -1457,6 +1462,8 @@ def _query_terms(query: str) -> list[str] | None:
     the reranker boosts only the chunk defining that symbol; natural-language
     queries return ``None`` to keep the legacy blanket boost.
     """
+    from code_search.engine.search import query_symbol_identifier
+
     identifier = query_symbol_identifier(query)
     return [identifier] if identifier else None
 
@@ -1821,11 +1828,38 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
     import subprocess
     import sys as _sys
 
-    from code_search.engine.daemon import DaemonClient, default_socket_path, write_pidfile
+    from code_search.engine.daemon import (
+        DaemonClient,
+        default_socket_path,
+        pid_is_alive,
+        write_pidfile,
+    )
 
     context_dir = _resolve_context_dir(args)
     socket_path = default_socket_path(context_dir)
-    if not DaemonClient.is_running(socket_path):
+    if socket_path.exists() and not DaemonClient.is_serving(socket_path, timeout=0.1):
+        # A starting daemon binds its socket before the model is ready, so a
+        # first failed probe is not proof that the socket is stale. When its
+        # pidfile names a live process, retry briefly before removing
+        # anything; only a dead pid or an expired retry window is treated as
+        # a crashed daemon.
+        became_ready = False
+        if pid_is_alive(context_dir):
+            for _ in range(3):
+                time.sleep(0.05)
+                if DaemonClient.is_serving(socket_path, timeout=0.1):
+                    became_ready = True
+                    break
+        if not became_ready:
+            # A stale socket from a crashed/killed daemon must not make every
+            # invocation pay a failed connection before falling back. Remove it
+            # so the next invocation can start a fresh service cleanly.
+            with suppress(OSError):
+                socket_path.unlink()
+            with suppress(OSError):
+                (context_dir / "code-search.pid").unlink()
+            return False
+    if not socket_path.exists():
         socket_path.parent.mkdir(parents=True, exist_ok=True)
         write_pidfile(context_dir)
         log_path = socket_path.parent / "code-search-daemon.log"
