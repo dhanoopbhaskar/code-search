@@ -224,8 +224,13 @@ class TestSearchUserAuthJWT:
         assert jwt_files, "Expected JWT-related results for JWT query"
 
     def test_search_user_auth_jwt_redaction_count(self, repo_path: Path) -> None:
+        # Include ``secret`` so config-scent ranking surfaces the secret-bearing
+        # ``application.properties`` in both the warm (vector) and lexical-only
+        # retrieval paths. Without it, the config chunk sits outside the top 10
+        # once the embedding model is warm, although redaction itself is applied
+        # whenever the chunk is returned.
         result = _run_cs(
-            ["search", "user authentication JWT token", "--json", "--limit", "10"],
+            ["search", "user authentication JWT token secret", "--json", "--limit", "10"],
             cwd=repo_path,
         )
         assert result.returncode == 0
