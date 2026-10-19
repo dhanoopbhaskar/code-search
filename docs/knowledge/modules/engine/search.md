@@ -58,4 +58,15 @@ match-boost (`_match_boost_pass`), authorization/config/DDL/migration
 scent detection, the rescue ladder (`_rescue_envelope`, `_rescue_t1`,
 `_rescue_t2`), exhaustive/enumerate mode implementations
 (`_search_exhaustive`, `_search_enumerate`), and file coherence
-(`_apply_file_coherence`).
+(`_apply_file_coherence`). Two passes added after the match-boost layer
+lift definitions by intent: `_symbol_concept_pass` boosts (and can inject)
+definitions whose symbol name carries the query's rare concept terms,
+weighted by inverse pool frequency (`_concept_match_terms`,
+`_concept_term_weights`, `_leader_matches_concept`), and
+`_endpoint_intent_pass` boosts controller methods annotated for the verb
+named in an endpoint query (`_HTTP_METHOD_ANNOTATIONS`, `_ENDPOINT_WORDS`).
+Both emit evidence consumed by the confidence floors in
+[`engine.confidence`](confidence.md) and are controlled by the
+`CODE_SEARCH_CONCEPT_SYMBOL_*` and `CODE_SEARCH_ENDPOINT_INTENT_*`
+settings. `_concept_matches` matches a term to a symbol sub-word exactly or
+by a shared prefix whose length differs by at most three characters.

@@ -29,17 +29,28 @@ incremental indexing:
 1. File discovery and change detection —
    [`FreshnessChecker`](../types/FreshnessChecker.md) (stat fast-path +
    self-healing rehash) or [`FileWatcher`](../types/FileWatcher.md)
-   (continuous polling with debounce).
+   (continuous polling with debounce). Discovery honours repository
+   `.gitignore` files through
+   [`GitIgnoreMatcher`](../types/GitIgnoreMatcher.md) unless
+   `CODE_SEARCH_RESPECT_GITIGNORE` is `false`.
 2. Parsing — [`ASTParser`](../types/ASTParser.md) (tree-sitter, multi-language)
-   produces chunk boundaries.
+   produces chunk boundaries; the parse workers also extract rationale
+   comments (`NOTE`/`WHY`/`HACK`/`TODO`/`FIXME`/`ADR`/`RFC`).
 3. Symbol/edge extraction — [`SymbolExtractor`](../types/SymbolExtractor.md)
    extracts definitions, calls, imports, and inheritance edges, stored via
    [`SymbolStore`](../types/SymbolStore.md) and [`EdgeStore`](../types/EdgeStore.md)
-   over [`GraphDatabase`](../types/GraphDatabase.md) (SQLite).
+   over [`GraphDatabase`](../types/GraphDatabase.md) (SQLite). Persistence
+   uses one writer connection with files committed in groups of 256; full
+   builds suspend the `chunks_fts` triggers and rebuild the keyword index
+   once at the end. File-level import edges go to
+   [`ModuleEdgeStore`](../types/ModuleEdgeStore.md) and rationale comments to
+   [`RationaleStore`](../types/RationaleStore.md).
 4. Embedding — [`EmbeddingGenerator`](../types/EmbeddingGenerator.md) (Model2Vec
    `potion-code-16m-32d`) embeds chunk text derived via
    [`build_embed_text`](../functions/build_embed_text.md), stored in
-   [`VectorIndex`](../types/VectorIndex.md).
+   [`VectorIndex`](../types/VectorIndex.md). With
+   `CODE_SEARCH_INDEX_DOC_LINKS` enabled, documentation/config chunks are
+   linked to code chunks in [`DocLinkStore`](../types/DocLinkStore.md).
 5. Lexical indexing — chunks are also indexed into SQLite FTS5
    (`chunks_fts`) for [`BM25Search`](../types/BM25Search.md).
 
@@ -65,17 +76,33 @@ orchestrator:
    returning `no_match`.
 6. Boosting and reranking — [`compute_verdict`](../functions/compute_verdict.md)
    (name-match boost), [`scent`](../functions/compute_scent_adjustment.md)
-   adjustments, and [`Reranker`](../types/Reranker.md) (definition boost,
-   test-file penalty, session weighting, file-role penalties) refine the
-   final order.
+   adjustments, a concept-symbol pass (definitions whose names carry the
+   query's rare terms, using
+   [`collapse_terms`](../functions/collapse_terms.md)), an endpoint-intent
+   pass (controller methods annotated for the query's HTTP verb), and
+   [`Reranker`](../types/Reranker.md) (definition boost, test-file penalty,
+   session weighting, file-role penalties) refine the final order.
+
+## Graph Query Layer
+
+[`GraphQueryService`](../types/GraphQueryService.md) answers multi-hop
+questions over the indexed graph without any LLM or network call. It seeds a
+bounded, deterministic BFS from [`HybridSearch`](../types/HybridSearch.md),
+walks resolved `graph_edges` and `module_edges`, and labels every edge
+`EXTRACTED`, `INFERRED`, `AMBIGUOUS`, or `UNRESOLVED` from its persisted
+resolution tier ([`resolve_confidence`](../functions/resolve_confidence.md)).
+It provides `query`, `shortest_path`, `explain`, `impact`, and
+`architecture_report` operations.
 
 ## Serving Surfaces
 
 - **CLI** ([`cli.main`](../modules/cli/main.md)) — direct one-shot
-  `index`/`search`/`symbol`/`graph`/`implementations`/`metrics` commands.
+  `index`/`search`/`symbol`/`graph`/`implementations`/`query`/`path`/`explain`/`affected`/`map`/`metrics`
+  commands.
 - **MCP server** ([`MCPServer`](../types/MCPServer.md)) — exposes `search`,
-  `get_symbol_definition`, `get_call_neighbors`, `get_implementations`, and
-  `find_related` as MCP tools over stdio for AI agent consumption.
+  `get_symbol_definition`, `get_call_neighbors`, `get_implementations`,
+  `find_related`, `query_graph`, `shortest_path`, `explain_symbol`, and
+  `get_impact` as MCP tools over stdio for AI agent consumption.
 - **Daemon** ([`QueryDaemon`](../types/QueryDaemon.md)) — keeps the index and
   embedding model warm in memory, served over a local Unix socket via
   [`DaemonClient`](../types/DaemonClient.md), avoiding per-invocation

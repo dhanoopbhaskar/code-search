@@ -13,9 +13,14 @@ sources:
 
 # Overview
 
-Computes the fraction of query sub-words present in a candidate's text,
-the base lexical overlap signal feeding
-[`confidence_score`](confidence_score.md). Defined in
+Computes the fraction of distinct query concepts present in a candidate's
+text, the base lexical overlap signal feeding
+[`confidence_score`](confidence_score.md). Query sub-words are first
+collapsed with [`collapse_terms`](collapse_terms.md), so a word and its
+morphological variants count once. A concept is present when it equals a
+chunk sub-word or shares a prefix of at least four characters with one whose
+length differs by at most three (`favorit`/`favorite`). Returns `0.0` for an
+empty query. Defined in
 [`engine.confidence`](../modules/engine/confidence.md).
 
 # Signature

@@ -33,6 +33,7 @@ actions do not). Implements both the server
 - [`default_socket_path`](../../functions/default_socket_path.md) — the daemon's socket path convention for a context directory.
 - [`daemon_status`](../../functions/daemon_status.md) — report `{running, warm, socket, pid}` for a context directory's daemon.
 - [`write_pidfile`](../../functions/write_pidfile.md), [`clear_pidfile`](../../functions/clear_pidfile.md) — daemon pidfile lifecycle.
+- [`pid_is_alive`](../../functions/pid_is_alive.md) — whether the pidfile records a live process, so a still-initialising daemon is not mistaken for a crashed one.
 - [`run_daemon_foreground`](../../functions/run_daemon_foreground.md) — run the daemon blocking in the foreground.
 
 # Internal Helpers

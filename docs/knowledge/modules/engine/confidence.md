@@ -17,7 +17,9 @@ Per-result search confidence calibration with match-type evidence. A base
 blend scores query sub-word presence in chunk identifiers blended with
 vector cosine, then layers match-type evidence on top: primary-definition
 and controller-endpoint boosts, evidence floors for exact FQN/symbol
-matches, an ambiguity cap for overloaded names, and a semantic-only floor
+matches, an ambiguity cap for overloaded names, match-type floors for
+concept-named definitions, annotated endpoints, and configuration chunks
+under a configuration query, and a semantic-only floor
 for strong vector matches with no lexical overlap. Pure, deterministic
 function of query text, chunk metadata, and raw vector cosine.
 
@@ -26,6 +28,8 @@ function of query text, chunk metadata, and raw vector cosine.
 `BOOST_DEFINITION = 0.15`, `BOOST_CONTROLLER_ENDPOINT = 0.10`,
 `FLOOR_EXACT_FQN_DEFINITION = 0.90`, `FLOOR_EXACT_FQN = 0.65`,
 `FLOOR_EXACT_SYMBOL_DEFINITION = 0.80`, `FLOOR_EXACT_SYMBOL = 0.65`,
+`FLOOR_CONCEPT_DEFINITION = 0.65` (with `CONCEPT_FLOOR_RATIO = 0.50`),
+`FLOOR_ENDPOINT_DEFINITION = 0.65`, `FLOOR_CONFIG_CONTENT = 0.55`,
 `AMBIGUOUS_CAP = 0.69`, `SEMANTIC_ONLY_FLOOR = 0.50`,
 `SEMANTIC_ONLY_VECTOR_MIN = 0.50`.
 

@@ -12,14 +12,19 @@ status: draft
 ## cli/main.py
 
 * [build_parser](build_parser.md) - Build the full argparse tree with all subcommands.
+* [cmd_affected](cmd_affected.md) - Handler for the `affected` subcommand: reports symbols impacted by changed files.
 * [cmd_daemon](cmd_daemon.md) - Handler for the `daemon` subcommand: start/stop/status control of the QueryDaemon.
 * [cmd_daemon_run](cmd_daemon_run.md) - Handler that runs the daemon blocking in the foreground (used internally by `cmd_daemon start`).
 * [cmd_download_models](cmd_download_models.md) - Handler for the `download-models` subcommand: fetches the embedding model into the Hugging Face cache.
+* [cmd_explain](cmd_explain.md) - Handler for the `explain` subcommand: prints a symbol's metadata, relations, rationale, and linked docs.
 * [cmd_graph](cmd_graph.md) - Handler for the `graph` subcommand: prints callers/callees of a symbol.
 * [cmd_implementations](cmd_implementations.md) - Handler for the `implementations` subcommand: prints subtypes or ancestors of a symbol.
 * [cmd_index](cmd_index.md) - Handler for the `index` subcommand: builds or rebuilds the code index.
 * [cmd_list_languages](cmd_list_languages.md) - Handler for the `list-languages` subcommand: prints supported languages.
+* [cmd_map](cmd_map.md) - Handler for the `map` subcommand: generates a deterministic architecture report.
 * [cmd_metrics](cmd_metrics.md) - Handler for the `metrics` subcommand: prints latency percentiles and redaction counts.
+* [cmd_path](cmd_path.md) - Handler for the `path` subcommand: prints the shortest graph path between two symbols.
+* [cmd_query](cmd_query.md) - Handler for the `query` subcommand: answers a question by bounded graph traversal.
 * [cmd_search](cmd_search.md) - Handler for the `search` subcommand: runs a hybrid search query and prints results.
 * [cmd_serve](cmd_serve.md) - Handler for the `serve` subcommand: starts the MCP stdio server.
 * [cmd_symbol](cmd_symbol.md) - Handler for the `symbol` subcommand: resolves and prints a symbol's definition.
@@ -41,7 +46,7 @@ status: draft
 * [is_exact_fqn_match](is_exact_fqn_match.md) - Whether a candidate's FQN exactly matches the query's qualified name.
 * [is_exact_symbol_match](is_exact_symbol_match.md) - Whether a candidate's short symbol name exactly matches a query token.
 * [qualified_query_name](qualified_query_name.md) - Extract the qualified name portion of a query, if any.
-* [subword_overlap](subword_overlap.md) - Compute the fraction of query sub-words present in a candidate's text.
+* [subword_overlap](subword_overlap.md) - Fraction of distinct query concepts present in a candidate's text.
 
 ## engine/config.py
 
@@ -52,6 +57,7 @@ status: draft
 * [clear_pidfile](clear_pidfile.md) - Remove the daemon's pidfile on clean shutdown.
 * [daemon_status](daemon_status.md) - Report {running, warm, socket, pid} for a context directory's daemon.
 * [default_socket_path](default_socket_path.md) - The daemon's socket path convention for a context directory.
+* [pid_is_alive](pid_is_alive.md) - Whether the daemon pidfile records a live process.
 * [run_daemon_foreground](run_daemon_foreground.md) - Run the daemon blocking in the foreground.
 * [write_pidfile](write_pidfile.md) - Write the daemon's pidfile for lifecycle tracking.
 
@@ -75,6 +81,17 @@ status: draft
 ## engine/graph.py
 
 * [read_source_slice](read_source_slice.md) - Read a line-range slice of a source file.
+
+## engine/graph_query.py
+
+* [compact_json](compact_json.md) - Serialise a payload to JSON without indentation for compact agent transport.
+* [edge_resolution_stats](edge_resolution_stats.md) - Per-edge-type resolved/unresolved counts used as a graph-quality metric.
+* [render_architecture_markdown](render_architecture_markdown.md) - Render an ArchitectureReport as deterministic Markdown.
+* [render_explain_text](render_explain_text.md) - Render an ExplainAnswer with metadata, relations, rationale, and linked docs.
+* [render_path_text](render_path_text.md) - Render a PathAnswer as a hop-by-hop chain.
+* [render_query_text](render_query_text.md) - Render a GraphAnswer as compact, agent-friendly text.
+* [resolve_confidence](resolve_confidence.md) - Map a persisted edge resolution tier to an EXTRACTED/INFERRED/AMBIGUOUS/UNRESOLVED label.
+* [symbol_source_slice](symbol_source_slice.md) - Return the source text spanned by a symbol row.
 
 ## engine/implementations.py
 
@@ -121,6 +138,12 @@ status: draft
 
 * [normalize_indexed_path](normalize_indexed_path.md) - Resolve a path against the indexed repo root, collapsing symlinks and ../ segments.
 * [resolve_stored_path](resolve_stored_path.md) - Return the stored code_chunks.file_path spelling for a candidate path.
+
+## engine/query_terms.py
+
+* [collapse_terms](collapse_terms.md) - Collapse prefix-related query terms into one representative per concept.
+* [concept_terms](concept_terms.md) - Return collapsed concept terms of at least a minimum length.
+* [morphological_variants](morphological_variants.md) - Return a word plus conservative English base forms (plural, gerund, past tense).
 
 ## engine/redactor.py
 

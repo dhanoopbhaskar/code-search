@@ -14,10 +14,17 @@ sources:
 # Overview
 
 Append-only audit log for query tracking and compliance. Records every
-search, symbol lookup, call-graph, `find_related`, and
-implementation-lookup query with timestamps, result counts, duration, and
-redaction counts. `UPDATE` and `DELETE` operations are blocked at the
-SQLite trigger level.
+search, symbol lookup, call-graph, `find_related`, implementation-lookup,
+graph-query, path, explain, impact, and map query with timestamps, result
+counts, duration, and redaction counts. `UPDATE` and `DELETE` operations
+are blocked at the SQLite trigger level.
+
+# Key Constants
+
+`AUDIT_QUERY_TYPES` — the accepted `query_type` values: `search`,
+`get_symbol_definition`, `get_call_neighbors`, `find_related`,
+`get_implementations`, `query_graph`, `shortest_path`, `explain_symbol`,
+`get_impact`, and `map`. The table's `CHECK` constraint is generated from it.
 
 # Key Classes
 

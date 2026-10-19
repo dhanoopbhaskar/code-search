@@ -14,8 +14,13 @@ sources:
 # Overview
 
 Append-only SQLite database recording every search, symbol-lookup,
-call-graph, `find_related`, and implementation-lookup query.
+call-graph, `find_related`, implementation-lookup, graph-query, path,
+explain, impact, and map query (the `AUDIT_QUERY_TYPES` set).
 `UPDATE`/`DELETE` are blocked at the SQLite trigger level for compliance.
+Connections use WAL with `synchronous=NORMAL`, so audit writes skip the
+per-commit fsync; `write_entry` reuses one writer connection. Initialisation
+rebuilds the table's `CHECK` constraint when an older database lacks any
+current query type, preserving existing rows.
 Defined in [`engine.audit`](../modules/engine/audit.md).
 
 # Methods

@@ -28,6 +28,11 @@ queries.
 | `symbol` | Look up a symbol definition by fully qualified name (FQN) |
 | `graph` | Traverse the call graph for a symbol (callers/callees/implements) |
 | `implementations` | Find static implementations of an interface member or type |
+| `query` | Answer a natural-language or identifier question by bounded graph traversal |
+| `path` | Shortest graph path between two symbols |
+| `explain` | A symbol's metadata, relations, rationale comments, and linked docs |
+| `affected` | Symbols impacted by changed files (explicit paths or `--since <git-ref>`) |
+| `map` | Deterministic architecture report (god nodes, communities, import cycles) |
 | `metrics` | Print index health and usage metrics (human, JSON, or Prometheus) |
 | `serve` | Start the MCP server over stdio |
 | `list-languages` | List supported languages with extensions and grammar mappings |
@@ -38,12 +43,14 @@ queries.
 
 - [`build_parser`](../../functions/build_parser.md) — build the full argparse tree with all subcommands.
 - [`main`](../../functions/main.md) — parse arguments and dispatch to the selected subcommand handler.
-- [`cmd_index`](../../functions/cmd_index.md), [`cmd_search`](../../functions/cmd_search.md), [`cmd_symbol`](../../functions/cmd_symbol.md), [`cmd_graph`](../../functions/cmd_graph.md), [`cmd_implementations`](../../functions/cmd_implementations.md), [`cmd_metrics`](../../functions/cmd_metrics.md), [`cmd_serve`](../../functions/cmd_serve.md), [`cmd_list_languages`](../../functions/cmd_list_languages.md), [`cmd_daemon`](../../functions/cmd_daemon.md), [`cmd_daemon_run`](../../functions/cmd_daemon_run.md), [`cmd_download_models`](../../functions/cmd_download_models.md) — one handler per subcommand.
+- [`cmd_index`](../../functions/cmd_index.md), [`cmd_search`](../../functions/cmd_search.md), [`cmd_symbol`](../../functions/cmd_symbol.md), [`cmd_graph`](../../functions/cmd_graph.md), [`cmd_implementations`](../../functions/cmd_implementations.md), [`cmd_query`](../../functions/cmd_query.md), [`cmd_path`](../../functions/cmd_path.md), [`cmd_explain`](../../functions/cmd_explain.md), [`cmd_affected`](../../functions/cmd_affected.md), [`cmd_map`](../../functions/cmd_map.md), [`cmd_metrics`](../../functions/cmd_metrics.md), [`cmd_serve`](../../functions/cmd_serve.md), [`cmd_list_languages`](../../functions/cmd_list_languages.md), [`cmd_daemon`](../../functions/cmd_daemon.md), [`cmd_daemon_run`](../../functions/cmd_daemon_run.md), [`cmd_download_models`](../../functions/cmd_download_models.md) — one handler per subcommand.
 
 # Internal Helpers
 
 Private (underscore-prefixed) helpers handle component wiring
-(`_initialize_components`), daemon forwarding (`_try_forward_to_daemon`,
+(`_initialize_components`), graph-service construction
+(`_graph_query_service`), edge-type parsing (`_parse_edge_types`), the git
+diff used by `affected` (`_git_changed_files`), daemon forwarding (`_try_forward_to_daemon`,
 `_ensure_resident_service`), and human-readable output formatting
 (`_print_search_results`, `_print_symbol_details`,
 `_print_graph_results`, `_print_implementations`,
