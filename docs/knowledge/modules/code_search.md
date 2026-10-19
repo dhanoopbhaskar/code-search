@@ -13,7 +13,7 @@ sources:
 
 # Overview
 
-The `code_search` package is the root of the code-search project: an in-house AI
+The `code_search` package is the root of the code-search project: an AI
 code context engine for air-gapped, CPU-only enterprise environments. It
 provides AST-based indexing, hybrid (BM25 + vector) retrieval,
 session-aware reranking, call-graph traversal, and audit-graded

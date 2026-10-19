@@ -1749,7 +1749,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="code-search",
-        description="In-house AI code context engine",
+        description="An AI code context engine",
         parents=[global_args],
     )
 
