@@ -56,6 +56,7 @@ CONFIDENCE_ORDER: dict[str, int] = {
 
 VALID_EDGE_TYPES = {"CALLS", "INHERITS", "REFERENCES", "IMPORTS"}
 DEFAULT_EDGE_TYPES = frozenset({"CALLS", "INHERITS"})
+_TYPE_KINDS = frozenset({"class", "interface", "enum"})
 
 _MAX_DEPTH = 4
 _MAX_NODES = 200
@@ -63,6 +64,45 @@ _MAX_FANOUT = 50
 _DEFAULT_TOKEN_BUDGET = 1500
 _MAX_PATH_HOPS = 6
 _MAX_PATH_NODES = 1000
+
+
+def display_symbol(fqn: str) -> str:
+    """Return *fqn* with its filesystem path prefix removed for human display.
+
+    Stored FQNs are ``<absolute file path>::<declaration>``. The path prefix is
+    noise in text output, so it is dropped while logical module prefixes (for
+    example ``pkg.module::Thing``) are preserved.
+    """
+    if fqn.startswith("file:"):
+        return fqn[5:]
+    if "::" in fqn:
+        prefix, declaration = fqn.rsplit("::", 1)
+        if "/" in prefix or "\\" in prefix:
+            return declaration
+    return fqn
+
+
+def relative_display(file_path: str | None, root: str | Path | None) -> str:
+    """Return *file_path* relative to *root* in POSIX form for display."""
+    if not file_path:
+        return "?"
+    if root:
+        try:
+            return Path(file_path).resolve().relative_to(Path(root).resolve()).as_posix()
+        except (ValueError, OSError):
+            pass
+    return Path(file_path).as_posix()
+
+
+def _render_edge(edge: GraphEdge) -> str:
+    """Render *edge* with human-friendly endpoints."""
+    source = display_symbol(edge.source)
+    target = display_symbol(edge.target)
+    if edge.direction == "reverse":
+        if edge.relation == "CONTAINS":
+            return f"{target} --member of--> {source}"
+        return f"{target} <--{edge.relation}/{edge.confidence}-- {source}"
+    return f"{source} --{edge.relation}/{edge.confidence}--> {target}"
 
 
 def resolve_confidence(resolution_tier: str | None, resolved: bool = True) -> str:
@@ -285,6 +325,8 @@ class ImpactAnswer:
     symbols: list[GraphNode] = field(default_factory=list)
     impacted: list[GraphNode] = field(default_factory=list)
     files: list[str] = field(default_factory=list)
+    production_files: list[str] = field(default_factory=list)
+    test_files: list[str] = field(default_factory=list)
     summary: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -294,6 +336,8 @@ class ImpactAnswer:
             "symbols": [n.as_dict() for n in self.symbols],
             "impacted": [n.as_dict() for n in self.impacted],
             "files": self.files,
+            "production_files": self.production_files,
+            "test_files": self.test_files,
             "summary": self.summary,
         }
 
@@ -810,6 +854,27 @@ class GraphQueryService:
     # ------------------------------------------------------------------
     # Shortest path
     # ------------------------------------------------------------------
+    def _resolve_path_endpoint(self, reference: str) -> dict[str, Any]:
+        """Resolve a path endpoint, preferring a unique type declaration.
+
+        A bare class name can collide with its constructor (both are stored
+        under the class name). Callers asking for a path between classes mean
+        the type, so when the only ambiguity is constructor-vs-type pick the
+        type rather than refusing the traversal.
+        """
+        envelope = self._symbols.resolve_name(reference)
+        if envelope.get("kind") != "ambiguous":
+            return envelope
+        type_candidates = [
+            candidate
+            for candidate in envelope.get("candidates") or []
+            if candidate.get("kind") in _TYPE_KINDS
+        ]
+        if len(type_candidates) != 1:
+            return envelope
+        resolved = self._symbols.resolve_name(str(type_candidates[0]["fqn"]))
+        return resolved if resolved.get("symbol") is not None else envelope
+
     def shortest_path(
         self,
         source: str,
@@ -827,8 +892,8 @@ class GraphQueryService:
         *max_hops* and a global node cap.
         """
         start = time.monotonic()
-        source_env = self._symbols.resolve_name(source)
-        target_env = self._symbols.resolve_name(target)
+        source_env = self._resolve_path_endpoint(source)
+        target_env = self._resolve_path_endpoint(target)
         for env, label in ((source_env, "source"), (target_env, "target")):
             if env.get("kind") == "ambiguous":
                 return PathAnswer(
@@ -884,7 +949,9 @@ class GraphQueryService:
                 queue.append(neighbor)
         if not found:
             explanation = f"no path within {max_hops} hops; " + (
-                "retry with undirected=True" if not undirected else "graph is disconnected"
+                "retry with --undirected to traverse callers as well"
+                if not undirected
+                else "no connecting edges in either direction (unresolved references may hide it)"
             )
             return PathAnswer(
                 source=source_node,
@@ -950,6 +1017,13 @@ class GraphQueryService:
         with self._db.connect() as conn:
             while frontier and len(visited) < _MAX_PATH_NODES:
                 current = frontier.popleft()
+                current_row = conn.execute(
+                    "SELECT fqn FROM symbols WHERE id = ?;", (current,)
+                ).fetchone()
+                if current_row is not None:
+                    self._append_containment(
+                        adjacency, frontier, visited, conn, current, str(current_row["fqn"])
+                    )
                 rows = conn.execute(
                     "SELECT e.source_symbol_id, e.target_symbol_id, e.edge_type, "
                     "e.resolution_tier, e.resolved, e.target_raw, "
@@ -1012,6 +1086,67 @@ class GraphQueryService:
                 )
             )
         return adjacency
+
+    def _append_containment(
+        self,
+        adjacency: dict[int, list[tuple[int, GraphEdge]]],
+        frontier: deque[int],
+        visited: set[int],
+        conn: Any,
+        symbol_id: int,
+        symbol_fqn: str,
+    ) -> None:
+        """Add structural declaration containment to the path adjacency.
+
+        Class nodes own their methods and fields through containment rather
+        than call edges, so a class-to-class path has to descend into members
+        and ascend back out. Both directions are structural and therefore
+        available regardless of the requested edge types.
+        """
+        children = conn.execute(
+            "SELECT id, fqn FROM symbols WHERE parent_symbol_id = ? "
+            "ORDER BY line_start, id LIMIT ?;",
+            (symbol_id, _MAX_FANOUT),
+        ).fetchall()
+        for child in children:
+            child_id = int(child["id"])
+            adjacency.setdefault(symbol_id, []).append(
+                (
+                    child_id,
+                    GraphEdge(
+                        source=symbol_fqn,
+                        target=str(child["fqn"]),
+                        relation="CONTAINS",
+                        confidence="EXTRACTED",
+                        direction="forward",
+                    ),
+                )
+            )
+            if child_id not in visited:
+                visited.add(child_id)
+                frontier.append(child_id)
+        parent = conn.execute(
+            "SELECT p.id, p.fqn FROM symbols p JOIN symbols s ON s.parent_symbol_id = p.id "
+            "WHERE s.id = ?;",
+            (symbol_id,),
+        ).fetchone()
+        if parent is not None:
+            parent_id = int(parent["id"])
+            adjacency.setdefault(symbol_id, []).append(
+                (
+                    parent_id,
+                    GraphEdge(
+                        source=str(parent["fqn"]),
+                        target=symbol_fqn,
+                        relation="CONTAINS",
+                        confidence="EXTRACTED",
+                        direction="reverse",
+                    ),
+                )
+            )
+            if parent_id not in visited:
+                visited.add(parent_id)
+                frontier.append(parent_id)
 
     # ------------------------------------------------------------------
     # Explain
@@ -1293,16 +1428,36 @@ class GraphQueryService:
         ordered = self._order_nodes(impacted.values(), seed_keys=set(seed_nodes))
         file_nodes = {n.fqn for n in ordered if n.source == "file"}
         symbol_nodes = [n for n in ordered if n.source == "symbol"]
-        files = sorted({n.file_path for n in symbol_nodes if n.file_path} | file_nodes)
+        # Symbol paths are stored absolute while module-edge paths are
+        # relative; normalise both spellings so each file appears once.
+        distance_by_file: dict[str, int] = {}
+        for node in ordered:
+            if node.source == "file":
+                path = node.fqn
+            elif node.file_path:
+                path = self._relative_path(node.file_path)
+            else:
+                continue
+            distance_by_file[path] = min(distance_by_file.get(path, node.distance), node.distance)
+        files = sorted(
+            {self._relative_path(n.file_path) for n in symbol_nodes if n.file_path} | file_nodes,
+            key=lambda path: (distance_by_file.get(path, _MAX_DEPTH), path),
+        )
+        test_files = [path for path in files if _is_test_file(path)]
+        production_files = [path for path in files if not _is_test_file(path)]
         tests = [n for n in symbol_nodes if n.file_path and _is_test_file(n.file_path)]
         return ImpactAnswer(
             changed_paths=changed_stored,
             symbols=list(seed_nodes.values()),
             impacted=symbol_nodes,
             files=files,
+            production_files=production_files,
+            test_files=test_files,
             summary={
                 "symbols": len(symbol_nodes),
                 "files": len(files),
+                "production_files": len(production_files),
+                "test_files": len(test_files),
                 "tests": len(tests),
                 "changed_files": len(changed_stored),
             },
@@ -1385,7 +1540,7 @@ class GraphQueryService:
                     {
                         "fqn": row["fqn"],
                         "kind": row["kind"],
-                        "file_path": row["file_path"],
+                        "file_path": self._relative_path(str(row["file_path"] or "")),
                         "degree": node_degree,
                     }
                 )
@@ -1418,7 +1573,11 @@ class GraphQueryService:
         cycles = self._import_cycles()
         edge_stats = edge_resolution_stats(self._db)
         isolated = [
-            {"fqn": row["fqn"], "kind": row["kind"], "file_path": row["file_path"]}
+            {
+                "fqn": row["fqn"],
+                "kind": row["kind"],
+                "file_path": self._relative_path(str(row["file_path"] or "")),
+            }
             for row in rows
             if int(row["id"]) in entity_ids and degree_map.get(int(row["id"]), 0) == 0
         ][:top_n]
@@ -1516,11 +1675,11 @@ class GraphQueryService:
         """Derive deterministic follow-up questions from the report."""
         questions: list[str] = []
         for node in god_nodes[:5]:
-            questions.append(f"How does {node['fqn']} connect to its callers?")
+            questions.append(f"How does {display_symbol(str(node['fqn']))} connect to its callers?")
         for cycle in cycles[:3]:
             questions.append(f"Why does the import cycle {' -> '.join(cycle)} exist?")
         for node in isolated[:3]:
-            questions.append(f"Is {node['fqn']} still used anywhere?")
+            questions.append(f"Is {display_symbol(str(node['fqn']))} still used anywhere?")
         return questions[:10]
 
     # ------------------------------------------------------------------
@@ -1578,29 +1737,31 @@ class GraphQueryService:
         return max(1, len("\n".join(lines)) // 4)
 
 
-def render_query_text(answer: GraphAnswer) -> str:
+def render_query_text(answer: GraphAnswer, *, root: str | Path | None = None) -> str:
     """Render a :class:`GraphAnswer` as compact, agent-friendly text."""
     if answer.outcome == "no_seed":
         return "graph query: no graph seed resolved; retry with an explicit symbol name"
+    seed_keys = {n.key for n in answer.seeds}
     header = (
         f'graph query: "{answer.question}" | seeds: '
-        f"{', '.join(n.fqn for n in answer.seeds)} | "
+        f"{', '.join(display_symbol(n.fqn) for n in answer.seeds)} | "
         f"nodes={len(answer.nodes)} edges={len(answer.edges)}"
         f"{' truncated' if answer.truncated else ''}"
     )
     lines = [header]
     grouped: dict[str, list[GraphNode]] = {}
     for node in answer.nodes:
-        grouped.setdefault(node.file_path or "external", []).append(node)
+        grouped.setdefault(relative_display(node.file_path, root) or "external", []).append(node)
     for file_path in sorted(grouped):
         lines.append(file_path)
         for node in grouped[file_path]:
-            marker = "*" if node.key in {n.key for n in answer.seeds} else " "
+            marker = "*" if node.key in seed_keys else " "
             location = f":{node.line_start}" if node.line_start is not None else ""
-            lines.append(f"  {marker} {node.fqn} ({node.kind}){location}")
-    if answer.edges:
+            lines.append(f"  {marker} {display_symbol(node.fqn)} ({node.kind}){location}")
+    relations = [edge for edge in answer.edges if edge.relation != "CONTAINS"]
+    if relations:
         lines.append("relations:")
-        lines.extend(f"  {edge.render()}" for edge in answer.edges)
+        lines.extend(f"  {_render_edge(edge)}" for edge in relations)
     return "\n".join(lines)
 
 
@@ -1609,63 +1770,117 @@ def render_path_text(answer: PathAnswer) -> str:
     if answer.outcome != "resolved":
         suffix = ""
         if answer.candidates:
-            names = ", ".join(str(c.get("fqn", "")) for c in answer.candidates[:3])
+            names = ", ".join(display_symbol(str(c.get("fqn", ""))) for c in answer.candidates[:3])
             suffix = f" ({names})"
         return f"path: {answer.outcome}: {answer.explanation or ''}{suffix}".strip()
+    source = display_symbol(answer.source.fqn) if answer.source else "?"
+    target = display_symbol(answer.target.fqn) if answer.target else "?"
     lines = [
-        f"path: {answer.source.fqn if answer.source else '?'} -> "
-        f"{answer.target.fqn if answer.target else '?'} "
+        f"path: {source} -> {target} "
         f"({len(answer.hops)} hops, {'undirected' if answer.undirected else 'directed'})"
     ]
-    current = answer.source.fqn if answer.source else "?"
-    for hop in answer.hops:
-        if hop.direction == "reverse":
-            lines.append(f"  {current} <--{hop.relation}/{hop.confidence}-- {hop.target}")
-            current = hop.target
-        else:
-            lines.append(f"  {current} --{hop.relation}/{hop.confidence}--> {hop.target}")
-            current = hop.target
+    lines.extend(f"  {_render_edge(hop)}" for hop in answer.hops)
     return "\n".join(lines)
 
 
-def render_explain_text(answer: ExplainAnswer) -> str:
-    """Render an :class:`ExplainAnswer` with metadata, relations, and rationale."""
+def render_explain_text(answer: ExplainAnswer, *, root: str | Path | None = None) -> str:
+    """Render an :class:`ExplainAnswer` with metadata, relations, and rationale.
+
+    Containment is reported as a compact member list instead of a relation
+    edge per member, and remaining relations are grouped by direction.
+    """
     if answer.outcome != "resolved" or answer.symbol is None:
         suffix = f": {answer.outcome}"
         if answer.candidates:
-            suffix += " (" + ", ".join(str(c.get("fqn", "")) for c in answer.candidates[:5]) + ")"
+            suffix += (
+                " ("
+                + ", ".join(display_symbol(str(c.get("fqn", ""))) for c in answer.candidates[:5])
+                + ")"
+            )
         return f"explain{suffix}"
     symbol = answer.symbol
+    node_by_key = {node.key: node for node in answer.nodes}
+    members = [
+        node_by_key[edge.target]
+        for edge in answer.edges
+        if edge.relation == "CONTAINS"
+        and edge.direction == "forward"
+        and edge.source == symbol.key
+        and edge.target in node_by_key
+    ]
+    relations = [edge for edge in answer.edges if edge.relation != "CONTAINS"]
+    outgoing = [edge for edge in relations if edge.direction == "forward"]
+    incoming = [edge for edge in relations if edge.direction == "reverse"]
+    location = relative_display(symbol.file_path, root)
     lines = [
-        f"explain: {symbol.fqn}",
+        f"explain: {display_symbol(symbol.fqn)}",
         f"  kind: {symbol.kind}",
-        f"  location: {symbol.file_path}:{symbol.line_start}",
+        f"  location: {location}:{symbol.line_start}",
+        f"  summary: {len(members)} members | {len(outgoing)} outgoing | {len(incoming)} incoming",
     ]
     if symbol.signature:
         lines.append(f"  signature: {symbol.signature}")
     if symbol.docstring:
         lines.append(f"  docstring: {symbol.docstring[:200]}")
-    outgoing = [e for e in answer.edges if e.direction == "forward"]
-    incoming = [e for e in answer.edges if e.direction == "reverse"]
-    if outgoing:
-        lines.append("  outgoing:")
-        lines.extend(f"    {e.render()}" for e in outgoing)
-    if incoming:
-        lines.append("  incoming:")
-        lines.extend(f"    {e.render()}" for e in incoming)
+    if members:
+        lines.append(f"  members ({len(members)}):")
+        for member in members:
+            lines.append(f"    {display_symbol(member.fqn)} ({member.kind})")
+    for label, edges in (("outgoing", outgoing), ("incoming", incoming)):
+        if not edges:
+            continue
+        grouped_relations: dict[str, list[GraphEdge]] = {}
+        for edge in edges:
+            grouped_relations.setdefault(edge.relation, []).append(edge)
+        lines.append(f"  {label}:")
+        for relation in sorted(grouped_relations):
+            lines.append(f"    {relation}:")
+            lines.extend(f"      {_render_edge(edge)}" for edge in grouped_relations[relation])
     if answer.rationale:
         lines.append("  rationale:")
         for item in answer.rationale:
+            item_path = relative_display(str(item["file_path"]), root)
             lines.append(
-                f"    {item['kind']} {item['file_path']}:{item['line_start']} {item['text'][:160]}"
+                f"    {item['kind']} {item_path}:{item['line_start']} {item['text'][:160]}"
             )
     if answer.doc_links:
         lines.append("  linked docs:")
         for link in answer.doc_links:
+            doc_path = relative_display(str(link["doc_file_path"]), root)
             lines.append(
-                f"    {link['doc_file_path']}:{link['doc_line_start']} "
-                f"({link['method']}, {link['score']:.2f})"
+                f"    {doc_path}:{link['doc_line_start']} ({link['method']}, {link['score']:.2f})"
             )
+    return "\n".join(lines)
+
+
+def render_impact_text(answer: ImpactAnswer, *, root: str | Path | None = None) -> str:
+    """Render an :class:`ImpactAnswer` with production and test buckets."""
+    summary = answer.summary
+    lines = [
+        f"impact: {summary.get('symbols', 0)} symbols in "
+        f"{summary.get('files', 0)} files "
+        f"({summary.get('tests', 0)} tests) from "
+        f"{summary.get('changed_files', 0)} changed files"
+    ]
+    grouped: dict[str, list[GraphNode]] = {}
+    for node in answer.impacted:
+        grouped.setdefault(relative_display(node.file_path, root), []).append(node)
+    for path in answer.files:
+        grouped.setdefault(path, [])
+    ordered_paths = [path for path in answer.files if path in grouped]
+    known_paths = set(ordered_paths)
+    ordered_paths.extend(path for path in grouped if path not in known_paths)
+    production = [path for path in ordered_paths if not _is_test_file(path)]
+    tests = [path for path in ordered_paths if _is_test_file(path)]
+    for label, paths in (("production", production), ("tests", tests)):
+        if not paths:
+            continue
+        lines.append(f"{label} ({len(paths)} files):")
+        for path in paths:
+            lines.append(f"  {path}")
+            for node in grouped[path]:
+                location = f":{node.line_start}" if node.line_start is not None else ""
+                lines.append(f"    {display_symbol(node.fqn)} ({node.kind}){location}")
     return "\n".join(lines)
 
 
@@ -1684,7 +1899,8 @@ def render_architecture_markdown(report: ArchitectureReport) -> str:
         lines.append("|---|---|---:|---|")
         for node in report.god_nodes:
             lines.append(
-                f"| `{node['fqn']}` | {node['kind']} | {node['degree']} | {node['file_path']} |"
+                f"| `{display_symbol(str(node['fqn']))}` | {node['kind']} "
+                f"| {node['degree']} | {node['file_path']} |"
             )
     else:
         lines.append("")
@@ -1694,10 +1910,12 @@ def render_architecture_markdown(report: ArchitectureReport) -> str:
     lines.append("## Communities")
     if report.communities:
         for community in report.communities:
-            names = ", ".join(f"`{member['fqn']}`" for member in community["members"][:8])
+            names = ", ".join(
+                f"`{display_symbol(str(member['fqn']))}`" for member in community["members"][:8]
+            )
+            label = community["label_fqn"] or community["label"]
             lines.append(
-                f"- **{community['label_fqn'] or community['label']}** "
-                f"({community['size']} members): {names}"
+                f"- **{display_symbol(str(label))}** ({community['size']} members): {names}"
             )
     else:
         lines.append("_No multi-node communities._")

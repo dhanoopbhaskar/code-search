@@ -168,3 +168,40 @@ def test_cli_context_dir_conflicting_values(tmp_path: Path) -> None:
         main()
     except SystemExit as e:
         assert e.code == 0, f"Expected exit code 0, got {e.code}"
+
+
+@pytest.mark.integration
+def test_regex_requires_exhaustive_mode(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """``--regex`` is rejected outside exhaustive mode with a clear error."""
+    from code_search.cli.main import main
+
+    previous = sys.argv
+    sys.argv = [
+        "code-search",
+        "search",
+        "foo.*",
+        "--regex",
+        f"--context-dir={tmp_path / '.context'}",
+    ]
+    code = 0
+    try:
+        main()
+    except SystemExit as exc:
+        code = int(exc.code or 0)
+    finally:
+        sys.argv = previous
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "--regex requires --mode exhaustive" in captured.err
+
+
+@pytest.mark.integration
+def test_no_startup_check_is_a_global_option() -> None:
+    """The daemon-startup bypass is accepted before or after the subcommand."""
+    from code_search.cli.main import build_parser
+
+    parser = build_parser()
+    before = parser.parse_args(["--no-startup-check", "search", "query"])
+    after = parser.parse_args(["search", "query", "--no-startup-check"])
+    assert before.no_startup_check is True
+    assert after.no_startup_check is True

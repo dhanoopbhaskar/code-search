@@ -8,6 +8,7 @@ acceptance behavior and its ``pytest -k`` gate.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -287,3 +288,48 @@ class TestUS4ProductionNotDominatedByTests:
             "production-only top answer must match the default run's top production "
             f"answer, got {production_only[0]['file_path']} vs {default_prod[0]['file_path']}"
         )
+
+
+@pytest.mark.integration
+def test_default_constant_declaration_outranks_accessor(tmp_path: Path) -> None:
+    """A default-shaped query lifts the constant declaration over its accessor.
+
+    The constant lives inside the merged class chunk, so the ranking pass must
+    match the declaration content rather than a field FQN.
+    """
+    from tests.conftest import _indexed_components
+
+    repo = tmp_path / "defaults_repo"
+    pkg = repo / "src" / "main" / "java" / "com" / "example" / "defaults"
+    pkg.mkdir(parents=True)
+    (pkg / "ArticleController.java").write_text(
+        "package com.example.defaults;\n"
+        "\n"
+        "public class ArticleController {\n"
+        "    private static final int DEFAULT_PAGE_SIZE = 20;\n"
+        "    private static final int MAX_PAGE_SIZE = 100;\n"
+        "\n"
+        "    public int getDefaultPageSize() {\n"
+        "        return DEFAULT_PAGE_SIZE;\n"
+        "    }\n"
+        "}\n"
+    )
+    (pkg / "ArticleService.java").write_text(
+        "package com.example.defaults;\n"
+        "\n"
+        "public class ArticleService {\n"
+        '    public String findArticles(int pageSize) { return "page " + pageSize; }\n'
+        "}\n"
+    )
+    comps = _indexed_components(
+        repo,
+        repo / ".context",
+        settings_kwargs={"relevance_gate": False, "relevance_threshold": 0.0, "max_results": 50},
+    )
+
+    results = comps["search"].search("default page size", limit=10)["results"]
+
+    assert results, "expected ranked results"
+    assert "ArticleController" in results[0]["fqn"]
+    assert "DEFAULT_PAGE_SIZE" in results[0]["content"]
+    assert results[0]["score_sources"]["constant_intent"]["terms"] == ["page", "size"]

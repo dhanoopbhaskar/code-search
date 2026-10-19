@@ -373,6 +373,29 @@ def test_no_include_tests_hides_true_tests_only(quality_defects_components: dict
 
 
 @pytest.mark.slow
+def test_tests_are_demoted_not_only_excluded(quality_defects_components: dict) -> None:
+    """Tests stay reachable by default but rank below production code.
+
+    The default ``include_tests=True`` policy is a demotion, not an
+    exclusion: a keyword-dense test class must not outrank the production
+    service it exercises for a non-test query.
+    """
+    comp = quality_defects_components
+    comp["orchestrator"].index_codebase(
+        root_path=comp["repo"], force=True, verbose=False, include_tests=True
+    )
+
+    results = comp["search"].search(query="auth", include_tests=True, limit=30)["results"]
+    production = next(r for r in results if "AuthService.java" in r["file_path"])
+    test = next(r for r in results if "AuthServiceTest.java" in r["file_path"])
+
+    assert test["is_test_file"] is True
+    assert production["score"] > test["score"], (
+        "test file must be demoted below its production counterpart"
+    )
+
+
+@pytest.mark.slow
 def test_non_canonical_demoted_not_excluded(quality_defects_components: dict) -> None:
     """Non-canonical example/generated files are present by default
     (never excluded) but ranked below canonical implementations once the

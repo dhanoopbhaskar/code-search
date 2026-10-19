@@ -14,10 +14,13 @@ from code_search.engine.graph_query import (
     GraphAnswer,
     GraphEdge,
     GraphNode,
+    ImpactAnswer,
     PathAnswer,
+    display_symbol,
     edge_resolution_stats,
     render_architecture_markdown,
     render_explain_text,
+    render_impact_text,
     render_path_text,
     render_query_text,
     resolve_confidence,
@@ -127,6 +130,58 @@ def test_render_architecture_markdown_is_deterministic() -> None:
     assert text.index("## God nodes") < text.index("## Communities")
     assert "a.py -> b.py -> a.py" in text
     assert text == render_architecture_markdown(report)
+
+
+def test_display_symbol_drops_filesystem_prefix_only() -> None:
+    """Absolute path prefixes are hidden while logical module prefixes remain."""
+    assert (
+        display_symbol("/repo/src/main/java/example/ArticleController.java::ArticleController")
+        == "ArticleController"
+    )
+    assert display_symbol("pkg.module::Thing") == "pkg.module::Thing"
+
+
+def test_render_query_text_uses_relative_paths(tmp_path: Path) -> None:
+    """Node grouping uses paths relative to the indexed root."""
+    node = GraphNode("abs::A", "abs::A", "A", "class", str(tmp_path / "src/A.java"), 1, 2)
+    answer = GraphAnswer("how", seeds=[node], nodes=[node], edges=[])
+    text = render_query_text(answer, root=tmp_path)
+    assert "src/A.java" in text
+    assert str(tmp_path) not in text
+    assert "abs::A" in text
+
+
+def test_render_explain_text_compacts_containment_into_members() -> None:
+    """Containment edges render as a member list, not relation noise."""
+    symbol = GraphNode("abs::A", "abs::A", "A", "class", "/repo/A.java", 1, 2)
+    member = GraphNode("abs::A.run()", "abs::A.run()", "run", "method", "/repo/A.java", 3, 4)
+    edge = GraphEdge("abs::A", "abs::A.run()", "CONTAINS", "EXTRACTED")
+    answer = ExplainAnswer(symbol=symbol, nodes=[symbol, member], edges=[edge])
+    text = render_explain_text(answer, root="/repo")
+    assert "members (1):" in text
+    assert "A.run() (method)" in text
+    assert "--CONTAINS" not in text
+
+
+def test_render_impact_text_separates_production_and_tests(tmp_path: Path) -> None:
+    """Impact output buckets test files separately and relativises paths."""
+    prod = GraphNode("abs::A", "abs::A", "A", "class", str(tmp_path / "src/A.java"), 1, 2)
+    test = GraphNode(
+        "abs::ATest", "abs::ATest", "ATest", "class", str(tmp_path / "tests/ATest.java"), 1, 2
+    )
+    answer = ImpactAnswer(
+        impacted=[prod, test],
+        files=["src/A.java", "tests/ATest.java"],
+        production_files=["src/A.java"],
+        test_files=["tests/ATest.java"],
+        summary={"symbols": 2, "files": 2, "tests": 1, "changed_files": 1},
+    )
+    text = render_impact_text(answer, root=tmp_path)
+    assert "production (1 files):" in text
+    assert "tests (1 files):" in text
+    assert "src/A.java" in text
+    assert "tests/ATest.java" in text
+    assert str(tmp_path) not in text
 
 
 def test_edge_store_imports_are_not_symbol_edges(tmp_path: Path) -> None:

@@ -2472,6 +2472,29 @@ def test_leader_matches_concept_when_best_candidate_states_it(tmp_path: Path) ->
     assert hs._leader_matches_concept({6: 9.0, 1: 5.0}, ["pageable"]) is False
 
 
+def test_leader_matches_concept_requires_every_decisive_term(tmp_path: Path) -> None:
+    """A leader matching only the generic term does not suppress the pass.
+
+    ``mod.tok_a`` carries ``token`` but not ``generate``, so the answer may
+    still be a sibling method such as ``generateToken``; the concept pass must
+    run instead of treating the generic match as the concept.
+    """
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
+
+    settings = Settings(context_dir=tmp_path)
+    db = _build_gate_db(tmp_path)
+    hs = HybridSearch(
+        db,
+        VectorIndex(tmp_path / "concept.bin", tmp_path / "concept.meta.json"),
+        EmbeddingGenerator(settings),
+        settings,
+    )
+
+    assert hs._leader_matches_concept({1: 5.0, 2: 3.0}, ["tok", "generate"]) is False
+
+
 def _build_pass_db(tmp_path: Path) -> tuple[object, dict[str, int]]:
     """Corpus for the concept-symbol and endpoint-intent ranking passes.
 

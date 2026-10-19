@@ -801,6 +801,26 @@ class Settings:
             os.environ.get("CODE_SEARCH_CONCEPT_SYMBOL_POOL_MAX_SHARE", "0.35")
         )
     )
+    # Constant/default intent: a query such as "default page size" asks for a
+    # configured constant rather than a method whose name happens to share the
+    # words. The pass lifts definition chunks that declare a constant and
+    # carry the query's remaining concept terms.
+    constant_intent_boost: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_CONSTANT_INTENT_BOOST", "1.4"))
+    )
+    constant_intent_cap: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_CONSTANT_INTENT_CAP", "1.5"))
+    )
+    constant_intent_words: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            word.strip()
+            for word in os.environ.get(
+                "CODE_SEARCH_CONSTANT_INTENT_WORDS",
+                "default,defaults,constant,constants,final,configured",
+            ).split(",")
+            if word.strip()
+        )
+    )
     # Endpoint-intent boost: a query that names an HTTP method and an endpoint
     # ("POST endpoint that creates an article") should lift the annotated
     # controller method, not a model field whose name happens to share a term.
@@ -1125,6 +1145,8 @@ class Settings:
             ("concept_symbol_pool_max_share", 0.0, 1.0),
             ("endpoint_intent_boost", 0.0, float("inf")),
             ("endpoint_intent_cap", 0.0, float("inf")),
+            ("constant_intent_boost", 0.0, float("inf")),
+            ("constant_intent_cap", 0.0, float("inf")),
             ("definition_owner_boost", 0.0, float("inf")),
             ("declared_rule_boost", 0.0, float("inf")),
             ("model_file_penalty", _MIN_PENALTY, 1.0),

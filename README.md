@@ -103,6 +103,15 @@ query as one verbatim substring, `any_token` keeps OR semantics. Every
 exhaustive result set labels its `matching_semantics` so a count is never
 presented as an exact-phrase count.
 
+`--regex` compiles the query as a regular expression and scans line by line;
+it requires `--mode exhaustive` and labels the result set
+`matching_semantics: "regex"`. An invalid pattern is reported as an
+`invalid_regex` explanation rather than silently returning nothing.
+
+For repeated CLI use, run `code-search daemon start` once so a resident
+process owns the model load. `--no-startup-check` skips the transparent
+daemon auto-start for a single invocation and serves it locally.
+
 Every ranked response also reports `query_time_ms`, the measured
 `model_status` (`warm`/`cold`/`disabled`), the additive `ranked_path`
 (`hybrid`/`lexical_reduced`/`lexical_degraded`) and `warmup_state`, and — when

@@ -685,6 +685,7 @@ class MCPServer:
                 content: str | None = None,
                 no_model: bool = False,
                 matching: str = "all_tokens",
+                regex: bool = False,
             ) -> str:
                 """Run hybrid search, returning redacted, reranked JSON results.
 
@@ -710,6 +711,8 @@ class MCPServer:
                     matching: Exhaustive matching semantics — ``literal``,
                         ``all_tokens`` (default), or ``any_token``; ignored
                         outside exhaustive mode.
+                    regex: Exhaustive-only regular-expression mode; the query
+                        is compiled as a Python regex instead of tokenized.
 
                 Returns:
                     A JSON object with ``results`` and ``freshness``.
@@ -742,6 +745,7 @@ class MCPServer:
                     mode=mode,
                     content=content,
                     matching=matching,
+                    regex=regex,
                 )
                 raw = envelope["results"]
                 env_mode = str(envelope.get("mode", "ranked"))
@@ -797,6 +801,10 @@ class MCPServer:
                     response["scope"] = envelope["scope"]
                 if envelope.get("matching_semantics") is not None:
                     response["matching_semantics"] = envelope["matching_semantics"]
+                if envelope.get("regex"):
+                    response["regex"] = True
+                if envelope.get("pattern") is not None:
+                    response["pattern"] = envelope["pattern"]
                 response["query_time_ms"] = round(duration_ms, 1)
                 if envelope.get("model_status") is not None:
                     response["model_status"] = envelope["model_status"]

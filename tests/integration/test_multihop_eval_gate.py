@@ -109,6 +109,34 @@ def test_shortest_path_is_correct_and_deterministic(indexed_multihop: dict[str, 
 
 
 @pytest.mark.integration
+def test_class_level_path_traverses_containment(indexed_multihop: dict[str, Any]) -> None:
+    """Class endpoints resolve to their type and connect through members."""
+    service = _service(indexed_multihop)
+    answer = service.shortest_path("ArticleController", "ArticleRepository")
+    assert answer.found
+    relations = [hop.relation for hop in answer.hops]
+    assert relations[0] == "CONTAINS"
+    assert relations[-1] == "CONTAINS"
+    assert "CALLS" in relations
+    from code_search.engine.graph_query import render_path_text
+
+    rendered = render_path_text(answer)
+    assert "member of" in rendered
+
+
+@pytest.mark.integration
+def test_impact_files_are_deduped_and_relative(indexed_multihop: dict[str, Any]) -> None:
+    """Impact files use one relative spelling and are bucketed by role."""
+    repo = Path(indexed_multihop["metadata"].get("index_root"))
+    changed = repo / "src/main/java/com/example/core/ArticleRepository.java"
+    answer = _service(indexed_multihop).impact([str(changed)], depth=3)
+    assert len(answer.files) == len(set(answer.files))
+    assert all(not Path(path).is_absolute() for path in answer.files)
+    assert answer.production_files == answer.files
+    assert answer.test_files == []
+
+
+@pytest.mark.integration
 def test_query_is_deterministic(indexed_multihop: dict[str, Any]) -> None:
     """Repeated queries produce byte-identical structured answers."""
     service = _service(indexed_multihop)

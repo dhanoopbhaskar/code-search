@@ -291,7 +291,8 @@ class QueryDaemon:
         Args:
             comps: The shared component registry (see ``_initialize_components``).
             params: Search parameters; ``query``, ``limit``, ``language``,
-                ``include_tests``, and ``mode`` are honoured.
+                ``include_tests``, ``mode``, ``content``, ``matching``, and
+                ``regex`` are honoured.
 
         Returns:
             A success payload with ``results`` and ``freshness``.
@@ -311,6 +312,7 @@ class QueryDaemon:
             mode=str(params.get("mode", "ranked")),
             content=params.get("content"),
             matching=params.get("matching"),
+            regex=bool(params.get("regex", False)),
         )
         results = envelope["results"]
         reranked = comps["reranker"].rerank(

@@ -1739,6 +1739,45 @@ class EdgeStore:
             for r in rows
         ]
 
+    def get_inheritance_targets(self, symbol_id: int) -> list[dict[str, Any]]:
+        """Return the declared base types of *symbol_id* (resolved or external).
+
+        Used by framework-aware analysis to recognise interfaces whose base
+        types live outside the indexed corpus (for example a Spring Data
+        repository extending ``JpaRepository``). Unresolved edges carry the
+        raw base name in ``target_raw`` and are reported with ``resolved``
+        ``False`` so callers can tell a local type from an external one.
+
+        Args:
+            symbol_id: The class/interface whose base clauses are requested.
+
+        Returns:
+            Base-type rows ``{name, fqn, resolved}`` ordered by the stored
+            base name. ``name`` is the simple leaf name in either case.
+        """
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT e.resolved AS resolved, e.target_raw AS target_raw, "
+                "s.fqn AS fqn, s.name AS name "
+                "FROM graph_edges e "
+                "LEFT JOIN symbols s ON s.id = e.target_symbol_id "
+                "WHERE e.source_symbol_id = ? AND e.edge_type = 'INHERITS' "
+                "ORDER BY COALESCE(s.name, e.target_raw);",
+                (symbol_id,),
+            ).fetchall()
+        targets: list[dict[str, Any]] = []
+        for row in rows:
+            raw = row["target_raw"] or row["fqn"] or ""
+            leaf = raw.rsplit("::", 1)[-1].rsplit(".", 1)[-1]
+            targets.append(
+                {
+                    "name": row["name"] or leaf,
+                    "fqn": row["fqn"],
+                    "resolved": bool(row["resolved"]),
+                }
+            )
+        return targets
+
 
 class ModuleEdgeStore:
     """CRUD and traversal for file/module-level ``module_edges`` rows."""

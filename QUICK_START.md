@@ -115,6 +115,8 @@ code-search search "database connection pool" --language java --no-include-tests
 | `--include-tests` / `--no-include-tests` | `true` | Include/exclude test files |
 | `--content {code,config,docs,all,code_focused}` | `code_focused` | Content axis; the code-focused default excludes prose/docs from ranked results unless `--content docs`/`all` is requested |
 | `--matching {literal,all_tokens,any_token}` | `all_tokens` | Exhaustive matching semantics (`--mode exhaustive` only); `literal` treats the whole query as one verbatim substring |
+| `--regex` | off | Treat the query as a Python regular expression (`--mode exhaustive` only); invalid patterns return an `invalid_regex` explanation |
+| `--no-startup-check` | off | Skip transparent daemon auto-start for this invocation; repeat CLI use is fastest with an already-running `code-search daemon start` |
 | `--json` | — | JSON output: `{"results": [...], "total_matches": N, "truncated": bool, "freshness": {...}}` |
 
 `--json` reports **`total_matches`** (how many chunks matched the query tokens) and
@@ -600,17 +602,17 @@ When a query shaped for config/docs is run under `code`/`code_focused` scope, th
 
 ### Production-only search
 
-For production-code questions, exclude test files to avoid test methods displacing the answer:
+For production-code questions, test files are down-ranked by default and can be excluded entirely when they are pure noise:
 
 ```bash
 code-search search "what happens when a user favorites an article" --no-include-tests
 ```
 
-The default (`include_tests=true`) keeps test files in results, so production-code answers can rank below keyword-dense test classes; the production-only flag reproduces the same top production answer.
+The default (`include_tests=true`) keeps test files reachable but demotes their candidate scores, so a keyword-dense test class cannot outrank the production code it exercises. `--no-include-tests` removes them from the result set entirely.
 
 ### Pitfalls to avoid
 
-- Don't use `search` (ranked mode) for exact-string, regex, or counting lookups — `grep` or `search --mode exhaustive` is better for those
+- Don't use `search` (ranked mode) for exact-string, regex, or counting lookups — use `search --mode exhaustive` (add `--regex` for patterns) or `grep`
 - Don't assume natural-language results are semantic — verify `vector_health: true` first; a `false` value means lexical-only ranking
 - Don't use long prose queries — short keyword phrases (2-6 words) return steadier results
 - Don't forget `--no-include-tests` for production-code questions
