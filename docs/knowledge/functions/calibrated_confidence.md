@@ -16,8 +16,10 @@ sources:
 Computes the full calibrated confidence for one candidate: it inlines the
 same lexical-overlap/vector base blend as
 [`confidence_score`](confidence_score.md), then layers exact-match evidence
-boosts (FQN/symbol/controller matches), an ambiguity cap, and a
-semantic-only floor. Defined in
+boosts (FQN/symbol/controller matches), an ambiguity cap, a semantic-only
+floor, and match-type floors: `0.65` for a definition whose concept ratio is
+at least `0.50`, `0.65` for an annotated endpoint definition, and `0.55` for
+a config chunk under a configuration-intent query. Defined in
 [`engine.confidence`](../modules/engine/confidence.md).
 
 # Signature

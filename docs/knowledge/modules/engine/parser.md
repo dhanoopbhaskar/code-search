@@ -32,10 +32,12 @@ through [`LanguageConfig`](../../types/LanguageConfig.md).
 | `SUPPORTED_LANGUAGES` | 15 languages with bundled tree-sitter grammars |
 | `LANGUAGE_GRAMMAR_MAP` | Maps language names to tree-sitter grammar Python packages |
 | `EXTENSIONLESS_INFRA_FILES` | Extension-less infra filenames (`dockerfile`, `makefile`) mapped to language tokens |
+| `EXCLUDED_FILE_NAMES` | File names never indexed regardless of language (`.DS_Store`) |
 
 # Key Classes
 
 - [`ASTParser`](../../types/ASTParser.md) — parses source files using tree-sitter and extracts indexable AST chunks.
+- [`GitIgnoreMatcher`](../../types/GitIgnoreMatcher.md) — evaluates repository `.gitignore` files during discovery and stale pruning.
 
 # Internal Helpers
 

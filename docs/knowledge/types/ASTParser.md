@@ -23,11 +23,11 @@ pipeline and parse trees consumed by
 
 | Method | Description |
 |---|---|
-| `__init__(exclusion_patterns: set[str] \| None = None, language_config: LanguageConfig \| None = None, index_prose: bool = False, settings: Settings \| None = None) -> None` | Initialize the parser with optional exclusions and language overrides. |
+| `__init__(exclusion_patterns: set[str] \| None = None, language_config: LanguageConfig \| None = None, index_prose: bool = False, settings: Settings \| None = None, respect_gitignore: bool \| None = None) -> None` | Initialize the parser with optional exclusions and language overrides; *respect_gitignore* defaults to the settings value (or `True`). |
 | `parse_file(file_path: Path, source_bytes: bytes \| None = None) -> Any` | Parse a single file into a tree-sitter tree, or `None` on failure. |
 | `detect_language(file_path: Path, resource_extensions: tuple[str, ...] \| None = None) -> str \| None` | Return the language identifier for *file_path*, or `None` if unsupported. |
 | `discover_files(root_path: Path, exclusion_patterns: set[str] \| None = None, include_resources: bool = False, resource_extensions: tuple[str, ...] \| None = None, index_prose: bool \| None = None) -> list[Path]` | Walk *root_path* and return all supported source files, skipping excluded dirs. |
 | `get_node_text(node: object, source_bytes: bytes) -> str` | Return the source text covered by an AST node. |
 | `get_node_range(node: object) -> tuple[int, int, int, int]` | Return `(row_start, col_start, row_end, col_end)` for an AST node. |
-| `is_excluded_file(file_path: Path, root_path: Path) -> bool` | Check whether *file_path* falls under one of the exclusion patterns. |
+| `is_excluded_file(file_path: Path, root_path: Path) -> bool` | Check whether *file_path* is excluded by exclusion patterns or, when enabled, a `.gitignore` rule (see [`GitIgnoreMatcher`](GitIgnoreMatcher.md)). |
 | `get_chunks_for_file(file_path: Path, source_bytes: bytes) -> list[ParsedNode]` | Extract indexable AST chunks (definitions, declarations, imports, comments, etc.). |

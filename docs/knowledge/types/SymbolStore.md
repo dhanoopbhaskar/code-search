@@ -23,7 +23,7 @@ and lookup capabilities. Defined in
 |---|---|
 | `__init__(db: GraphDatabase, settings: Settings \| None = None) -> None` | Initialize the symbol store over a graph database. |
 | `insert_symbol(symbol: dict[str, Any]) -> int \| None` | Insert a single symbol record, linking to its parent. |
-| `insert_symbols_batch(symbols: list[dict[str, Any]]) -> dict[str, int]` | Insert a batch of symbols, returning `{fqn: db_id}` map. |
+| `insert_symbols_batch(symbols: list[dict[str, Any]], conn: sqlite3.Connection \| None = None) -> dict[str, int]` | Insert a batch of symbols, returning `{fqn: db_id}` map; reuse *conn* when given, otherwise open and commit a transaction. |
 | `resolve_name(query: str, max_candidates: int \| None = None) -> dict[str, Any]` | Resolve *query* to a resolution envelope (the ONE shared rule). |
 | `resolve_symbol(query: str) -> tuple[dict[str, Any] \| None, list[dict[str, Any]]]` | Resolve *query* to `(symbol, candidates)`. |
 | `lookup_by_fqn(fqn: str) -> dict[str, Any] \| None` | Look up a symbol by FQN, auto-picking the first candidate. |

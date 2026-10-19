@@ -36,3 +36,7 @@ Per-result facts used to compute a confidence score, paired with
 | `content` | `str` | The chunk source. |
 | `file_path` | `str` | The containing file path (controller filename fallback). |
 | `query_identifier` | `str \| None` | Optional copy of the query's bare identifier. |
+| `concept_ratio` | `float` | IDF-weighted fraction of the query's distinctive terms found in the symbol name; `0.0` (default) when the concept-symbol pass did not fire. |
+| `endpoint_match` | `bool` | Whether the chunk is an annotated endpoint definition for the query's HTTP verb; default `False`. |
+| `config_intent` | `bool` | Whether the query asks for configuration content; default `False`. |
+| `content_type` | `str` | The chunk's content axis (`code`, `config`, or `docs`); default `code`. |

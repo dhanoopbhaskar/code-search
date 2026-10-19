@@ -22,7 +22,7 @@ High-level CRUD for call-graph edges and traversal queries. Defined in
 |---|---|
 | `__init__(db: GraphDatabase, settings: Settings \| None = None) -> None` | Initialize the edge store over a graph database. |
 | `insert_edge(source_symbol_id: int, target_symbol_id: int, edge_type: str, source_range: str \| None = None, target_range: str \| None = None, resolution_tier: str \| None = None) -> int \| None` | Insert a single directed edge between two symbols. |
-| `insert_edges_batch(edges: list[dict[str, Any]]) -> None` | Insert many edges at once, guarding against spurious self-edges. |
+| `insert_edges_batch(edges: list[dict[str, Any]], conn: sqlite3.Connection \| None = None) -> None` | Insert many edges at once, guarding against spurious self-edges; reuse *conn* when given, otherwise open and commit a transaction. |
 | `run_edge_validation_sweep() -> dict[str, int]` | Post-index edge validation sweep. |
 | `resolve_symbol_definition(fqn: str) -> tuple[dict[str, Any] \| None, list[dict[str, Any]]]` | Resolve *fqn* to `(symbol, candidates)` with source code populated. |
 | `get_symbol_definition(fqn: str) -> dict[str, Any] \| None` | Look up a symbol by FQN, returning its definition + source code + parent info. |
