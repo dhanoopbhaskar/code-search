@@ -60,6 +60,7 @@ SYMBOLS_INDEXES = [
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_conventional_fqn ON symbols(conventional_fqn);",
     "CREATE INDEX IF NOT EXISTS idx_symbols_file_path ON symbols(file_path);",
     "CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);",
+    "CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);",
     "CREATE INDEX IF NOT EXISTS idx_symbols_parent ON symbols(parent_symbol_id);",
 ]
 

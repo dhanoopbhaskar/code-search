@@ -1,5 +1,6 @@
 import hashlib
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -666,3 +667,90 @@ def test_full_index_recovers_from_interrupted_fts_state(tmp_path: Path) -> None:
     assert code_count > 0
     assert code_count == fts_count
     assert hits
+
+
+class _QueryCountingConnection:
+    """Delegate to a connection while counting calls to :meth:`execute`."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+        self.queries = 0
+
+    def execute(self, *args: Any, **kwargs: Any) -> Any:
+        """Count and forward the query."""
+        self.queries += 1
+        return self._conn.execute(*args, **kwargs)
+
+
+class _CommitCountingConnection:
+    """Delegate to a connection while counting calls to :meth:`commit`."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+        self.commits = 0
+
+    def commit(self) -> None:
+        """Count and forward the commit."""
+        self.commits += 1
+        self._conn.commit()
+
+    def __getattr__(self, name: str) -> Any:
+        """Forward every other attribute to the wrapped connection."""
+        return getattr(self._conn, name)
+
+
+def test_full_index_batches_file_commits(tmp_path: Path) -> None:
+    """Files are committed in groups instead of one transaction per file."""
+    repo = tmp_path / "batch_repo"
+    (repo / "src").mkdir(parents=True)
+    for i in range(5):
+        (repo / "src" / f"mod{i}.py").write_text(f"def f{i}(): return {i}\n")
+    comps = _build_components(repo)
+    orch = comps["orchestrator"]
+    db = comps["db"]
+    real_write_connection = db.write_connection
+    proxies: list[_CommitCountingConnection] = []
+
+    @contextmanager
+    def wrap_write_connection() -> Any:
+        with real_write_connection() as conn:
+            proxy = _CommitCountingConnection(conn)
+            proxies.append(proxy)
+            yield proxy
+
+    with (
+        patch.object(db, "write_connection", wrap_write_connection),
+        patch("code_search.engine.indexer._PERSIST_COMMIT_BATCH", 2),
+    ):
+        result = orch.index_codebase(root_path=repo, force=True, verbose=False)
+
+    assert result["total_files"] == 5
+    assert proxies[0].commits == 2
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS n FROM file_checksums;").fetchone()["n"] == 5
+
+
+def test_cross_file_resolution_reuses_name_row_cache(tmp_path: Path) -> None:
+    """Repeated resolutions of one leaf name issue a single symbols query."""
+    repo = tmp_path / "resolve_repo"
+    repo.mkdir()
+    comps = _build_components(repo)
+    orch = comps["orchestrator"]
+    db = comps["db"]
+
+    with db.write_transaction() as conn:
+        conn.execute(
+            "INSERT INTO symbols (fqn, name, kind, file_path, line_start, line_end, "
+            "column_start, column_end, language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+            ("com.example.Foo.bar", "bar", "method", "src/Foo.java", 10, 20, 0, 10, "java"),
+        )
+
+    cache: dict[str, list[Any]] = {}
+    with db.connect() as conn:
+        counting = _QueryCountingConnection(conn)
+        first = orch._resolve_cross_file_symbol(counting, "bar", name_rows_cache=cache)
+        second = orch._resolve_cross_file_symbol(counting, "bar", name_rows_cache=cache)
+
+    assert first[0] is not None
+    assert first == second
+    assert counting.queries == 1

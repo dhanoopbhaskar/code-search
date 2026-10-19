@@ -1938,3 +1938,24 @@ class TestReceiverKeyedEdges:
             max_depth=1,
         )
         assert graph["callers"] == []
+
+
+def _symbol_index_names(db: GraphDatabase) -> set[str]:
+    """Return the index names defined on the symbols table."""
+    with db.connect() as conn:
+        return {r["name"] for r in conn.execute("PRAGMA index_list(symbols);").fetchall()}
+
+
+def test_initialize_creates_symbol_name_index(db: GraphDatabase) -> None:
+    """The name lookup used by cross-file resolution is indexed."""
+    assert "idx_symbols_name" in _symbol_index_names(db)
+
+
+def test_initialize_recreates_symbol_name_index_on_existing_db(db: GraphDatabase) -> None:
+    """An existing index gains the name index without a schema-version bump."""
+    with db.write_transaction() as conn:
+        conn.execute("DROP INDEX idx_symbols_name;")
+
+    db.initialize()
+
+    assert "idx_symbols_name" in _symbol_index_names(db)

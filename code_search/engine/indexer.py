@@ -55,6 +55,12 @@ _PARSE_MIN_BATCH_PER_WORKER = 50
 # yields identical vectors while giving the progress callback a periodic tick.
 _EMBED_PROGRESS_BATCH = 256
 
+# Files per persistence transaction. Committing per file still pays one commit
+# per file, which dominates large builds on slow disks; grouping files keeps
+# each transaction small enough to bound the WAL while cutting commit count by
+# this factor. A crash loses at most one group, which a full rebuild redoes.
+_PERSIST_COMMIT_BATCH = 256
+
 # Reports pipeline progress as ``(phase, completed, total)``. ``phase`` is one
 # of ``"parsing"``, ``"persisting"``, or ``"embedding"``.
 ProgressCallback = Callable[[str, int, int], None]
@@ -826,7 +832,8 @@ class IndexOrchestrator:
                                 1 if result.get("parse_failed") else 0,
                             ),
                         )
-                        wconn.commit()
+                        if done % _PERSIST_COMMIT_BATCH == 0:
+                            wconn.commit()
 
                         if progress_callback is not None:
                             progress_callback("persisting", done, persist_total)
@@ -860,6 +867,7 @@ class IndexOrchestrator:
                         ).fetchall()
                         tgt_ids.update({r["fqn"]: r["id"] for r in tgt_rows})
                     batch_edges: list[dict[str, Any]] = []
+                    name_rows_cache: dict[str, list[Any]] = {}
                     for edge in unresolved_edges:
                         edge_src_id: int | None = src_ids.get(edge.get("source_fqn", ""))
                         src_tier: str | None = "exact"
@@ -868,6 +876,7 @@ class IndexOrchestrator:
                                 conn,
                                 edge.get("source_fqn", ""),
                                 source_range=edge.get("source_range"),
+                                name_rows_cache=name_rows_cache,
                             )
                         if edge_src_id is None:
                             continue
@@ -880,6 +889,7 @@ class IndexOrchestrator:
                                 edge.get("source_fqn", ""),
                                 edge.get("source_range"),
                                 type_only=edge.get("edge_type") == "INHERITS",
+                                name_rows_cache=name_rows_cache,
                             )
                         if edge_tgt_id is None:
                             if not self._settings.capture_unresolved_callees:
@@ -1385,6 +1395,7 @@ class IndexOrchestrator:
         source_fqn: str | None = None,
         source_range: str | None = None,
         type_only: bool = False,
+        name_rows_cache: dict[str, list[Any]] | None = None,
     ) -> tuple[int | None, str | None]:
         """Resolve *symbol_fqn* against persisted symbols, returning ``(id, tier)``.
 
@@ -1401,6 +1412,9 @@ class IndexOrchestrator:
                 byte-match a symbol may fall back to the unique type sharing
                 its leaf name. Receiver-qualified call targets keep the default
                 ``False`` and never fall through to that fallback.
+            name_rows_cache: Optional per-run cache of ``name -> symbol rows``.
+                Candidate rows depend only on the leaf name, so reusing them
+                avoids re-querying the same common names for every edge.
         """
         if not symbol_fqn:
             return None, None
@@ -1409,13 +1423,18 @@ class IndexOrchestrator:
         call_line = self._declaration_line_from_range(source_range)
         stripped = self._strip_params(symbol_fqn)
 
-        rows = conn.execute(
-            "SELECT s.id, s.fqn, s.conventional_fqn, s.file_path, s.line_start, s.line_end, "
-            "s.kind, p.name AS parent_name "
-            "FROM symbols s LEFT JOIN symbols p ON s.parent_symbol_id = p.id "
-            "WHERE s.name = ? ORDER BY s.id;",
-            (simple,),
-        ).fetchall()
+        if name_rows_cache is not None and simple in name_rows_cache:
+            rows = name_rows_cache[simple]
+        else:
+            rows = conn.execute(
+                "SELECT s.id, s.fqn, s.conventional_fqn, s.file_path, s.line_start, s.line_end, "
+                "s.kind, p.name AS parent_name "
+                "FROM symbols s LEFT JOIN symbols p ON s.parent_symbol_id = p.id "
+                "WHERE s.name = ? ORDER BY s.id;",
+                (simple,),
+            ).fetchall()
+            if name_rows_cache is not None:
+                name_rows_cache[simple] = rows
 
         exact = [r for r in rows if r["fqn"] == symbol_fqn]
         if exact:
