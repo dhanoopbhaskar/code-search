@@ -192,6 +192,92 @@ code-search implementations "myproject.auth.ArticleRepository.findBySlug" --json
 
 Each implementation carries its type identity/location, a `relationship` of `direct` or `indirect`, and a `site` for the method that provides it (`inherited: true` names the class that actually declares an inherited method). A reference with no static implementer returns `outcome: "no_static_implementation"` with an explicit explanation instead of a fabricated proxy; an ambiguous reference returns a ranked `candidates` list with nothing auto-selected.
 
+### `code-search query`
+
+Answer a multi-hop question by traversing the symbol graph from hybrid-search
+seeds. The compact answer labels every edge with its provenance.
+
+```bash
+code-search query "how does favoriting an article flow from controller to repository"
+code-search query "who calls ArticleRepository.save" --depth 3 --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--depth N` | `2` | Traversal depth (max: 4) |
+| `--max-nodes N` | `120` | Maximum graph nodes (max: 200) |
+| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types; add `IMPORTS` for module navigation |
+| `--token-budget N` | `1500` | Soft output budget; trimmed deterministically |
+| `--json` | — | JSON output |
+
+### `code-search path`
+
+Return the shortest directed path between two symbols.
+
+```bash
+code-search path "ArticleController.favoriteArticle" "ArticleRepository.save"
+code-search path "ArticleController.favoriteArticle" "ArticleRepository.save" --undirected
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--undirected` | off | Traverse edges in both directions |
+| `--max-hops N` | `6` | Maximum path length (max: 6) |
+| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types |
+| `--json` | — | JSON output |
+
+Ambiguous endpoints are refused with their ranked candidates instead of being
+guessed.
+
+### `code-search explain`
+
+Explain a symbol: location, signature, incoming/outgoing relations, rationale
+comments, and offline documentation links.
+
+```bash
+code-search explain "ArticleMutation.favoriteArticle"
+code-search explain "ArticleRepository.save" --depth 2 --relations CALLS,INHERITS,IMPORTS
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--depth N` | `1` | Ego-graph depth (max: 4) |
+| `--relations LIST` | `CALLS,INHERITS` | Comma-separated relations to include |
+| `--json` | — | JSON output |
+
+### `code-search affected`
+
+Report symbols impacted by changed files, using reverse traversal over callers,
+subtypes, and importers.
+
+```bash
+code-search affected --since HEAD~1
+code-search affected src/main/java/io/spring/core/Article.java --depth 3 --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--since REF` | — | Git ref to diff against; changed paths are added to any explicit paths |
+| `--depth N` | `3` | Reverse traversal depth (max: 4) |
+| `--json` | — | JSON output |
+
+### `code-search map`
+
+Write a deterministic architecture report with god nodes, communities, import
+cycles, and suggested questions.
+
+```bash
+code-search map --output graph-report.md
+code-search map --top 20 --max-communities 8
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output FILE` | — | Write Markdown to this path instead of stdout |
+| `--top N` | `15` | Number of god nodes |
+| `--max-communities N` | `10` | Maximum communities to report |
+| `--json` | — | JSON output |
+
 ### `code-search metrics`
 
 Query operational metrics.
@@ -272,6 +358,10 @@ Configure your MCP-compatible client to launch the server. Examples:
 | `get_call_neighbors` | Traverse the call graph — upstream callers and downstream callees | `symbol`, `direction`, `max_depth`, `transitive` |
 | `get_implementations` | Find the static implementations of an interface method or type | `symbol` |
 | `find_related` | Find semantically similar chunks by file + line number | `file_path`, `line_number`, `limit` |
+| `query_graph` | Answer a multi-hop question by bounded graph traversal | `question`, `depth`, `max_nodes`, `token_budget`, `edge_types` |
+| `shortest_path` | Shortest path between two symbols | `source`, `target`, `undirected`, `max_hops` |
+| `explain_symbol` | Symbol metadata, relations, rationale, and linked docs | `symbol`, `depth`, `relations` |
+| `get_impact` | Symbols impacted by changed files | `changed_paths`, `depth` |
 
 #### `search`
 
@@ -324,6 +414,67 @@ malformed, or empty symbols return `found: false` with no error.
 ```
 
 Returns `symbol`, `callers[]`, `callees[]` — each with `fqn`, `kind`, `file_path`, `line_start`, `call_site_range`, `depth`, and (for CALLS edges) `target_signature` + `overloads` — plus a top-level additive `freshness` object (see `search`). Edges are keyed to the callee's receiver type, so same-named methods on different receivers never conflate. Each neighbor appears once at its minimum depth; `transitive` defaults to `false` (direct-only), and setting it `true` expands to `max_depth`.
+
+#### `query_graph`
+
+```json
+{
+  "question": "how does a favorite flow from the controller to the repository",
+  "depth": 2,
+  "max_nodes": 120,
+  "token_budget": 1500,
+  "edge_types": "CALLS,INHERITS"
+}
+```
+
+Returns `outcome`, `seeds[]`, `nodes[]`, `edges[]`, `truncated`, `stats`, and
+`freshness`. Every edge carries a `confidence` label (`EXTRACTED`, `INFERRED`,
+`AMBIGUOUS`, or `UNRESOLVED`) plus its stored `resolution_tier`. Seeds are
+reported explicitly so an irrelevant neighbourhood is auditable; `outcome` is
+`no_seed` when the ranker and lexical fallback cannot map the question to a
+symbol.
+
+#### `shortest_path`
+
+```json
+{
+  "source": "ArticleController.favoriteArticle",
+  "target": "ArticleRepository.save",
+  "undirected": false,
+  "max_hops": 6
+}
+```
+
+Returns `outcome` (`resolved`, `trivial`, `no_path`, `ambiguous`, `not_found`),
+`hops[]` in real edge direction, and ranked `candidates` when an endpoint is
+ambiguous. Ambiguous references are never guessed.
+
+#### `explain_symbol`
+
+```json
+{
+  "symbol": "ArticleRepository.save",
+  "depth": 1,
+  "relations": "CALLS,INHERITS"
+}
+```
+
+Returns the symbol identity/location, incoming and outgoing `edges[]`,
+`rationale[]` (`NOTE`/`WHY`/`HACK`/`TODO`/`FIXME`/ADR), and `doc_links[]`
+produced offline from local embeddings or symbol mentions.
+
+#### `get_impact`
+
+```json
+{
+  "changed_paths": ["src/main/java/io/spring/core/Article.java"],
+  "depth": 3
+}
+```
+
+Returns `changed_paths`, the changed files' `symbols[]`, reverse-reachable
+`impacted[]` nodes grouped by file, `files[]`, and a `summary` with symbol,
+file, test, and changed-file counts.
 
 #### `get_implementations`
 

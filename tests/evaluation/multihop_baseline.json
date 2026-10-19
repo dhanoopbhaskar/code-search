@@ -1,0 +1,19 @@
+{
+  "recorded_at": "2026-10-19",
+  "fixture": "multihop",
+  "metrics": {
+    "cases": 5,
+    "chain_recall_depth2": 1.0,
+    "chain_recall_depth3": 1.0,
+    "seed_recall": 0.8,
+    "max_answer_bytes": 10438,
+    "mean_query_ms": 5.0,
+    "rationale_count": 1
+  },
+  "graph_quality_test_repo": {
+    "CALLS": {"total": 2647, "resolved": 518, "ratio": 0.196},
+    "INHERITS": {"total": 73, "resolved": 23, "ratio": 0.315},
+    "module_edges_IMPORTS": {"total": 1093, "resolved": 350, "ratio": 0.32}
+  },
+  "compact_answer_test_repo_depth2_tokens": 1417
+}

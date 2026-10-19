@@ -342,7 +342,7 @@ def test_no_schema_or_column_change(dedup_comps: dict[str, Any]) -> None:
     ``symbols``/``graph_edges`` columns are unchanged."""
     from code_search.engine.graph import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == 13
+    assert SCHEMA_VERSION == 14
     with dedup_comps["db"].connect() as conn:
         symbol_cols = {r["name"] for r in conn.execute("PRAGMA table_info(symbols);")}
         edge_cols = {r["name"] for r in conn.execute("PRAGMA table_info(graph_edges);")}

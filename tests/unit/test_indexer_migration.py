@@ -83,7 +83,7 @@ def _table_columns(db_path: Path, table: str) -> set[str]:
         conn.close()
 
 
-def test_v7_database_migrates_to_v12(tmp_path: Path) -> None:
+def test_v7_database_migrates_to_v14(tmp_path: Path) -> None:
     db_path = tmp_path / "graph.db"
     _build_v7_database(db_path)
 
@@ -109,7 +109,7 @@ def test_v7_database_migrates_to_v12(tmp_path: Path) -> None:
             "SELECT value FROM index_metadata WHERE key = 'index_version';"
         ).fetchone()
         assert version is not None
-        assert int(version["value"]) == 13
+        assert int(version["value"]) == 14
         status = conn.execute(
             "SELECT value FROM index_metadata WHERE key = 'index_status';"
         ).fetchone()
@@ -119,7 +119,7 @@ def test_v7_database_migrates_to_v12(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_fresh_database_has_v13_schema_in_base_ddl(tmp_path: Path) -> None:
+def test_fresh_database_has_v14_schema_in_base_ddl(tmp_path: Path) -> None:
     db_path = tmp_path / "graph.db"
     db = GraphDatabase(db_path, Settings(context_dir=tmp_path))
     db.initialize()
@@ -136,7 +136,7 @@ def test_fresh_database_has_v13_schema_in_base_ddl(tmp_path: Path) -> None:
             "SELECT value FROM index_metadata WHERE key = 'index_version';"
         ).fetchone()
         assert version is not None
-        assert int(version["value"]) == 13
+        assert int(version["value"]) == 14
         assert "content_type" in _table_columns(db_path, "code_chunks")
         edge_cols = _table_columns(db_path, "graph_edges")
         assert "resolved" in edge_cols
@@ -181,7 +181,7 @@ def test_v9_database_gains_declared_rules_and_fts_parity(tmp_path: Path) -> None
         version = conn.execute(
             "SELECT value FROM index_metadata WHERE key = 'index_version';"
         ).fetchone()
-        assert int(version["value"]) == 13
+        assert int(version["value"]) == 14
         fts = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'chunks_fts';").fetchone()
         assert fts is not None and "declared_rules" in fts["sql"]
         assert "content_type" in fts["sql"]

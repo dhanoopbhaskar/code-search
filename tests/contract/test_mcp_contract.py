@@ -98,6 +98,48 @@ EXPECTED_IMPLEMENTATIONS_INPUT = {
     "required": ["symbol"],
 }
 
+EXPECTED_QUERY_GRAPH_INPUT = {
+    "type": "object",
+    "properties": {
+        "question": {"type": "string"},
+        "depth": {"type": "integer", "default": 2},
+        "max_nodes": {"type": "integer", "default": 120},
+        "token_budget": {"type": "integer", "default": 1500},
+        "edge_types": {"type": "string", "default": "CALLS,INHERITS"},
+    },
+    "required": ["question"],
+}
+
+EXPECTED_SHORTEST_PATH_INPUT = {
+    "type": "object",
+    "properties": {
+        "source": {"type": "string"},
+        "target": {"type": "string"},
+        "undirected": {"type": "boolean", "default": False},
+        "max_hops": {"type": "integer", "default": 6},
+    },
+    "required": ["source", "target"],
+}
+
+EXPECTED_EXPLAIN_SYMBOL_INPUT = {
+    "type": "object",
+    "properties": {
+        "symbol": {"type": "string"},
+        "depth": {"type": "integer", "default": 1},
+        "relations": {"type": "string", "default": "CALLS,INHERITS"},
+    },
+    "required": ["symbol"],
+}
+
+EXPECTED_GET_IMPACT_INPUT = {
+    "type": "object",
+    "properties": {
+        "changed_paths": {"type": "array"},
+        "depth": {"type": "integer", "default": 3},
+    },
+    "required": ["changed_paths"],
+}
+
 
 def _json_schema_key(key: str, value: Any) -> Any:
     return {"type": "string"} if key == "type" else value
@@ -174,6 +216,37 @@ def mcp_server() -> FastMCP:
                 "explanation": None,
             }
         )
+
+    @mcp.tool()
+    def query_graph(
+        question: str,
+        depth: int = 2,
+        max_nodes: int = 120,
+        token_budget: int = 1500,
+        edge_types: str = "CALLS,INHERITS",
+    ) -> str:
+        return json.dumps({"seeds": [], "nodes": [], "edges": []})
+
+    @mcp.tool()
+    def shortest_path(
+        source: str,
+        target: str,
+        undirected: bool = False,
+        max_hops: int = 6,
+    ) -> str:
+        return json.dumps({"hops": []})
+
+    @mcp.tool()
+    def explain_symbol(
+        symbol: str,
+        depth: int = 1,
+        relations: str = "CALLS,INHERITS",
+    ) -> str:
+        return json.dumps({"symbol": None, "nodes": [], "edges": []})
+
+    @mcp.tool()
+    def get_impact(changed_paths: list[str], depth: int = 3) -> str:
+        return json.dumps({"impacted": [], "summary": {}})
 
     return mcp
 
@@ -578,7 +651,7 @@ def test_graph_implements_direction_returns_implementations(tmp_path: Any) -> No
 
 @pytest.mark.contract
 @pytest.mark.asyncio
-async def test_all_five_tools_registered(mcp_server: FastMCP) -> None:
+async def test_all_graph_tools_registered(mcp_server: FastMCP) -> None:
     tools = await mcp_server.list_tools()
     names = {t.name for t in tools}
     assert names == {
@@ -587,7 +660,43 @@ async def test_all_five_tools_registered(mcp_server: FastMCP) -> None:
         "get_call_neighbors",
         "find_related",
         "get_implementations",
-    }, f"Expected 5 tools, got {names}"
+        "query_graph",
+        "shortest_path",
+        "explain_symbol",
+        "get_impact",
+    }, f"Expected 9 tools, got {names}"
+
+
+@pytest.mark.contract
+@pytest.mark.asyncio
+async def test_query_graph_tool_schema(mcp_server: FastMCP) -> None:
+    tools = await mcp_server.list_tools()
+    tool = next(t for t in tools if t.name == "query_graph")
+    assert _input_matches_contract(tool.parameters, EXPECTED_QUERY_GRAPH_INPUT)
+
+
+@pytest.mark.contract
+@pytest.mark.asyncio
+async def test_shortest_path_tool_schema(mcp_server: FastMCP) -> None:
+    tools = await mcp_server.list_tools()
+    tool = next(t for t in tools if t.name == "shortest_path")
+    assert _input_matches_contract(tool.parameters, EXPECTED_SHORTEST_PATH_INPUT)
+
+
+@pytest.mark.contract
+@pytest.mark.asyncio
+async def test_explain_symbol_tool_schema(mcp_server: FastMCP) -> None:
+    tools = await mcp_server.list_tools()
+    tool = next(t for t in tools if t.name == "explain_symbol")
+    assert _input_matches_contract(tool.parameters, EXPECTED_EXPLAIN_SYMBOL_INPUT)
+
+
+@pytest.mark.contract
+@pytest.mark.asyncio
+async def test_get_impact_tool_schema(mcp_server: FastMCP) -> None:
+    tools = await mcp_server.list_tools()
+    tool = next(t for t in tools if t.name == "get_impact")
+    assert _input_matches_contract(tool.parameters, EXPECTED_GET_IMPACT_INPUT)
 
 
 @pytest.mark.contract

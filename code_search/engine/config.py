@@ -670,6 +670,25 @@ class Settings:
         default_factory=lambda: float(os.environ.get("CODE_SEARCH_FRESHNESS_TTL_SECONDS", "5.0"))
     )
 
+    # --- Graph fidelity ---
+    # Offline documentation/config-to-code links computed at index time from
+    # the local embedding model. Off by default: the all-pairs cost is only
+    # worthwhile on documentation-heavy repositories.
+    index_doc_links: bool = field(
+        default_factory=lambda: (
+            os.environ.get("CODE_SEARCH_INDEX_DOC_LINKS", "false").lower() in ("true", "1", "yes")
+        )
+    )
+    doc_link_top_k: int = field(
+        default_factory=lambda: int(os.environ.get("CODE_SEARCH_DOC_LINK_TOP_K", "3"))
+    )
+    doc_link_min_score: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_DOC_LINK_MIN_SCORE", "0.35"))
+    )
+    doc_link_max_chunks: int = field(
+        default_factory=lambda: int(os.environ.get("CODE_SEARCH_DOC_LINK_MAX_CHUNKS", "2000"))
+    )
+
     # --- Graph traversal ---
     max_graph_depth: int = field(
         default_factory=lambda: int(os.environ.get("CODE_SEARCH_MAX_GRAPH_DEPTH", "5"))
