@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "code-search"
 version = "0.1.0"
-description = "In-house AI code context engine for air-gapped, CPU-only enterprise environments"
+description = "An AI code context engine for air-gapped, CPU-only enterprise environments"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 dependencies = [

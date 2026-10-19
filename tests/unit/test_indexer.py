@@ -1,5 +1,6 @@
 import hashlib
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -594,3 +595,162 @@ def test_index_codebase_reports_finalization_status(tmp_path: Path) -> None:
     assert "Sweeping stale files" in messages
     assert "Rebuilding keyword index" in messages
     assert "Validating graph edges" in messages
+
+
+def test_chunked_splits_into_bounded_batches() -> None:
+    from code_search.engine.indexer import _chunked
+
+    assert _chunked([], 3) == []
+    assert _chunked(["a", "b", "c"], 5) == [["a", "b", "c"]]
+    assert _chunked(["a", "b", "c", "d", "e"], 2) == [["a", "b"], ["c", "d"], ["e"]]
+
+
+def test_full_index_uses_one_writer_and_suspends_fts_triggers(tmp_path: Path) -> None:
+    """A full build commits per file over one connection, with triggers off."""
+    repo = tmp_path / "writer_repo"
+    (repo / "src").mkdir(parents=True)
+    for i in range(3):
+        (repo / "src" / f"mod{i}.py").write_text(f"def f{i}(): return {i}\n")
+    comps = _build_components(repo)
+    orch = comps["orchestrator"]
+    db = comps["db"]
+
+    with (
+        patch.object(db, "write_connection", wraps=db.write_connection) as writer,
+        patch.object(db, "set_fts_triggers", wraps=db.set_fts_triggers) as triggers,
+    ):
+        orch.index_codebase(root_path=repo, force=True, verbose=False)
+
+    assert writer.call_count == 1
+    assert [call.args[0] for call in triggers.call_args_list] == [False, True]
+
+    with db.connect() as conn:
+        names = {
+            r["name"]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger';").fetchall()
+        }
+        code_count = conn.execute("SELECT COUNT(*) AS n FROM code_chunks;").fetchone()["n"]
+        hits = conn.execute(
+            "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'return';"
+        ).fetchall()
+    assert {"chunks_fts_ai", "chunks_fts_ad", "chunks_fts_au"} <= names
+    assert code_count > 0
+    assert hits, "keyword index was not rebuilt after the suspended-trigger full build"
+
+
+def test_full_index_recovers_from_interrupted_fts_state(tmp_path: Path) -> None:
+    """A full build repairs a keyword index left stale by an interrupted run."""
+    repo = tmp_path / "recover_repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "mod.py").write_text("def f(): return 1\n")
+    comps = _build_components(repo)
+    orch = comps["orchestrator"]
+    db = comps["db"]
+
+    orch.index_codebase(root_path=repo, force=True, verbose=False)
+
+    # Simulate a run killed after suspending maintenance but before the
+    # keyword rebuild: code_chunks still has rows, chunks_fts does not.
+    db.set_fts_triggers(False)
+    with db.write_transaction() as conn:
+        conn.execute("DELETE FROM chunks_fts;")
+    db.set_fts_triggers(True)
+
+    orch.index_codebase(root_path=repo, force=True, verbose=False)
+
+    with db.connect() as conn:
+        code_count = conn.execute("SELECT COUNT(*) AS n FROM code_chunks;").fetchone()["n"]
+        fts_count = conn.execute("SELECT COUNT(*) AS n FROM chunks_fts;").fetchone()["n"]
+        hits = conn.execute(
+            "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'return';"
+        ).fetchall()
+    assert code_count > 0
+    assert code_count == fts_count
+    assert hits
+
+
+class _QueryCountingConnection:
+    """Delegate to a connection while counting calls to :meth:`execute`."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+        self.queries = 0
+
+    def execute(self, *args: Any, **kwargs: Any) -> Any:
+        """Count and forward the query."""
+        self.queries += 1
+        return self._conn.execute(*args, **kwargs)
+
+
+class _CommitCountingConnection:
+    """Delegate to a connection while counting calls to :meth:`commit`."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+        self.commits = 0
+
+    def commit(self) -> None:
+        """Count and forward the commit."""
+        self.commits += 1
+        self._conn.commit()
+
+    def __getattr__(self, name: str) -> Any:
+        """Forward every other attribute to the wrapped connection."""
+        return getattr(self._conn, name)
+
+
+def test_full_index_batches_file_commits(tmp_path: Path) -> None:
+    """Files are committed in groups instead of one transaction per file."""
+    repo = tmp_path / "batch_repo"
+    (repo / "src").mkdir(parents=True)
+    for i in range(5):
+        (repo / "src" / f"mod{i}.py").write_text(f"def f{i}(): return {i}\n")
+    comps = _build_components(repo)
+    orch = comps["orchestrator"]
+    db = comps["db"]
+    real_write_connection = db.write_connection
+    proxies: list[_CommitCountingConnection] = []
+
+    @contextmanager
+    def wrap_write_connection() -> Any:
+        with real_write_connection() as conn:
+            proxy = _CommitCountingConnection(conn)
+            proxies.append(proxy)
+            yield proxy
+
+    with (
+        patch.object(db, "write_connection", wrap_write_connection),
+        patch("code_search.engine.indexer._PERSIST_COMMIT_BATCH", 2),
+    ):
+        result = orch.index_codebase(root_path=repo, force=True, verbose=False)
+
+    assert result["total_files"] == 5
+    assert proxies[0].commits == 2
+    with db.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) AS n FROM file_checksums;").fetchone()["n"] == 5
+
+
+def test_cross_file_resolution_reuses_name_row_cache(tmp_path: Path) -> None:
+    """Repeated resolutions of one leaf name issue a single symbols query."""
+    repo = tmp_path / "resolve_repo"
+    repo.mkdir()
+    comps = _build_components(repo)
+    orch = comps["orchestrator"]
+    db = comps["db"]
+
+    with db.write_transaction() as conn:
+        conn.execute(
+            "INSERT INTO symbols (fqn, name, kind, file_path, line_start, line_end, "
+            "column_start, column_end, language) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+            ("com.example.Foo.bar", "bar", "method", "src/Foo.java", 10, 20, 0, 10, "java"),
+        )
+
+    cache: dict[str, list[Any]] = {}
+    with db.connect() as conn:
+        counting = _QueryCountingConnection(conn)
+        first = orch._resolve_cross_file_symbol(counting, "bar", name_rows_cache=cache)
+        second = orch._resolve_cross_file_symbol(counting, "bar", name_rows_cache=cache)
+
+    assert first[0] is not None
+    assert first == second
+    assert counting.queries == 1

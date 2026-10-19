@@ -10,6 +10,7 @@ import hashlib
 import logging
 import multiprocessing
 import os
+import sqlite3
 import time
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
@@ -54,9 +55,26 @@ _PARSE_MIN_BATCH_PER_WORKER = 50
 # yields identical vectors while giving the progress callback a periodic tick.
 _EMBED_PROGRESS_BATCH = 256
 
+# Files per persistence transaction. Committing per file still pays one commit
+# per file, which dominates large builds on slow disks; grouping files keeps
+# each transaction small enough to bound the WAL while cutting commit count by
+# this factor. A crash loses at most one group, which a full rebuild redoes.
+_PERSIST_COMMIT_BATCH = 256
+
 # Reports pipeline progress as ``(phase, completed, total)``. ``phase`` is one
 # of ``"parsing"``, ``"persisting"``, or ``"embedding"``.
 ProgressCallback = Callable[[str, int, int], None]
+
+# Maximum number of placeholders per ``IN (...)`` query. SQLite's historic
+# ``SQLITE_MAX_VARIABLE_NUMBER`` default is 999 (32766 on newer builds); staying
+# under it keeps cross-file edge resolution correct on large indexes.
+_SQL_VAR_LIMIT = 900
+
+
+def _chunked(items: list[str], size: int) -> list[list[str]]:
+    """Split *items* into consecutive sublists of at most *size* elements."""
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
 
 # Reports a human-readable status message for a single, non-iterable pipeline
 # step (for example the post-embedding finalization). Used to keep the user
@@ -558,12 +576,23 @@ class IndexOrchestrator:
 
             if not incremental:
                 self._vector_index.clear()
-                with self._db.write_transaction() as conn:
-                    conn.execute("DELETE FROM graph_edges;")
-                    conn.execute("DELETE FROM symbols;")
-                    conn.execute("DELETE FROM code_chunks;")
-                    conn.execute("DELETE FROM chunks_fts;")
-                    conn.execute("DELETE FROM file_checksums;")
+                # Suspend the FTS triggers before clearing code_chunks. A
+                # previous run that was interrupted after suspending them can
+                # leave chunks_fts out of sync with code_chunks; the delete
+                # triggers would then try to remove rows from an inconsistent
+                # external-content index and fail with "database disk image is
+                # malformed", making the index unrecoverable.
+                self._db.set_fts_triggers(False)
+                try:
+                    with self._db.write_transaction() as conn:
+                        conn.execute("DELETE FROM graph_edges;")
+                        conn.execute("DELETE FROM symbols;")
+                        conn.execute("DELETE FROM code_chunks;")
+                        conn.execute("DELETE FROM chunks_fts;")
+                        conn.execute("DELETE FROM file_checksums;")
+                except BaseException:
+                    self._db.set_fts_triggers(True)
+                    raise
 
             files_to_process: list[Path] = list(all_files)
             orphaned_paths: list[str] = []
@@ -638,6 +667,8 @@ class IndexOrchestrator:
             total = len(files_to_process)
             if total == 0 and not orphaned_paths:
                 self._vector_index.save()
+                if not incremental:
+                    self._db.set_fts_triggers(True)
                 fts_count = self._ensure_fts_parity()
                 self._metadata.set_fts_chunks(fts_count)
                 self._metadata.set_index_status("ready")
@@ -704,7 +735,14 @@ class IndexOrchestrator:
                         if progress_callback is not None:
                             progress_callback("parsing", done, parse_total)
 
-            # Phase 3 (serial): DB writes
+            # Phase 3 (serial): DB writes.
+            # A single writer connection spans the whole loop and each file
+            # commits as one transaction (symbols + edges + chunks + checksum),
+            # replacing the previous connection-per-statement pattern whose
+            # per-commit fsync dominated index wall-clock. A full build has
+            # already cleared the tables, so the FTS maintenance triggers are
+            # suspended and the keyword index is rebuilt once at the end —
+            # per-chunk trigger work would be discarded by that rebuild anyway.
             total_symbols = 0
             total_chunks = 0
             languages: set[str] = set()
@@ -712,87 +750,96 @@ class IndexOrchestrator:
             has_resource_files = False
 
             persist_total = len(processed_results)
-            for done, result in enumerate(processed_results, start=1):
-                file_path_str = result["file_path"]
-                syms = result["symbols"]
-                edges = result["edges"]
-                chunks = result["chunks"]
-                content_hash = result["content_hash"]
+            suspend_fts = not incremental
+            try:
+                with self._db.write_connection() as wconn:
+                    for done, result in enumerate(processed_results, start=1):
+                        file_path_str = result["file_path"]
+                        syms = result["symbols"]
+                        edges = result["edges"]
+                        chunks = result["chunks"]
+                        content_hash = result["content_hash"]
 
-                if verbose:
-                    logger.info(
-                        "Processing: %s (%d syms, %d chunks)",
-                        file_path_str,
-                        len(syms),
-                        len(chunks),
-                    )
+                        if verbose:
+                            logger.info(
+                                "Processing: %s (%d syms, %d chunks)",
+                                file_path_str,
+                                len(syms),
+                                len(chunks),
+                            )
 
-                existing_fqns: set[str] = set()
-                for sym in syms:
-                    fqn = sym.get("fqn", "")
-                    if fqn in existing_fqns:
-                        logger.warning("FQN collision detected: %s in %s", fqn, file_path_str)
-                    existing_fqns.add(fqn)
+                        existing_fqns: set[str] = set()
+                        for sym in syms:
+                            fqn = sym.get("fqn", "")
+                            if fqn in existing_fqns:
+                                logger.warning(
+                                    "FQN collision detected: %s in %s", fqn, file_path_str
+                                )
+                            existing_fqns.add(fqn)
 
-                id_map = self._symbol_store.insert_symbols_batch(syms)
-                total_symbols += len(id_map)
-                if syms:
-                    languages.add(syms[0].get("language", "unknown"))
+                        id_map = self._symbol_store.insert_symbols_batch(syms, conn=wconn)
+                        total_symbols += len(id_map)
+                        if syms:
+                            languages.add(syms[0].get("language", "unknown"))
 
-                resolved_edges = []
-                for edge in edges:
-                    src_id = id_map.get(edge["source_fqn"])
-                    tgt_fqn = edge["target_fqn"]
-                    tgt_id = id_map.get(tgt_fqn)
-                    if tgt_id is None and "::" not in tgt_fqn and file_path_str:
-                        tgt_id = id_map.get(f"{file_path_str}::{tgt_fqn}")
-                    if src_id is not None and tgt_id is not None:
-                        resolved_edges.append(
-                            {
-                                "source_symbol_id": src_id,
-                                "target_symbol_id": tgt_id,
-                                "edge_type": edge["edge_type"],
-                                "source_range": edge.get("source_range"),
-                                "target_range": edge.get("target_range"),
-                                "resolution_tier": "exact",
-                            }
+                        resolved_edges = []
+                        for edge in edges:
+                            src_id = id_map.get(edge["source_fqn"])
+                            tgt_fqn = edge["target_fqn"]
+                            tgt_id = id_map.get(tgt_fqn)
+                            if tgt_id is None and "::" not in tgt_fqn and file_path_str:
+                                tgt_id = id_map.get(f"{file_path_str}::{tgt_fqn}")
+                            if src_id is not None and tgt_id is not None:
+                                resolved_edges.append(
+                                    {
+                                        "source_symbol_id": src_id,
+                                        "target_symbol_id": tgt_id,
+                                        "edge_type": edge["edge_type"],
+                                        "source_range": edge.get("source_range"),
+                                        "target_range": edge.get("target_range"),
+                                        "resolution_tier": "exact",
+                                    }
+                                )
+                            else:
+                                unresolved_edges.append(edge)
+                        if resolved_edges:
+                            self._edge_store.insert_edges_batch(resolved_edges, conn=wconn)
+
+                        for chunk in chunks:
+                            chunk_id = self._insert_chunk(chunk, b"", conn=wconn)
+                            if chunk_id is not None:
+                                total_chunks += 1
+                                chunk["_chunk_id"] = chunk_id
+                                if chunk.get("chunk_type") == "resource":
+                                    has_resource_files = True
+
+                        try:
+                            st = Path(file_path_str).stat()
+                            size = st.st_size
+                            file_mtime_ns = st.st_mtime_ns
+                        except OSError:
+                            size = None
+                            file_mtime_ns = None
+                        wconn.execute(
+                            "INSERT OR REPLACE INTO file_checksums "
+                            "(file_path, checksum, size, file_mtime_ns, parse_failed) "
+                            "VALUES (?, ?, ?, ?, ?);",
+                            (
+                                file_path_str,
+                                content_hash,
+                                size,
+                                file_mtime_ns,
+                                1 if result.get("parse_failed") else 0,
+                            ),
                         )
-                    else:
-                        unresolved_edges.append(edge)
-                if resolved_edges:
-                    self._edge_store.insert_edges_batch(resolved_edges)
+                        if done % _PERSIST_COMMIT_BATCH == 0:
+                            wconn.commit()
 
-                for chunk in chunks:
-                    chunk_id = self._insert_chunk(chunk, b"")
-                    if chunk_id is not None:
-                        total_chunks += 1
-                        chunk["_chunk_id"] = chunk_id
-                        if chunk.get("chunk_type") == "resource":
-                            has_resource_files = True
-
-                with self._db.write_transaction() as conn:
-                    try:
-                        st = Path(file_path_str).stat()
-                        size = st.st_size
-                        file_mtime_ns = st.st_mtime_ns
-                    except OSError:
-                        size = None
-                        file_mtime_ns = None
-                    conn.execute(
-                        "INSERT OR REPLACE INTO file_checksums "
-                        "(file_path, checksum, size, file_mtime_ns, parse_failed) "
-                        "VALUES (?, ?, ?, ?, ?);",
-                        (
-                            file_path_str,
-                            content_hash,
-                            size,
-                            file_mtime_ns,
-                            1 if result.get("parse_failed") else 0,
-                        ),
-                    )
-
-                if progress_callback is not None:
-                    progress_callback("persisting", done, persist_total)
+                        if progress_callback is not None:
+                            progress_callback("persisting", done, persist_total)
+            finally:
+                if suspend_fts:
+                    self._db.set_fts_triggers(True)
 
             # Cross-file edge resolution: batch-resolve unresolved edges against persisted symbols
             if unresolved_edges:
@@ -804,22 +851,23 @@ class IndexOrchestrator:
                 )
                 with self._db.connect() as conn:
                     src_ids: dict[str, int] = {}
-                    if source_fqns:
-                        placeholders = ",".join("?" for _ in source_fqns)
+                    for fqn_batch in _chunked(source_fqns, _SQL_VAR_LIMIT):
+                        placeholders = ",".join("?" for _ in fqn_batch)
                         src_rows = conn.execute(
                             f"SELECT fqn, id FROM symbols WHERE fqn IN ({placeholders});",
-                            source_fqns,
+                            fqn_batch,
                         ).fetchall()
-                        src_ids = {r["fqn"]: r["id"] for r in src_rows}
+                        src_ids.update({r["fqn"]: r["id"] for r in src_rows})
                     tgt_ids: dict[str, int] = {}
-                    if target_fqns:
-                        placeholders = ",".join("?" for _ in target_fqns)
+                    for fqn_batch in _chunked(target_fqns, _SQL_VAR_LIMIT):
+                        placeholders = ",".join("?" for _ in fqn_batch)
                         tgt_rows = conn.execute(
                             f"SELECT fqn, id FROM symbols WHERE fqn IN ({placeholders});",
-                            target_fqns,
+                            fqn_batch,
                         ).fetchall()
-                        tgt_ids = {r["fqn"]: r["id"] for r in tgt_rows}
+                        tgt_ids.update({r["fqn"]: r["id"] for r in tgt_rows})
                     batch_edges: list[dict[str, Any]] = []
+                    name_rows_cache: dict[str, list[Any]] = {}
                     for edge in unresolved_edges:
                         edge_src_id: int | None = src_ids.get(edge.get("source_fqn", ""))
                         src_tier: str | None = "exact"
@@ -828,6 +876,7 @@ class IndexOrchestrator:
                                 conn,
                                 edge.get("source_fqn", ""),
                                 source_range=edge.get("source_range"),
+                                name_rows_cache=name_rows_cache,
                             )
                         if edge_src_id is None:
                             continue
@@ -840,6 +889,7 @@ class IndexOrchestrator:
                                 edge.get("source_fqn", ""),
                                 edge.get("source_range"),
                                 type_only=edge.get("edge_type") == "INHERITS",
+                                name_rows_cache=name_rows_cache,
                             )
                         if edge_tgt_id is None:
                             if not self._settings.capture_unresolved_callees:
@@ -930,6 +980,16 @@ class IndexOrchestrator:
             self._vector_index.save()
             duration_s = time.monotonic() - start_time
 
+            # Rebuild the keyword index before any post-index deletes. A full
+            # build inserts code_chunks with the FTS triggers suspended, so
+            # until the rebuild the external-content index does not match the
+            # table; a delete trigger in the stale sweep below would then fail
+            # with "database disk image is malformed".
+            if not incremental:
+                if status_callback is not None:
+                    status_callback("Rebuilding keyword index")
+                self._metadata.set_fts_chunks(self._ensure_fts_parity(force=True))
+
             # Post-index stale sweep: a full re-index already covers the whole
             # tree, and incremental diffing removes working-tree orphans, so
             # the sweep only re-runs when the indexing policy changed (files
@@ -941,14 +1001,12 @@ class IndexOrchestrator:
                     status_callback("Sweeping stale files")
                 self._sweep_stale_files(root_path)
 
-            # Keep the keyword index in parity with code_chunks. Full indexes
-            # rebuild unconditionally; incremental ones only rebuild when the
-            # FTS maintenance triggers have drifted.
-            if status_callback is not None:
-                status_callback(
-                    "Rebuilding keyword index" if not incremental else "Verifying keyword index"
-                )
-            fts_count = self._ensure_fts_parity(force=not incremental)
+            # Incremental indexes rely on the triggers and rebuild only when
+            # the keyword index has drifted; for full builds this is a cheap
+            # parity check after the sweep.
+            if status_callback is not None and incremental:
+                status_callback("Verifying keyword index")
+            fts_count = self._ensure_fts_parity()
             self._metadata.set_fts_chunks(fts_count)
 
             # Post-index edge validation sweep: remove spurious self-edges,
@@ -1077,17 +1135,22 @@ class IndexOrchestrator:
             or self._metadata.get("index_prose") != str(self._settings.index_prose).lower()
         )
 
-    def _insert_chunk(self, chunk: dict[str, Any], _source_bytes: bytes) -> int | None:
+    def _insert_chunk(
+        self, chunk: dict[str, Any], _source_bytes: bytes, conn: sqlite3.Connection | None = None
+    ) -> int | None:
         """Insert a single chunk row, computing its subword tokens + checksum.
 
         Computes the ``subwords`` field (via ``identify_subwords``) and a
         content-derived ``tokens_checksum`` for dedup, then upserts into
         ``code_chunks`` (keyed on ``UNIQUE(file_path, line_start)``). FTS is
-        kept in sync by the maintenance triggers.
+        kept in sync by the maintenance triggers — or rebuilt afterwards when a
+        full build has suspended them.
 
         Args:
             chunk: The parsed chunk dict from the worker results.
             _source_bytes: Unused; retained for API compatibility.
+            conn: An existing writer connection to reuse (no commit is issued);
+                when ``None`` a fresh transaction is opened and committed.
 
         Returns:
             The new/replaced row id, or ``None`` when the insert fails.
@@ -1099,42 +1162,61 @@ class IndexOrchestrator:
         content_type = (
             chunk.get("content_type") or classify_content_type(chunk.get("file_path", "")).value
         )
-        with self._db.write_transaction() as conn:
-            try:
-                cursor = conn.execute(
-                    "INSERT OR REPLACE INTO code_chunks "
-                    "(fqn, file_path, line_start, line_end, "
-                    "content, language, is_definition, chunk_type, "
-                    "chunk_node_type, subwords, declared_rules, tokens_checksum, "
-                    "content_type) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
-                    (
-                        chunk.get("fqn", ""),
-                        chunk["file_path"],
-                        chunk["line_start"],
-                        chunk["line_end"],
-                        content,
-                        chunk.get("language", "unknown"),
-                        1 if chunk.get("is_definition", False) else 0,
-                        chunk.get("chunk_type", "ast"),
-                        chunk.get("chunk_node_type"),
-                        subwords,
-                        declared_rules,
-                        tokens_hash,
-                        content_type,
-                    ),
-                )
-                # chunks_fts is kept in sync by the FTS5 maintenance triggers;
-                # a final rebuild_fts() guarantees parity after the batch.
-                return cursor.lastrowid
-            except Exception as exc:
-                logger.warning(
-                    "Failed to insert chunk for %s:%d: %s",
-                    chunk.get("file_path"),
-                    chunk.get("line_start"),
-                    exc,
-                )
-                return None
+        if conn is not None:
+            return self._insert_chunk_row(
+                conn, chunk, content, subwords, declared_rules, tokens_hash, content_type
+            )
+        with self._db.write_transaction() as owned:
+            return self._insert_chunk_row(
+                owned, chunk, content, subwords, declared_rules, tokens_hash, content_type
+            )
+
+    def _insert_chunk_row(
+        self,
+        conn: sqlite3.Connection,
+        chunk: dict[str, Any],
+        content: str,
+        subwords: str,
+        declared_rules: str,
+        tokens_hash: str,
+        content_type: str,
+    ) -> int | None:
+        """Upsert one ``code_chunks`` row over *conn* and return its row id."""
+        try:
+            cursor = conn.execute(
+                "INSERT OR REPLACE INTO code_chunks "
+                "(fqn, file_path, line_start, line_end, "
+                "content, language, is_definition, chunk_type, "
+                "chunk_node_type, subwords, declared_rules, tokens_checksum, "
+                "content_type) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                (
+                    chunk.get("fqn", ""),
+                    chunk["file_path"],
+                    chunk["line_start"],
+                    chunk["line_end"],
+                    content,
+                    chunk.get("language", "unknown"),
+                    1 if chunk.get("is_definition", False) else 0,
+                    chunk.get("chunk_type", "ast"),
+                    chunk.get("chunk_node_type"),
+                    subwords,
+                    declared_rules,
+                    tokens_hash,
+                    content_type,
+                ),
+            )
+            # chunks_fts is kept in sync by the FTS5 maintenance triggers; a
+            # final rebuild_fts() guarantees parity after a full build batch.
+            return cursor.lastrowid
+        except Exception as exc:
+            logger.warning(
+                "Failed to insert chunk for %s:%d: %s",
+                chunk.get("file_path"),
+                chunk.get("line_start"),
+                exc,
+            )
+            return None
 
     def _remove_file(self, file_path: str) -> int:
         """Remove all DB + vector rows for *file_path*; returns rows removed."""
@@ -1313,6 +1395,7 @@ class IndexOrchestrator:
         source_fqn: str | None = None,
         source_range: str | None = None,
         type_only: bool = False,
+        name_rows_cache: dict[str, list[Any]] | None = None,
     ) -> tuple[int | None, str | None]:
         """Resolve *symbol_fqn* against persisted symbols, returning ``(id, tier)``.
 
@@ -1329,6 +1412,9 @@ class IndexOrchestrator:
                 byte-match a symbol may fall back to the unique type sharing
                 its leaf name. Receiver-qualified call targets keep the default
                 ``False`` and never fall through to that fallback.
+            name_rows_cache: Optional per-run cache of ``name -> symbol rows``.
+                Candidate rows depend only on the leaf name, so reusing them
+                avoids re-querying the same common names for every edge.
         """
         if not symbol_fqn:
             return None, None
@@ -1337,13 +1423,18 @@ class IndexOrchestrator:
         call_line = self._declaration_line_from_range(source_range)
         stripped = self._strip_params(symbol_fqn)
 
-        rows = conn.execute(
-            "SELECT s.id, s.fqn, s.conventional_fqn, s.file_path, s.line_start, s.line_end, "
-            "s.kind, p.name AS parent_name "
-            "FROM symbols s LEFT JOIN symbols p ON s.parent_symbol_id = p.id "
-            "WHERE s.name = ? ORDER BY s.id;",
-            (simple,),
-        ).fetchall()
+        if name_rows_cache is not None and simple in name_rows_cache:
+            rows = name_rows_cache[simple]
+        else:
+            rows = conn.execute(
+                "SELECT s.id, s.fqn, s.conventional_fqn, s.file_path, s.line_start, s.line_end, "
+                "s.kind, p.name AS parent_name "
+                "FROM symbols s LEFT JOIN symbols p ON s.parent_symbol_id = p.id "
+                "WHERE s.name = ? ORDER BY s.id;",
+                (simple,),
+            ).fetchall()
+            if name_rows_cache is not None:
+                name_rows_cache[simple] = rows
 
         exact = [r for r in rows if r["fqn"] == symbol_fqn]
         if exact:

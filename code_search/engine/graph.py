@@ -60,6 +60,7 @@ SYMBOLS_INDEXES = [
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_conventional_fqn ON symbols(conventional_fqn);",
     "CREATE INDEX IF NOT EXISTS idx_symbols_file_path ON symbols(file_path);",
     "CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);",
+    "CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);",
     "CREATE INDEX IF NOT EXISTS idx_symbols_parent ON symbols(parent_symbol_id);",
 ]
 
@@ -127,6 +128,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     content_rowid=id
 );
 """
+
+# Names of the FTS5 external-content maintenance triggers, dropped and
+# recreated wholesale when a full build suspends per-row maintenance.
+CHUNKS_FTS_TRIGGER_NAMES = ("chunks_fts_ai", "chunks_fts_ad", "chunks_fts_au")
 
 # FTS5 external-content maintenance triggers: keep chunks_fts in sync with
 # code_chunks on every insert/delete/update so the keyword index cannot drift.
@@ -488,12 +493,18 @@ class GraphDatabase:
     def _create_connection(self) -> sqlite3.Connection:
         """Open a fresh SQLite connection with WAL, foreign keys, and Row factory.
 
+        ``synchronous=NORMAL`` drops the per-commit fsync that WAL's default
+        ``FULL`` setting issues. The database cannot be corrupted by a crash;
+        only the durability of the last in-flight transaction is traded away,
+        which is acceptable for a rebuildable index.
+
         Returns:
             A configured ``sqlite3.Connection`` usable from any thread
             (``check_same_thread=False``).
         """
         conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
         conn.row_factory = sqlite3.Row
         return conn
@@ -618,6 +629,61 @@ class GraphDatabase:
             conn = self._create_connection()
             try:
                 yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+                self._local.conn = None
+
+    @contextmanager
+    def write_connection(self) -> Generator[sqlite3.Connection, Any, None]:
+        """Yield a serialised writer connection that spans many commits.
+
+        Unlike :meth:`write_transaction`, which opens, commits, and closes a
+        fresh connection per call, this opens one connection for the caller's
+        whole batch and leaves commit boundaries to the caller. ``journal_mode``
+        is a persistent database property, so re-issuing it per transaction is
+        pure overhead; reusing one connection avoids it. The connection is
+        committed on clean exit (idempotent when the caller already committed)
+        and rolled back on exception.
+
+        Yields:
+            A connection the caller commits explicitly between batches.
+        """
+        with self._write_lock:
+            conn = self._create_connection()
+            try:
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+                self._local.conn = None
+
+    def set_fts_triggers(self, enabled: bool) -> None:
+        """Enable or disable the ``chunks_fts`` maintenance triggers.
+
+        Full builds suspend the triggers while bulk-inserting ``code_chunks``
+        and rebuild the keyword index wholesale afterwards, so the per-row
+        trigger work is redundant. Incremental indexing relies on the triggers
+        and keeps them enabled. Dropping is idempotent and self-heals on the
+        next :meth:`initialize` (the triggers are recreated by the schema DDL).
+
+        Args:
+            enabled: ``True`` to (re)create the triggers, ``False`` to drop them.
+        """
+        with self._write_lock:
+            conn = self._create_connection()
+            try:
+                for name in CHUNKS_FTS_TRIGGER_NAMES:
+                    conn.execute(f"DROP TRIGGER IF EXISTS {name};")
+                if enabled:
+                    for trigger in CHUNKS_FTS_TRIGGERS:
+                        conn.execute(trigger)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -925,7 +991,9 @@ class EdgeStore:
                 logger.warning("Failed to insert edge: %s", exc)
                 return None
 
-    def insert_edges_batch(self, edges: list[dict[str, Any]]) -> None:
+    def insert_edges_batch(
+        self, edges: list[dict[str, Any]], conn: sqlite3.Connection | None = None
+    ) -> None:
         """Insert many edges at once, guarding against spurious self-edges.
 
         Mirrors ``insert_edge``'s ``source == target`` guard: a
@@ -933,38 +1001,51 @@ class EdgeStore:
         self-resolution (same-name look-alike) and is skipped unless the
         caller explicitly marks it as a genuine recursive self-call
         (``recursive=True``).
+
+        Args:
+            edges: Edge dicts to insert.
+            conn: An existing writer connection to reuse (no commit is issued);
+                when ``None`` a fresh transaction is opened and committed.
         """
-        with self._db.write_transaction() as conn:
-            for edge in edges:
-                try:
-                    src_id = edge["source_symbol_id"]
-                    tgt_id = edge["target_symbol_id"]
-                    if src_id == tgt_id and not edge.get("recursive", False):
-                        logger.debug(
-                            "Skipping spurious self-edge batch (%s -> %s)",
-                            src_id,
-                            tgt_id,
-                        )
-                        continue
-                    conn.execute(
-                        "INSERT OR IGNORE INTO graph_edges "
-                        "(source_symbol_id, target_symbol_id, "
-                        "edge_type, source_range, target_range, resolution_tier, "
-                        "resolved, target_raw) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
-                        (
-                            src_id,
-                            tgt_id,
-                            edge["edge_type"],
-                            edge.get("source_range"),
-                            edge.get("target_range"),
-                            edge.get("resolution_tier"),
-                            0 if edge.get("resolved") == 0 else 1,
-                            edge.get("target_raw"),
-                        ),
+        if conn is not None:
+            self._insert_edges_rows(conn, edges)
+            return
+        with self._db.write_transaction() as owned:
+            self._insert_edges_rows(owned, edges)
+
+    @staticmethod
+    def _insert_edges_rows(conn: sqlite3.Connection, edges: list[dict[str, Any]]) -> None:
+        """Insert *edges* over *conn*, skipping spurious self-edges per row."""
+        for edge in edges:
+            try:
+                src_id = edge["source_symbol_id"]
+                tgt_id = edge["target_symbol_id"]
+                if src_id == tgt_id and not edge.get("recursive", False):
+                    logger.debug(
+                        "Skipping spurious self-edge batch (%s -> %s)",
+                        src_id,
+                        tgt_id,
                     )
-                except Exception as exc:
-                    logger.warning("Failed to insert edge %s: %s", edge.get("edge_type"), exc)
+                    continue
+                conn.execute(
+                    "INSERT OR IGNORE INTO graph_edges "
+                    "(source_symbol_id, target_symbol_id, "
+                    "edge_type, source_range, target_range, resolution_tier, "
+                    "resolved, target_raw) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+                    (
+                        src_id,
+                        tgt_id,
+                        edge["edge_type"],
+                        edge.get("source_range"),
+                        edge.get("target_range"),
+                        edge.get("resolution_tier"),
+                        0 if edge.get("resolved") == 0 else 1,
+                        edge.get("target_raw"),
+                    ),
+                )
+            except Exception as exc:
+                logger.warning("Failed to insert edge %s: %s", edge.get("edge_type"), exc)
 
     @staticmethod
     def _edge_call_line(source_range: str | None) -> int | None:

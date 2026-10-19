@@ -1496,65 +1496,80 @@ class SymbolStore:
                 logger.warning("Failed to insert symbol %s: %s", symbol.get("fqn"), exc)
                 return None
 
-    def insert_symbols_batch(self, symbols: list[dict[str, Any]]) -> dict[str, int]:
+    def insert_symbols_batch(
+        self, symbols: list[dict[str, Any]], conn: sqlite3.Connection | None = None
+    ) -> dict[str, int]:
         """Insert a batch of symbols, returning ``{fqn: db_id}`` map.
 
         Batches parent FQN lookups into a single SELECT with IN clause
         (avoids N+1 query pattern), falling back to per-query for parents
         that are inserted earlier in the same batch.
+
+        Args:
+            symbols: Symbol dicts to insert.
+            conn: An existing writer connection to reuse (no commit is issued);
+                when ``None`` a fresh transaction is opened and committed.
         """
+        if conn is not None:
+            return self._insert_symbols_rows(conn, symbols)
+        with self._db.write_transaction() as owned:
+            return self._insert_symbols_rows(owned, symbols)
+
+    def _insert_symbols_rows(
+        self, conn: sqlite3.Connection, symbols: list[dict[str, Any]]
+    ) -> dict[str, int]:
+        """Insert *symbols* over *conn*, returning the ``{fqn: db_id}`` map."""
         result: dict[str, int] = {}
         parent_fqns: set[str] = {sym["parent_fqn"] for sym in symbols if sym.get("parent_fqn")}
         parent_map: dict[str, int] = {}
-        with self._db.write_transaction() as conn:
-            if parent_fqns:
-                placeholders = ",".join("?" for _ in parent_fqns)
-                rows = conn.execute(
-                    f"SELECT fqn, id FROM symbols WHERE fqn IN ({placeholders});",
-                    list(parent_fqns),
-                ).fetchall()
-                parent_map = {r["fqn"]: r["id"] for r in rows}
+        if parent_fqns:
+            placeholders = ",".join("?" for _ in parent_fqns)
+            rows = conn.execute(
+                f"SELECT fqn, id FROM symbols WHERE fqn IN ({placeholders});",
+                list(parent_fqns),
+            ).fetchall()
+            parent_map = {r["fqn"]: r["id"] for r in rows}
 
-            for sym in symbols:
-                parent_fqn = sym.get("parent_fqn")
-                if parent_fqn and parent_fqn not in parent_map:
-                    if parent_fqn in result:
-                        parent_map[parent_fqn] = result[parent_fqn]
-                    else:
-                        row = conn.execute(
-                            "SELECT id FROM symbols WHERE fqn = ?;", (parent_fqn,)
-                        ).fetchone()
-                        if row:
-                            parent_map[parent_fqn] = row["id"]
-                parent_id = parent_map.get(parent_fqn) if parent_fqn else None
-                try:
-                    cursor = conn.execute(
-                        "INSERT INTO symbols "
-                        "(fqn, name, kind, file_path, line_start, "
-                        "line_end, column_start, column_end, "
-                        "docstring, declared_rules, language, parent_symbol_id, conventional_fqn) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
-                        (
-                            sym["fqn"],
-                            sym["name"],
-                            sym["kind"],
-                            sym["file_path"],
-                            sym["line_start"],
-                            sym["line_end"],
-                            sym["column_start"],
-                            sym["column_end"],
-                            sym.get("docstring"),
-                            sym.get("declared_rules"),
-                            sym.get("language", "unknown"),
-                            parent_id,
-                            sym.get("conventional_fqn"),
-                        ),
-                    )
-                    result[sym["fqn"]] = cast(int, cursor.lastrowid)
-                    if parent_fqn and parent_id is None:
-                        parent_map[parent_fqn] = result[sym["fqn"]]
-                except Exception as exc:
-                    logger.warning("Failed to insert symbol %s: %s", sym.get("fqn"), exc)
+        for sym in symbols:
+            parent_fqn = sym.get("parent_fqn")
+            if parent_fqn and parent_fqn not in parent_map:
+                if parent_fqn in result:
+                    parent_map[parent_fqn] = result[parent_fqn]
+                else:
+                    row = conn.execute(
+                        "SELECT id FROM symbols WHERE fqn = ?;", (parent_fqn,)
+                    ).fetchone()
+                    if row:
+                        parent_map[parent_fqn] = row["id"]
+            parent_id = parent_map.get(parent_fqn) if parent_fqn else None
+            try:
+                cursor = conn.execute(
+                    "INSERT INTO symbols "
+                    "(fqn, name, kind, file_path, line_start, "
+                    "line_end, column_start, column_end, "
+                    "docstring, declared_rules, language, parent_symbol_id, conventional_fqn) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                    (
+                        sym["fqn"],
+                        sym["name"],
+                        sym["kind"],
+                        sym["file_path"],
+                        sym["line_start"],
+                        sym["line_end"],
+                        sym["column_start"],
+                        sym["column_end"],
+                        sym.get("docstring"),
+                        sym.get("declared_rules"),
+                        sym.get("language", "unknown"),
+                        parent_id,
+                        sym.get("conventional_fqn"),
+                    ),
+                )
+                result[sym["fqn"]] = cast(int, cursor.lastrowid)
+                if parent_fqn and parent_id is None:
+                    parent_map[parent_fqn] = result[sym["fqn"]]
+            except Exception as exc:
+                logger.warning("Failed to insert symbol %s: %s", sym.get("fqn"), exc)
         return result
 
     def resolve_name(self, query: str, max_candidates: int | None = None) -> dict[str, Any]:

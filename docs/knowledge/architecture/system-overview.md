@@ -13,7 +13,7 @@ sources:
 
 # Overview
 
-`code-search` is an in-house AI code context engine for air-gapped,
+`code-search` is an AI code context engine for air-gapped,
 CPU-only enterprise environments. It provides hybrid (BM25 + vector)
 semantic code search, symbol/call-graph navigation, and implementation
 discovery over a locally indexed codebase, exposed via a CLI, an MCP
