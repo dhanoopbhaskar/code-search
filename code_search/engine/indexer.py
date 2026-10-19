@@ -10,6 +10,7 @@ import hashlib
 import logging
 import multiprocessing
 import os
+import re
 import sqlite3
 import time
 from collections.abc import Callable
@@ -31,7 +32,15 @@ from code_search.engine.embeddings import (
     get_representation_scheme_version,
     set_representation_scheme_version,
 )
-from code_search.engine.graph import SCHEMA_VERSION, EdgeStore, GraphDatabase, IndexMetadataStore
+from code_search.engine.graph import (
+    SCHEMA_VERSION,
+    DocLinkStore,
+    EdgeStore,
+    GraphDatabase,
+    IndexMetadataStore,
+    ModuleEdgeStore,
+    RationaleStore,
+)
 from code_search.engine.parser import ASTParser
 from code_search.engine.search import identify_subwords
 from code_search.engine.symbols import SymbolExtractor, SymbolStore
@@ -88,6 +97,58 @@ StatusCallback = Callable[[str], None]
 # back to the unique type declaration sharing its leaf name.
 _TYPE_DECLARATION_KINDS = {"class", "interface", "enum", "type_alias"}
 
+#: Comment markers promoted to first-class rationale evidence.
+_RATIONALE_MARKERS = re.compile(r"\b(NOTE|WHY|HACK|TODO|FIXME|ADR|RFC)\b", re.IGNORECASE)
+
+
+#: Lines that look like comments (the marker must appear in comment text).
+_COMMENT_PREFIX = re.compile(r"^\s*(#|//|/\*|\*|--|<!--)")
+
+
+def _extract_rationale(
+    file_path: Path, source_bytes: bytes, symbols: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Extract ``NOTE``/``WHY``/``HACK``/``TODO``/``FIXME``/ADR comments.
+
+    Each matching comment line is attached to the smallest (nearest) enclosing
+    symbol by declaration line range. ``ADR``/``RFC`` references both map to
+    the ``adr`` kind; other markers map to their lowercase marker name.
+    """
+    text = source_bytes.decode("utf-8", errors="replace")
+    rationale: list[dict[str, Any]] = []
+    for index, line in enumerate(text.splitlines()):
+        if not _COMMENT_PREFIX.match(line):
+            continue
+        match = _RATIONALE_MARKERS.search(line)
+        if match is None:
+            continue
+        marker = match.group(1).lower()
+        kind = "adr" if marker in ("adr", "rfc") else marker
+        enclosing: dict[str, Any] | None = None
+        best_span: int | None = None
+        for symbol in symbols:
+            start = symbol.get("line_start")
+            end = symbol.get("line_end")
+            if start is None or end is None or not (start <= index <= end):
+                continue
+            span = end - start
+            if best_span is None or span < best_span:
+                enclosing = symbol
+                best_span = span
+        if enclosing is None:
+            continue
+        rationale.append(
+            {
+                "fqn": enclosing.get("fqn", ""),
+                "file_path": str(file_path),
+                "line_start": index,
+                "line_end": index,
+                "kind": kind,
+                "text": line.strip(),
+            }
+        )
+    return rationale
+
 
 def _process_file_worker(args: tuple[Path, bytes, str, tuple[str, ...] | None]) -> dict[str, Any]:
     """Standalone pickle-safe worker for parallel AST parsing.
@@ -120,6 +181,7 @@ def _process_file_worker(args: tuple[Path, bytes, str, tuple[str, ...] | None]) 
         chunk["content_type"] = classify_content_type(file_path).value
         chunk["fqn"] = _resolve_chunk_fqn(chunk, syms)
         chunk["embed_context"] = derive_enclosing_context(chunk, syms)
+    rationale = _extract_rationale(file_path, source_bytes, syms)
     content_hash = hashlib.sha256(source_bytes).hexdigest()
 
     return {
@@ -127,6 +189,7 @@ def _process_file_worker(args: tuple[Path, bytes, str, tuple[str, ...] | None]) 
         "symbols": syms,
         "edges": edges,
         "chunks": chunks,
+        "rationale": rationale,
         "content_hash": content_hash,
         "parse_failed": parse_failed,
     }
@@ -458,6 +521,9 @@ class IndexOrchestrator:
         self._db = db
         self._metadata = metadata_store
         self._edge_store = edge_store or EdgeStore(db)
+        self._module_store = ModuleEdgeStore(db)
+        self._rationale_store = RationaleStore(db)
+        self._doc_link_store = DocLinkStore(db)
         self._parser = parser
         self._symbol_extractor = symbol_extractor
         self._symbol_store = symbol_store
@@ -590,6 +656,9 @@ class IndexOrchestrator:
                         conn.execute("DELETE FROM code_chunks;")
                         conn.execute("DELETE FROM chunks_fts;")
                         conn.execute("DELETE FROM file_checksums;")
+                        conn.execute("DELETE FROM module_edges;")
+                        conn.execute("DELETE FROM symbol_rationale;")
+                        conn.execute("DELETE FROM doc_links;")
                 except BaseException:
                     self._db.set_fts_triggers(True)
                     raise
@@ -647,8 +716,21 @@ class IndexOrchestrator:
                             "SELECT id FROM code_chunks WHERE file_path = ?;", (orphan,)
                         ).fetchall()
                         self._vector_index.remove_many([r["id"] for r in orphan_chunks])
+                        orphan_chunk_ids = [r["id"] for r in orphan_chunks]
+                        if orphan_chunk_ids:
+                            ph = ",".join("?" for _ in orphan_chunk_ids)
+                            conn.execute(
+                                f"DELETE FROM doc_links WHERE doc_chunk_id IN ({ph}) "
+                                f"OR code_chunk_id IN ({ph});",
+                                orphan_chunk_ids + orphan_chunk_ids,
+                            )
                         conn.execute("DELETE FROM code_chunks WHERE file_path = ?;", (orphan,))
                         conn.execute("DELETE FROM chunks_fts WHERE file_path = ?;", (orphan,))
+                        orphan_relative = self._relative_module_path(orphan, root_path)
+                        conn.execute(
+                            "DELETE FROM module_edges WHERE source_path = ? OR target_path = ?;",
+                            (orphan_relative, orphan_relative),
+                        )
                         orphan_syms = conn.execute(
                             "SELECT id FROM symbols WHERE file_path = ?;", (orphan,)
                         ).fetchall()
@@ -688,9 +770,22 @@ class IndexOrchestrator:
                         old_chunks = conn.execute(
                             "SELECT id FROM code_chunks WHERE file_path = ?;", (fp_str,)
                         ).fetchall()
-                        self._vector_index.remove_many([r["id"] for r in old_chunks])
+                        old_chunk_ids = [r["id"] for r in old_chunks]
+                        self._vector_index.remove_many(old_chunk_ids)
+                        if old_chunk_ids:
+                            ph = ",".join("?" for _ in old_chunk_ids)
+                            conn.execute(
+                                f"DELETE FROM doc_links WHERE doc_chunk_id IN ({ph}) "
+                                f"OR code_chunk_id IN ({ph});",
+                                old_chunk_ids + old_chunk_ids,
+                            )
                         conn.execute("DELETE FROM code_chunks WHERE file_path = ?;", (fp_str,))
                         conn.execute("DELETE FROM chunks_fts WHERE file_path = ?;", (fp_str,))
+                        changed_relative = self._relative_module_path(fp_str, root_path)
+                        conn.execute(
+                            "DELETE FROM module_edges WHERE source_path = ? OR target_path = ?;",
+                            (changed_relative, changed_relative),
+                        )
                         old_symbols = conn.execute(
                             "SELECT id FROM symbols WHERE file_path = ?;", (fp_str,)
                         ).fetchall()
@@ -747,6 +842,7 @@ class IndexOrchestrator:
             total_chunks = 0
             languages: set[str] = set()
             unresolved_edges: list[dict[str, Any]] = []
+            import_edges: list[dict[str, Any]] = []
             has_resource_files = False
 
             persist_total = len(processed_results)
@@ -784,6 +880,9 @@ class IndexOrchestrator:
 
                         resolved_edges = []
                         for edge in edges:
+                            if edge.get("edge_type") == "IMPORTS":
+                                import_edges.append(edge)
+                                continue
                             src_id = id_map.get(edge["source_fqn"])
                             tgt_fqn = edge["target_fqn"]
                             tgt_id = id_map.get(tgt_fqn)
@@ -804,6 +903,15 @@ class IndexOrchestrator:
                                 unresolved_edges.append(edge)
                         if resolved_edges:
                             self._edge_store.insert_edges_batch(resolved_edges, conn=wconn)
+
+                        rationale_rows: list[dict[str, Any]] = []
+                        for item in result.get("rationale", []):
+                            symbol_id = id_map.get(item.get("fqn", ""))
+                            if symbol_id is None:
+                                continue
+                            rationale_rows.append({**item, "symbol_id": symbol_id})
+                        if rationale_rows:
+                            self._rationale_store.insert_batch(rationale_rows, conn=wconn)
 
                         for chunk in chunks:
                             chunk_id = self._insert_chunk(chunk, b"", conn=wconn)
@@ -931,6 +1039,12 @@ class IndexOrchestrator:
                     if batch_edges:
                         self._edge_store.insert_edges_batch(batch_edges)
 
+            if import_edges:
+                try:
+                    self._persist_module_edges(Path(root_path), import_edges)
+                except Exception as exc:
+                    logger.warning("Module edge persistence failed: %s", exc)
+
             # Phase 4 (serial): Batch embedding generation in-process.
             # The parse phase stays process-pooled (CPU-bound); embedding moves
             # to one batched ``model.encode`` call per batch via encode_batch.
@@ -955,6 +1069,7 @@ class IndexOrchestrator:
                                 )
                             )
 
+            doc_embeddings: list[tuple[int, str, Any]] = []
             if embed_args:
                 embed_total = len(embed_args)
                 for start in range(0, embed_total, _EMBED_PROGRESS_BATCH):
@@ -970,6 +1085,11 @@ class IndexOrchestrator:
                                 embedding,
                                 {"file_path": file_path, "fqn": fqn, "content_type": content_type},
                             )
+                            if self._settings.index_doc_links and content_type in (
+                                "docs",
+                                "config",
+                            ):
+                                doc_embeddings.append((chunk_id, file_path, embedding))
                     if progress_callback is not None:
                         progress_callback(
                             "embedding", min(start + len(batch), embed_total), embed_total
@@ -978,6 +1098,13 @@ class IndexOrchestrator:
             if status_callback is not None:
                 status_callback("Saving vectors")
             self._vector_index.save()
+            if doc_embeddings:
+                if status_callback is not None:
+                    status_callback("Linking documentation")
+                try:
+                    self._persist_doc_links(doc_embeddings)
+                except Exception as exc:
+                    logger.warning("Doc-link generation failed: %s", exc)
             duration_s = time.monotonic() - start_time
 
             # Rebuild the keyword index before any post-index deletes. A full
@@ -1366,6 +1493,170 @@ class IndexOrchestrator:
         if row is None or row["line_start"] is None or row["line_end"] is None:
             return False
         return int(row["line_start"]) <= call_line <= int(row["line_end"])
+
+    @staticmethod
+    def _relative_module_path(file_path: str, root_path: Path) -> str:
+        """Return *file_path* relative to *root_path* as a POSIX path."""
+        try:
+            return Path(file_path).resolve().relative_to(root_path.resolve()).as_posix()
+        except (ValueError, OSError):
+            return Path(file_path).as_posix()
+
+    def _persist_doc_links(self, doc_embeddings: list[tuple[int, str, Any]]) -> None:
+        """Create offline links from doc/config chunks to nearby code chunks.
+
+        Two deterministic methods are combined:
+
+        * ``embedding`` — the doc chunk's local embedding is searched against
+          the code-only vector pool, keeping the top-k above the configured
+          similarity floor;
+        * ``symbol_mention`` — backticked or CamelCase identifiers in the doc
+          chunk are resolved to exact indexed symbol names, then to their
+          definition chunk.
+
+        Args:
+            doc_embeddings: ``(chunk_id, file_path, embedding)`` for each
+                docs/config chunk embedded in this build.
+        """
+        if not doc_embeddings:
+            return
+        top_k = max(1, min(self._settings.doc_link_top_k, 10))
+        floor = self._settings.doc_link_min_score
+        cap = max(1, self._settings.doc_link_max_chunks)
+        links: list[dict[str, Any]] = []
+        for chunk_id, file_path, embedding in doc_embeddings[:cap]:
+            for code_chunk_id, score in self._vector_index.search(
+                embedding,
+                top_k=top_k,
+                content="code",
+                exclude_file_paths={file_path},
+            ):
+                if score >= floor:
+                    links.append(
+                        {
+                            "doc_chunk_id": chunk_id,
+                            "code_chunk_id": code_chunk_id,
+                            "score": round(float(score), 4),
+                            "method": "embedding",
+                        }
+                    )
+
+        with self._db.connect() as conn:
+            doc_rows = conn.execute(
+                "SELECT id, content FROM code_chunks "
+                "WHERE content_type IN ('docs','config') ORDER BY id LIMIT ?;",
+                (cap,),
+            ).fetchall()
+            for row in doc_rows:
+                text = str(row["content"] or "")
+                tokens = set(re.findall(r"`([^`]+)`", text))
+                tokens.update(token for token in re.findall(r"\b[A-Z][a-z0-9]+[A-Z]\w*\b", text))
+                for token in sorted(tokens)[:top_k]:
+                    symbol = conn.execute(
+                        "SELECT fqn FROM symbols WHERE name = ? LIMIT 1;", (token,)
+                    ).fetchone()
+                    if symbol is None:
+                        continue
+                    code = conn.execute(
+                        "SELECT id FROM code_chunks WHERE fqn = ? "
+                        "ORDER BY is_definition DESC, id LIMIT 1;",
+                        (symbol["fqn"],),
+                    ).fetchone()
+                    if code is None:
+                        continue
+                    links.append(
+                        {
+                            "doc_chunk_id": int(row["id"]),
+                            "code_chunk_id": int(code["id"]),
+                            "score": 1.0,
+                            "method": "symbol_mention",
+                        }
+                    )
+        if links:
+            self._doc_link_store.insert_batch(links)
+
+    def _persist_module_edges(self, root_path: Path, import_edges: list[dict[str, Any]]) -> None:
+        """Resolve import statements to file paths and persist ``module_edges``.
+
+        Java imports resolve through the symbol catalog's ``conventional_fqn``;
+        Python module imports resolve through a module-name index derived from
+        the indexed file paths. Unresolved imports are retained with
+        ``resolved = 0`` and their raw target so external dependencies stay
+        visible without polluting the resolved graph.
+
+        Args:
+            root_path: Repository root used to make paths index-relative.
+            import_edges: Raw ``IMPORTS`` edges emitted by the extractor.
+        """
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT conventional_fqn, name, kind, file_path FROM symbols;"
+            ).fetchall()
+
+        conventional_files: dict[str, str] = {}
+        type_files_by_name: dict[str, set[str]] = {}
+        python_modules: dict[str, str] = {}
+        all_files: set[str] = set()
+        for row in rows:
+            file_path = str(row["file_path"])
+            rel = self._relative_module_path(file_path, root_path)
+            all_files.add(rel)
+            conventional = row["conventional_fqn"]
+            if conventional and conventional not in conventional_files:
+                conventional_files[str(conventional)] = file_path
+            if (row["kind"] or "") in _TYPE_DECLARATION_KINDS:
+                type_files_by_name.setdefault(str(row["name"] or ""), set()).add(file_path)
+
+        for rel in sorted(all_files):
+            if not rel.endswith(".py"):
+                continue
+            parts = rel[: -len(".py")].split("/")
+            if parts[-1] == "__init__":
+                parts = parts[:-1]
+            for start in range(len(parts)):
+                module = ".".join(parts[start:])
+                if module and module not in python_modules:
+                    python_modules[module] = rel
+
+        def resolve_target(raw: str) -> str | None:
+            """Resolve one raw import target to an index-relative file path."""
+            if raw in conventional_files:
+                return self._relative_module_path(conventional_files[raw], root_path)
+            if raw in python_modules:
+                return python_modules[raw]
+            if "." in raw:
+                parent = raw.rsplit(".", 1)[0]
+                if parent in python_modules:
+                    return python_modules[parent]
+            leaf = raw.rsplit(".", 1)[-1]
+            candidates = type_files_by_name.get(leaf)
+            if candidates and len(candidates) == 1:
+                return self._relative_module_path(next(iter(candidates)), root_path)
+            direct = raw.replace(".", "/") + ".py"
+            if direct in all_files:
+                return direct
+            return None
+
+        module_rows: list[dict[str, Any]] = []
+        for edge in import_edges:
+            source_path = edge.get("source_fqn") or ""
+            if not source_path:
+                continue
+            source_rel = self._relative_module_path(source_path, root_path)
+            raw = str(edge.get("target_fqn") or "")
+            target_path = resolve_target(raw) if raw else None
+            module_rows.append(
+                {
+                    "source_path": source_rel,
+                    "target_path": target_path,
+                    "relation": "IMPORTS",
+                    "target_raw": raw or None,
+                    "resolved": 1 if target_path else 0,
+                    "source_range": edge.get("source_range"),
+                }
+            )
+        if module_rows:
+            self._module_store.insert_edges_batch(module_rows)
 
     def _resolve_cross_file_target(
         self,

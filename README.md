@@ -151,6 +151,72 @@ implementer the command prints the honest `no_static_implementation`
 explanation (a runtime-generated implementation may exist) rather than
 inventing a proxy.
 
+### Query the graph (multi-hop)
+
+`code-search query` seeds a bounded graph traversal from the hybrid search
+ranker and returns a compact neighbourhood with a confidence label on every
+edge (`EXTRACTED`, `INFERRED`, `AMBIGUOUS`, or `UNRESOLVED`).
+
+```bash
+code-search query "how does favoriting an article flow from controller to repository"
+code-search query "who calls ArticleRepository.save" --depth 3 --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--depth N` | `2` | Traversal depth (max: 4) |
+| `--max-nodes N` | `120` | Maximum graph nodes (max: 200) |
+| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`IMPORTS` is opt-in) |
+| `--token-budget N` | `1500` | Soft output budget; the answer is trimmed deterministically |
+| `--json` | — | Structured JSON output |
+
+### Shortest path
+
+```bash
+code-search path "ArticleController.favoriteArticle" "ArticleRepository.save"
+code-search path "ArticleController.favoriteArticle" "ArticleRepository.save" --undirected
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--undirected` | off | Traverse edges in both directions |
+| `--max-hops N` | `6` | Maximum path length (max: 6) |
+| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types |
+| `--json` | — | Structured JSON output |
+
+### Explain a symbol
+
+```bash
+code-search explain "ArticleMutation.favoriteArticle"
+code-search explain "ArticleRepository.save" --depth 2 --relations CALLS,INHERITS,IMPORTS
+```
+
+`explain` returns the symbol's location, signature, incoming and outgoing
+relations, attached rationale comments (`NOTE:`/`WHY:`/`HACK:`/`TODO:`/
+`FIXME:`/ADR), and offline documentation links. Doc links are computed at
+index time only when `CODE_SEARCH_INDEX_DOC_LINKS=true` (default off); they
+use the local embedding model plus deterministic symbol mentions and never make
+a network call.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--depth N` | `1` | Ego-graph depth (max: 4) |
+| `--relations LIST` | `CALLS,INHERITS` | Comma-separated relations to include |
+| `--json` | — | Structured JSON output |
+
+### Impact analysis and architecture map
+
+```bash
+code-search affected --since HEAD~1
+code-search affected src/main/java/io/spring/core/Article.java --depth 3
+code-search map --output graph-report.md
+```
+
+| Command | Flags | Description |
+|---|---|---|
+| `affected` | `--since REF`, `--depth N`, `--json` | Reverse-traverse callers, subtypes, and importers of changed files |
+| `map` | `--output FILE`, `--top N`, `--max-communities N`, `--json` | Write a deterministic architecture report (god nodes, communities, import cycles) |
+
 ### Repeatable queries with the query daemon
 
 Every CLI invocation is a fresh process, and loading the vector model takes
@@ -187,7 +253,7 @@ code-search metrics --format prometheus
 
 ### View audit logs
 
-Every search, symbol lookup, call graph, find_related, and implementation-lookup query is recorded in an append-only SQLite audit log at `.context/audit.db` (rows cannot be updated or deleted). View the most recent entries:
+Every search, symbol lookup, call graph, find_related, implementation-lookup, graph-query, path, explain, impact, and map query is recorded in an append-only SQLite audit log at `.context/audit.db` (rows cannot be updated or deleted). View the most recent entries:
 
 ```bash
 sqlite3 .context/audit.db \
@@ -195,7 +261,7 @@ sqlite3 .context/audit.db \
    FROM audit_log_entries ORDER BY id DESC LIMIT 20;"
 ```
 
-Filter by query type (`search`, `get_symbol_definition`, `get_call_neighbors`, `find_related`, `get_implementations`):
+Filter by query type (`search`, `get_symbol_definition`, `get_call_neighbors`, `find_related`, `get_implementations`, `query_graph`, `shortest_path`, `explain_symbol`, `get_impact`, `map`):
 
 ```bash
 sqlite3 .context/audit.db \

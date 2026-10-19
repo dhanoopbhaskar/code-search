@@ -38,7 +38,19 @@ _DOC_FILES = [
 # cover. ``serve``/``daemon``/``download-models``/``list-languages`` have no
 # documented search-option surface; ``index``/``symbol``/``graph``/``metrics``
 # are documented and stay in scope.
-_DOCUMENTED_SUBCOMMANDS = ("index", "search", "symbol", "graph", "implementations", "metrics")
+_DOCUMENTED_SUBCOMMANDS = (
+    "index",
+    "search",
+    "symbol",
+    "graph",
+    "implementations",
+    "query",
+    "path",
+    "explain",
+    "affected",
+    "map",
+    "metrics",
+)
 
 
 def _parser_choices() -> dict[str, argparse.ArgumentParser]:

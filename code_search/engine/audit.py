@@ -16,13 +16,30 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-AUDIT_TABLE_DDL = """
+#: Query types accepted by the append-only audit log.
+AUDIT_QUERY_TYPES = frozenset(
+    {
+        "search",
+        "get_symbol_definition",
+        "get_call_neighbors",
+        "find_related",
+        "get_implementations",
+        "query_graph",
+        "shortest_path",
+        "explain_symbol",
+        "get_impact",
+        "map",
+    }
+)
+
+_AUDIT_CHECK_TYPES = ",".join(f"'{query_type}'" for query_type in sorted(AUDIT_QUERY_TYPES))
+
+AUDIT_TABLE_DDL = f"""
 CREATE TABLE IF NOT EXISTS audit_log_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
     query_type TEXT NOT NULL
-        CHECK(query_type IN ('search','get_symbol_definition','get_call_neighbors',
-                             'find_related','get_implementations')),
+        CHECK(query_type IN ({_AUDIT_CHECK_TYPES})),
     query_summary TEXT,
     result_count INTEGER NOT NULL DEFAULT 0,
     duration_ms INTEGER NOT NULL DEFAULT 0,
@@ -112,7 +129,7 @@ class AuditDatabase:
     @staticmethod
     def _migrate_query_type_check(conn: sqlite3.Connection) -> None:
         """Rebuild a pre-existing audit table whose ``query_type`` CHECK predates
-        the ``get_implementations`` query type, preserving every appended row.
+        the current set of query types, preserving every appended row.
 
         The audit schedule is append-only, so the table is renamed, recreated
         with the widened CHECK, repopulated verbatim, and the old copy dropped;
@@ -121,7 +138,10 @@ class AuditDatabase:
         row = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'audit_log_entries';"
         ).fetchone()
-        if row is None or "get_implementations" in (row["sql"] or ""):
+        if row is None:
+            return
+        existing_sql = row["sql"] or ""
+        if all(f"'{query_type}'" in existing_sql for query_type in AUDIT_QUERY_TYPES):
             return
         conn.execute("DROP TRIGGER IF EXISTS trg_audit_append_only_update;")
         conn.execute("DROP TRIGGER IF EXISTS trg_audit_append_only_delete;")
@@ -179,9 +199,9 @@ class AuditDatabase:
         """Append an audit entry, returning its row ID.
 
         Args:
-            query_type: One of ``"search"``, ``"get_symbol_definition"``,
-                ``"get_call_neighbors"``, ``"find_related"``, or
-                ``"get_implementations"``.
+            query_type: One of the :data:`AUDIT_QUERY_TYPES` values
+                (``search``, symbol/graph lookups, graph-query/path/explain,
+                impact, and ``map``).
             query_summary: Optional human-readable summary of the query.
             result_count: Number of results returned to the caller.
             duration_ms: Query processing time in milliseconds.
@@ -193,15 +213,10 @@ class AuditDatabase:
         Raises:
             ValueError: If *query_type* is not one of the allowed values.
         """
-        valid_types = {
-            "search",
-            "get_symbol_definition",
-            "get_call_neighbors",
-            "find_related",
-            "get_implementations",
-        }
-        if query_type not in valid_types:
-            raise ValueError(f"Invalid query_type: {query_type}. Must be one of {valid_types}")
+        if query_type not in AUDIT_QUERY_TYPES:
+            raise ValueError(
+                f"Invalid query_type: {query_type}. Must be one of {AUDIT_QUERY_TYPES}"
+            )
         timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         with self.write_transaction() as conn:
             cursor = conn.execute(

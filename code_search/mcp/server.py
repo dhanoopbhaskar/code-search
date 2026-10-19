@@ -1,11 +1,15 @@
 """Model Context Protocol (MCP) server — exposes code-search via stdio transport.
 
-Registers five tools:
+Registers nine tools:
   - ``search`` — hybrid keyword + semantic search.
   - ``get_symbol_definition`` — look up a symbol by FQN.
   - ``get_call_neighbors`` — traverse callers/callees.
   - ``find_related`` — find semantically similar chunks near a given line.
   - ``get_implementations`` — interface method/type → static implementers.
+  - ``query_graph`` — answer a multi-hop question by graph traversal.
+  - ``shortest_path`` — shortest path between two symbols.
+  - ``explain_symbol`` — symbol metadata, relations, rationale, and doc links.
+  - ``get_impact`` — symbols impacted by changed files.
 """
 
 from __future__ import annotations
@@ -612,8 +616,10 @@ class MCPServer:
     """Serves the code-search engine to MCP clients over stdio.
 
     Wraps a component registry (see ``_initialize_components``) and registers
-    the five MCP tools: ``search``, ``get_symbol_definition``,
-    ``get_call_neighbors``, ``get_implementations``, and ``find_related``.
+    the MCP tools: ``search``, ``get_symbol_definition``,
+    ``get_call_neighbors``, ``get_implementations``, ``find_related``,
+    ``query_graph``, ``shortest_path``, ``explain_symbol``, and
+    ``get_impact``.
     """
 
     def __init__(self, components: dict[str, Any]) -> None:
@@ -641,11 +647,12 @@ class MCPServer:
         self._tools[name] = handler
 
     def build_fastmcp(self) -> Any:
-        """Build the FastMCP server with the four MCP tools registered.
+        """Build the FastMCP server with every MCP tool registered.
 
-        Registers ``search``, ``get_symbol_definition``, ``get_call_neighbors``,
-        and ``find_related`` so a test or embedder can exercise the real tool
-        bodies without starting the stdio loop.
+        Registers the search, definition, call-neighbour, implementation,
+        related-search, graph-query, path, explain, and impact tools so a test
+        or embedder can exercise the real tool bodies without starting the
+        stdio loop.
 
         Returns:
             A ready-to-serve ``fastmcp.FastMCP`` instance.
@@ -1024,6 +1031,177 @@ class MCPServer:
                     mc.record_query(duration_ms)
                 data["query_time_ms"] = duration_ms
                 return json.dumps(data, default=str)
+
+            def _graph_service() -> Any:
+                """Build a graph-query service over the shared components."""
+                from code_search.engine.graph_query import GraphQueryService
+
+                return GraphQueryService(
+                    comps["db"],
+                    comps["symbol_store"],
+                    comps["edge_store"],
+                    comps["search"],
+                    settings,
+                )
+
+            def _edge_types(value: str) -> set[str]:
+                """Parse a comma-separated edge-type argument."""
+                return {part.strip().upper() for part in value.split(",") if part.strip()}
+
+            @mcp.tool()
+            async def query_graph(
+                question: str,
+                depth: int = 2,
+                max_nodes: int = 120,
+                token_budget: int = 1500,
+                edge_types: str = "CALLS,INHERITS",
+            ) -> str:
+                """Answer a multi-hop question by traversing the code graph.
+
+                Seeds come from the existing hybrid search ranker; the answer is
+                a bounded neighbourhood rendered as compact structured JSON with
+                a confidence label on every edge.
+
+                Args:
+                    question: Natural-language or identifier question.
+                    depth: Traversal depth (clipped to 4).
+                    max_nodes: Maximum returned nodes (clipped to 200).
+                    token_budget: Soft output token budget.
+                    edge_types: Comma-separated edge types to traverse.
+
+                Returns:
+                    A JSON payload with seeds, nodes, edges, truncation, stats,
+                    and freshness.
+                """
+                start = time.monotonic()
+                answer = _graph_service().query(
+                    question,
+                    depth=depth,
+                    max_nodes=max_nodes,
+                    edge_types=_edge_types(edge_types),
+                    token_budget=token_budget,
+                )
+                payload = answer.as_dict()
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="query_graph",
+                    query_summary=question[: settings.query_summary_length],
+                    result_count=len(answer.nodes),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
+
+            @mcp.tool()
+            async def shortest_path(
+                source: str,
+                target: str,
+                undirected: bool = False,
+                max_hops: int = 6,
+            ) -> str:
+                """Return the shortest graph path between two symbols.
+
+                Ambiguous endpoints are refused with ranked candidates rather
+                than guessed.
+
+                Args:
+                    source: Source symbol reference.
+                    target: Target symbol reference.
+                    undirected: Traverse edges in both directions.
+                    max_hops: Maximum path length (clipped to 6).
+
+                Returns:
+                    A JSON payload with source, target, hops, outcome, and
+                    freshness.
+                """
+                start = time.monotonic()
+                answer = _graph_service().shortest_path(
+                    source, target, undirected=undirected, max_hops=max_hops
+                )
+                payload = answer.as_dict()
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="shortest_path",
+                    query_summary=f"{source} -> {target}"[: settings.query_summary_length],
+                    result_count=len(answer.hops),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
+
+            @mcp.tool()
+            async def explain_symbol(
+                symbol: str,
+                depth: int = 1,
+                relations: str = "CALLS,INHERITS",
+            ) -> str:
+                """Explain a symbol: metadata, incoming/outgoing relations,
+                rationale comments, and linked documentation.
+
+                Args:
+                    symbol: Symbol reference.
+                    depth: Ego-graph depth (clipped to 4).
+                    relations: Comma-separated relations to include.
+
+                Returns:
+                    A JSON payload with the symbol, nodes, edges, rationale,
+                    doc links, and freshness.
+                """
+                start = time.monotonic()
+                answer = _graph_service().explain(
+                    symbol, depth=depth, relations=_edge_types(relations)
+                )
+                payload = answer.as_dict()
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="explain_symbol",
+                    query_summary=symbol[: settings.query_summary_length],
+                    result_count=1 if answer.symbol else 0,
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
+
+            @mcp.tool()
+            async def get_impact(changed_paths: list[str], depth: int = 3) -> str:
+                """Return symbols impacted by a set of changed files.
+
+                Args:
+                    changed_paths: Absolute or index-relative changed paths.
+                    depth: Reverse traversal depth (clipped to 4).
+
+                Returns:
+                    A JSON payload with changed paths, impacted symbols grouped
+                    by file, and a summary.
+                """
+                start = time.monotonic()
+                answer = _graph_service().impact(changed_paths, depth=depth)
+                payload = answer.as_dict()
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="get_impact",
+                    query_summary=", ".join(changed_paths)[: settings.query_summary_length],
+                    result_count=len(answer.impacted),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
 
             @mcp.tool()
             async def find_related(

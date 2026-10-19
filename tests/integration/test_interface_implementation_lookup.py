@@ -301,7 +301,7 @@ def test_stale_index_forces_reindex_and_repopulates_inherits(impl_comps: dict[st
         edges = conn.execute(
             "SELECT COUNT(*) AS c FROM graph_edges WHERE edge_type = 'INHERITS';"
         ).fetchone()["c"]
-    assert int(version) == 13
+    assert int(version) == 14
     assert edges > 0
 
 

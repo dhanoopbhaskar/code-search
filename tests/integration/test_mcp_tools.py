@@ -809,13 +809,15 @@ async def test_mcp_find_related_relative_missing_keeps_error(
 @pytest.mark.integration
 @pytest.mark.slow
 @pytest.mark.asyncio
-async def test_mcp_all_five_tools_work(mcp_components: dict[str, Any], indexed_repo: Path) -> None:
+async def test_mcp_all_tools_work(mcp_components: dict[str, Any], indexed_repo: Path) -> None:
     mcp_components["orchestrator"].index_codebase(
         root_path=indexed_repo,
         force=True,
         verbose=False,
     )
-    mcp = _build_mcp_server(mcp_components)
+    from code_search.mcp.server import MCPServer
+
+    mcp = MCPServer(mcp_components).build_fastmcp()
 
     tools = await mcp.list_tools()
     tool_names = {t.name for t in tools}
@@ -825,6 +827,10 @@ async def test_mcp_all_five_tools_work(mcp_components: dict[str, Any], indexed_r
         "get_call_neighbors",
         "find_related",
         "get_implementations",
+        "query_graph",
+        "shortest_path",
+        "explain_symbol",
+        "get_impact",
     }
 
     for tool_name, args in [
@@ -833,6 +839,13 @@ async def test_mcp_all_five_tools_work(mcp_components: dict[str, Any], indexed_r
         ("get_call_neighbors", {"symbol": "AuthHandler.login"}),
         ("get_implementations", {"symbol": "AuthHandler.login"}),
         ("find_related", {"file_path": str(indexed_repo / "src" / "utils.py"), "line_number": 1}),
+        ("query_graph", {"question": "how does login validate a token", "depth": 2}),
+        ("shortest_path", {"source": "AuthHandler.login", "target": "validate_token"}),
+        ("explain_symbol", {"symbol": "AuthHandler.login"}),
+        (
+            "get_impact",
+            {"changed_paths": [str(indexed_repo / "src" / "auth.py")], "depth": 2},
+        ),
     ]:
         result = await mcp.call_tool(tool_name, args)
         assert not result.is_error, f"Tool {tool_name} failed"

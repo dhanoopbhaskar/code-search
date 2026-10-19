@@ -28,7 +28,7 @@ from code_search.engine.symbol_resolution import (
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 SYMBOLS_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS symbols (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -184,6 +184,96 @@ CREATE TABLE IF NOT EXISTS file_checksums (
 );
 """
 
+# File/module-level edge table. Kept separate from ``graph_edges`` so imports
+# between files can be represented without a symbol node or a schema CHECK
+# rebuild. ``source_path``/``target_path`` are index-root-relative POSIX paths.
+MODULE_EDGES_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS module_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_path TEXT NOT NULL,
+    target_path TEXT,
+    relation TEXT NOT NULL,
+    target_raw TEXT,
+    resolved INTEGER NOT NULL DEFAULT 1,
+    source_range TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+"""
+
+MODULE_EDGES_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_module_edges_source ON module_edges(source_path);",
+    "CREATE INDEX IF NOT EXISTS idx_module_edges_target ON module_edges(target_path);",
+    "CREATE INDEX IF NOT EXISTS idx_module_edges_relation ON module_edges(relation);",
+    # Expression index: UNIQUE would not deduplicate NULL target paths.
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_module_edges_unique "
+    "ON module_edges(source_path, relation, COALESCE(target_path, ''), "
+    "COALESCE(target_raw, ''));",
+]
+
+# Rationale comments (NOTE/WHY/HACK/TODO/FIXME/ADR) linked to the nearest
+# enclosing symbol. Rationale is searchable through ``rationale_fts`` and
+# surfaced by ``explain_symbol``.
+SYMBOL_RATIONALE_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS symbol_rationale (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    file_path TEXT NOT NULL,
+    line_start INTEGER NOT NULL,
+    line_end INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    text TEXT NOT NULL,
+    UNIQUE(symbol_id, file_path, line_start, kind)
+);
+"""
+
+SYMBOL_RATIONALE_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_rationale_symbol ON symbol_rationale(symbol_id);",
+    "CREATE INDEX IF NOT EXISTS idx_rationale_file ON symbol_rationale(file_path);",
+]
+
+RATIONALE_FTS_DDL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS rationale_fts USING fts5(
+    text,
+    content=symbol_rationale,
+    content_rowid=id
+);
+"""
+
+RATIONALE_FTS_TRIGGERS = [
+    """
+    CREATE TRIGGER IF NOT EXISTS rationale_fts_ai AFTER INSERT ON symbol_rationale BEGIN
+        INSERT INTO rationale_fts(rowid, text) VALUES (new.id, new.text);
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS rationale_fts_ad AFTER DELETE ON symbol_rationale BEGIN
+        INSERT INTO rationale_fts(rationale_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS rationale_fts_au AFTER UPDATE ON symbol_rationale BEGIN
+        INSERT INTO rationale_fts(rationale_fts, rowid, text) VALUES ('delete', old.id, old.text);
+        INSERT INTO rationale_fts(rowid, text) VALUES (new.id, new.text);
+    END;
+    """,
+]
+
+# Offline links between documentation/config chunks and code chunks, produced
+# at index time from local embeddings and deterministic symbol mentions.
+DOC_LINKS_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS doc_links (
+    doc_chunk_id INTEGER NOT NULL,
+    code_chunk_id INTEGER NOT NULL,
+    score REAL NOT NULL,
+    method TEXT NOT NULL,
+    PRIMARY KEY (doc_chunk_id, code_chunk_id)
+);
+"""
+
+DOC_LINKS_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_doc_links_code ON doc_links(code_chunk_id);",
+]
+
 ALL_DDLS = [
     SYMBOLS_TABLE_DDL,
     *SYMBOLS_INDEXES,
@@ -194,6 +284,14 @@ ALL_DDLS = [
     CHUNKS_FTS_DDL,
     *CHUNKS_FTS_TRIGGERS,
     FILE_CHECKSUMS_TABLE_DDL,
+    MODULE_EDGES_TABLE_DDL,
+    *MODULE_EDGES_INDEXES,
+    SYMBOL_RATIONALE_TABLE_DDL,
+    *SYMBOL_RATIONALE_INDEXES,
+    RATIONALE_FTS_DDL,
+    *RATIONALE_FTS_TRIGGERS,
+    DOC_LINKS_TABLE_DDL,
+    *DOC_LINKS_INDEXES,
     METADATA_TABLE_DDL,
 ]
 
@@ -593,6 +691,8 @@ class GraphDatabase:
                             self._migrate_v10(conn)
                         if existing_version <= 11:
                             self._migrate_v11(conn)
+                        if existing_version <= 13:
+                            self._migrate_v14(conn)
                         conn.execute(
                             "UPDATE index_metadata SET value = ? WHERE key = 'index_version';",
                             (str(SCHEMA_VERSION),),
@@ -796,6 +896,17 @@ class GraphDatabase:
         for trigger in CHUNKS_FTS_TRIGGERS:
             conn.execute(trigger)
         conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild');")
+
+    def _migrate_v14(self, conn: sqlite3.Connection) -> None:
+        """Migrate a v13 (or older) database to schema v14.
+
+        Adds the additive graph-fidelity tables (``module_edges``,
+        ``symbol_rationale`` with its FTS index, and ``doc_links``). The base
+        DDL is idempotent and has already run, so this migration only rebuilds
+        the rationale FTS index so an existing database starts at parity.
+        """
+        logger.info("Migrating schema <= v13 -> v14")
+        conn.execute("INSERT INTO rationale_fts(rationale_fts) VALUES('rebuild');")
 
     @staticmethod
     def _column_nullable(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -1627,6 +1738,267 @@ class EdgeStore:
             }
             for r in rows
         ]
+
+
+class ModuleEdgeStore:
+    """CRUD and traversal for file/module-level ``module_edges`` rows."""
+
+    def __init__(self, db: GraphDatabase) -> None:
+        """Initialize the module-edge store over *db*."""
+        self._db = db
+
+    def insert_edges_batch(
+        self, edges: list[dict[str, Any]], conn: sqlite3.Connection | None = None
+    ) -> None:
+        """Insert module edges, ignoring duplicates.
+
+        Args:
+            edges: Rows carrying ``source_path``, ``target_path``, ``relation``,
+                optional ``target_raw``/``source_range``, and ``resolved``.
+            conn: An existing writer connection to reuse; when ``None`` a fresh
+                transaction is opened and committed.
+        """
+        if conn is not None:
+            self._insert_rows(conn, edges)
+            return
+        with self._db.write_transaction() as owned:
+            self._insert_rows(owned, edges)
+
+    @staticmethod
+    def _insert_rows(conn: sqlite3.Connection, edges: list[dict[str, Any]]) -> None:
+        """Insert *edges* over *conn* without committing."""
+        for edge in edges:
+            conn.execute(
+                "INSERT OR IGNORE INTO module_edges "
+                "(source_path, target_path, relation, target_raw, resolved, source_range) "
+                "VALUES (?, ?, ?, ?, ?, ?);",
+                (
+                    edge["source_path"],
+                    edge.get("target_path"),
+                    edge["relation"],
+                    edge.get("target_raw"),
+                    0 if edge.get("resolved") == 0 else 1,
+                    edge.get("source_range"),
+                ),
+            )
+
+    def get_importers(self, path: str, max_depth: int = 1) -> list[dict[str, Any]]:
+        """Return files that import *path* (reverse ``IMPORTS`` traversal).
+
+        Args:
+            path: Index-root-relative POSIX path of the imported file.
+            max_depth: Maximum reverse hops (clipped to 5).
+
+        Returns:
+            Rows ``{path, depth}`` ordered by depth then path, deduplicated at
+            the shallowest depth.
+        """
+        return self._traverse_kind(path, "importers", max_depth)
+
+    def get_imports(self, path: str, max_depth: int = 1) -> list[dict[str, Any]]:
+        """Return files imported by *path* (forward ``IMPORTS`` traversal)."""
+        return self._traverse_kind(path, "imports", max_depth)
+
+    def _traverse_kind(self, path: str, kind: str, max_depth: int) -> list[dict[str, Any]]:
+        """Run the forward or reverse ``IMPORTS`` recursive CTE."""
+        depth = max(1, min(max_depth, 5))
+        if kind == "importers":
+            sql = (
+                "WITH RECURSIVE walk AS ( "
+                "SELECT e.source_path AS path, 1 AS depth, "
+                "'|' || e.source_path || '|' AS trail "
+                "FROM module_edges e "
+                "WHERE e.target_path = ? AND e.relation = 'IMPORTS' "
+                "UNION ALL "
+                "SELECT e.source_path, w.depth + 1, w.trail || e.source_path || '|' "
+                "FROM module_edges e JOIN walk w ON e.target_path = w.path "
+                "WHERE e.relation = 'IMPORTS' AND w.depth < ? "
+                "AND instr(w.trail, '|' || e.source_path || '|') = 0 "
+                ") "
+                "SELECT path, MIN(depth) AS depth FROM walk "
+                "GROUP BY path ORDER BY depth, path;"
+            )
+        else:
+            sql = (
+                "WITH RECURSIVE walk AS ( "
+                "SELECT e.target_path AS path, 1 AS depth, "
+                "'|' || e.target_path || '|' AS trail "
+                "FROM module_edges e "
+                "WHERE e.source_path = ? AND e.relation = 'IMPORTS' "
+                "AND e.target_path IS NOT NULL AND e.resolved = 1 "
+                "UNION ALL "
+                "SELECT e.target_path, w.depth + 1, w.trail || e.target_path || '|' "
+                "FROM module_edges e JOIN walk w ON e.source_path = w.path "
+                "WHERE e.relation = 'IMPORTS' AND w.depth < ? "
+                "AND e.target_path IS NOT NULL AND e.resolved = 1 "
+                "AND instr(w.trail, '|' || e.target_path || '|') = 0 "
+                ") "
+                "SELECT path, MIN(depth) AS depth FROM walk "
+                "GROUP BY path ORDER BY depth, path;"
+            )
+        with self._db.connect() as conn:
+            rows = conn.execute(sql, (path, depth)).fetchall()
+        return [{"path": r["path"], "depth": r["depth"]} for r in rows]
+
+    def all_edges(self, relation: str = "IMPORTS") -> list[dict[str, Any]]:
+        """Return every module edge of *relation*, ordered deterministically."""
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT source_path, target_path, relation, target_raw, resolved "
+                "FROM module_edges WHERE relation = ? "
+                "ORDER BY source_path, target_path, target_raw;",
+                (relation,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def resolution_stats(self, relation: str = "IMPORTS") -> dict[str, int]:
+        """Return ``{total, resolved, unresolved}`` counts for *relation*."""
+        with self._db.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total, COALESCE(SUM(resolved), 0) AS resolved "
+                "FROM module_edges WHERE relation = ?;",
+                (relation,),
+            ).fetchone()
+        total = int(row["total"]) if row else 0
+        resolved = int(row["resolved"]) if row else 0
+        return {
+            "total": total,
+            "resolved": resolved,
+            "unresolved": total - resolved,
+        }
+
+
+class RationaleStore:
+    """CRUD for rationale comments linked to symbols."""
+
+    def __init__(self, db: GraphDatabase) -> None:
+        """Initialize the rationale store over *db*."""
+        self._db = db
+
+    def insert_batch(
+        self, rows: list[dict[str, Any]], conn: sqlite3.Connection | None = None
+    ) -> None:
+        """Insert rationale rows, ignoring duplicates.
+
+        Each row carries ``symbol_id``, ``file_path``, ``line_start``,
+        ``line_end``, ``kind``, and ``text``.
+        """
+        if conn is not None:
+            self._insert_rows(conn, rows)
+            return
+        with self._db.write_transaction() as owned:
+            self._insert_rows(owned, rows)
+
+    @staticmethod
+    def _insert_rows(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+        for row in rows:
+            conn.execute(
+                "INSERT OR IGNORE INTO symbol_rationale "
+                "(symbol_id, file_path, line_start, line_end, kind, text) "
+                "VALUES (?, ?, ?, ?, ?, ?);",
+                (
+                    row["symbol_id"],
+                    row["file_path"],
+                    row["line_start"],
+                    row["line_end"],
+                    row["kind"],
+                    row["text"],
+                ),
+            )
+
+    def for_symbol(self, symbol_id: int, limit: int = 20) -> list[dict[str, Any]]:
+        """Return rationale rows attached to *symbol_id*, ordered by line."""
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT kind, file_path, line_start, line_end, text "
+                "FROM symbol_rationale WHERE symbol_id = ? "
+                "ORDER BY line_start, id LIMIT ?;",
+                (symbol_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def for_file(self, file_path: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Return rationale rows in *file_path*, ordered by line."""
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT kind, file_path, line_start, line_end, text "
+                "FROM symbol_rationale WHERE file_path = ? "
+                "ORDER BY line_start, id LIMIT ?;",
+                (file_path, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Full-text search rationale comments via ``rationale_fts``."""
+        match = " OR ".join(term for term in query.split() if term)
+        if not match:
+            return []
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT r.kind, r.file_path, r.line_start, r.line_end, r.text "
+                "FROM rationale_fts f JOIN symbol_rationale r ON r.id = f.rowid "
+                "WHERE rationale_fts MATCH ? LIMIT ?;",
+                (match, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+class DocLinkStore:
+    """CRUD for offline documentation/config-to-code links."""
+
+    def __init__(self, db: GraphDatabase) -> None:
+        """Initialize the doc-link store over *db*."""
+        self._db = db
+
+    def insert_batch(
+        self, rows: list[dict[str, Any]], conn: sqlite3.Connection | None = None
+    ) -> None:
+        """Insert doc links, ignoring duplicates."""
+        if conn is not None:
+            self._insert_rows(conn, rows)
+            return
+        with self._db.write_transaction() as owned:
+            self._insert_rows(owned, rows)
+
+    @staticmethod
+    def _insert_rows(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+        for row in rows:
+            conn.execute(
+                "INSERT OR IGNORE INTO doc_links "
+                "(doc_chunk_id, code_chunk_id, score, method) VALUES (?, ?, ?, ?);",
+                (
+                    row["doc_chunk_id"],
+                    row["code_chunk_id"],
+                    row["score"],
+                    row["method"],
+                ),
+            )
+
+    def for_code_chunk(self, code_chunk_id: int, limit: int = 5) -> list[dict[str, Any]]:
+        """Return linked documentation for *code_chunk_id*, best score first."""
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT l.doc_chunk_id, l.score, l.method, c.file_path, c.line_start, "
+                "c.line_end, c.content "
+                "FROM doc_links l JOIN code_chunks c ON c.id = l.doc_chunk_id "
+                "WHERE l.code_chunk_id = ? ORDER BY l.score DESC, l.doc_chunk_id LIMIT ?;",
+                (code_chunk_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def for_file(self, file_path: str, limit: int = 10) -> list[dict[str, Any]]:
+        """Return links whose code chunk lives in *file_path*."""
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT l.doc_chunk_id, l.code_chunk_id, l.score, l.method, "
+                "d.file_path AS doc_file_path, d.line_start AS doc_line_start "
+                "FROM doc_links l "
+                "JOIN code_chunks c ON c.id = l.code_chunk_id "
+                "JOIN code_chunks d ON d.id = l.doc_chunk_id "
+                "WHERE c.file_path = ? ORDER BY l.score DESC, l.doc_chunk_id LIMIT ?;",
+                (file_path, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
 
 class IndexMetadataStore:
