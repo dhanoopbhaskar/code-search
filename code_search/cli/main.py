@@ -12,6 +12,7 @@ import logging
 import os
 import signal
 import sys
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
@@ -290,8 +291,24 @@ def cmd_index(args: argparse.Namespace) -> int:
 
     status = comps["metadata"].get_index_status()
     if status == "indexing":
-        logger.error("Indexing already in progress")
-        return 2
+        # A killed or crashed run can leave this status behind. Treat it as
+        # stale when no live lock exists (or the lock itself is stale) so the
+        # next invocation can recover instead of being blocked forever.
+        lock_path = context_dir / "index.lock"
+        lock_is_live = False
+        if lock_path.exists():
+            try:
+                lock_age = time.time() - lock_path.stat().st_mtime
+                lock_is_live = lock_age <= comps["settings"].lock_timeout
+            except OSError:
+                lock_is_live = False
+        if lock_is_live:
+            logger.error("Indexing already in progress")
+            return 2
+        logger.warning("Recovering from an interrupted index run")
+        with suppress(OSError):
+            lock_path.unlink()
+        comps["metadata"].set_index_status("stale")
 
     if args.prune_stale:
         include_resources = args.include_resources
@@ -356,6 +373,8 @@ def cmd_index(args: argparse.Namespace) -> int:
         return 2
     except Exception as exc:
         logger.error("Index failed: %s", exc)
+        with suppress(Exception):
+            comps["metadata"].set_index_status("stale")
         return 1
 
 

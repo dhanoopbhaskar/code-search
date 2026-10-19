@@ -635,3 +635,34 @@ def test_full_index_uses_one_writer_and_suspends_fts_triggers(tmp_path: Path) ->
     assert {"chunks_fts_ai", "chunks_fts_ad", "chunks_fts_au"} <= names
     assert code_count > 0
     assert hits, "keyword index was not rebuilt after the suspended-trigger full build"
+
+
+def test_full_index_recovers_from_interrupted_fts_state(tmp_path: Path) -> None:
+    """A full build repairs a keyword index left stale by an interrupted run."""
+    repo = tmp_path / "recover_repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src" / "mod.py").write_text("def f(): return 1\n")
+    comps = _build_components(repo)
+    orch = comps["orchestrator"]
+    db = comps["db"]
+
+    orch.index_codebase(root_path=repo, force=True, verbose=False)
+
+    # Simulate a run killed after suspending maintenance but before the
+    # keyword rebuild: code_chunks still has rows, chunks_fts does not.
+    db.set_fts_triggers(False)
+    with db.write_transaction() as conn:
+        conn.execute("DELETE FROM chunks_fts;")
+    db.set_fts_triggers(True)
+
+    orch.index_codebase(root_path=repo, force=True, verbose=False)
+
+    with db.connect() as conn:
+        code_count = conn.execute("SELECT COUNT(*) AS n FROM code_chunks;").fetchone()["n"]
+        fts_count = conn.execute("SELECT COUNT(*) AS n FROM chunks_fts;").fetchone()["n"]
+        hits = conn.execute(
+            "SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH 'return';"
+        ).fetchall()
+    assert code_count > 0
+    assert code_count == fts_count
+    assert hits

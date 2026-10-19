@@ -570,12 +570,23 @@ class IndexOrchestrator:
 
             if not incremental:
                 self._vector_index.clear()
-                with self._db.write_transaction() as conn:
-                    conn.execute("DELETE FROM graph_edges;")
-                    conn.execute("DELETE FROM symbols;")
-                    conn.execute("DELETE FROM code_chunks;")
-                    conn.execute("DELETE FROM chunks_fts;")
-                    conn.execute("DELETE FROM file_checksums;")
+                # Suspend the FTS triggers before clearing code_chunks. A
+                # previous run that was interrupted after suspending them can
+                # leave chunks_fts out of sync with code_chunks; the delete
+                # triggers would then try to remove rows from an inconsistent
+                # external-content index and fail with "database disk image is
+                # malformed", making the index unrecoverable.
+                self._db.set_fts_triggers(False)
+                try:
+                    with self._db.write_transaction() as conn:
+                        conn.execute("DELETE FROM graph_edges;")
+                        conn.execute("DELETE FROM symbols;")
+                        conn.execute("DELETE FROM code_chunks;")
+                        conn.execute("DELETE FROM chunks_fts;")
+                        conn.execute("DELETE FROM file_checksums;")
+                except BaseException:
+                    self._db.set_fts_triggers(True)
+                    raise
 
             files_to_process: list[Path] = list(all_files)
             orphaned_paths: list[str] = []
@@ -650,6 +661,8 @@ class IndexOrchestrator:
             total = len(files_to_process)
             if total == 0 and not orphaned_paths:
                 self._vector_index.save()
+                if not incremental:
+                    self._db.set_fts_triggers(True)
                 fts_count = self._ensure_fts_parity()
                 self._metadata.set_fts_chunks(fts_count)
                 self._metadata.set_index_status("ready")
@@ -732,8 +745,6 @@ class IndexOrchestrator:
 
             persist_total = len(processed_results)
             suspend_fts = not incremental
-            if suspend_fts:
-                self._db.set_fts_triggers(False)
             try:
                 with self._db.write_connection() as wconn:
                     for done, result in enumerate(processed_results, start=1):
