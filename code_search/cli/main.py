@@ -75,7 +75,7 @@ def _initialize_components(context_dir: Path) -> dict[str, Any]:
 
     metadata_store = IndexMetadataStore(db)
     edge_store = EdgeStore(db)
-    parser = ASTParser()
+    parser = ASTParser(settings=settings)
     symbol_extractor = SymbolExtractor(parser)
     symbol_store = SymbolStore(db, settings)
 
