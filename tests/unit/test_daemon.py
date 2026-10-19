@@ -102,6 +102,73 @@ def test_missing_socket_reports_not_running(tmp_path: Path) -> None:
     }
 
 
+def test_is_serving_true_for_live_listener(monkeypatch, tmp_path: Path) -> None:
+    """A bound daemon that answers ``ping`` is reported as serving."""
+    daemon, thread, _comps = _start_daemon_with_fake(monkeypatch, tmp_path)
+    try:
+        assert DaemonClient.is_serving(default_socket_path(tmp_path), timeout=2.0) is True
+    finally:
+        daemon.stop()
+        thread.join(timeout=5)
+
+
+def test_is_serving_false_for_stale_socket(tmp_path: Path) -> None:
+    """A socket file with no listener is not reported as serving."""
+    socket_path = default_socket_path(tmp_path)
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    socket_path.write_text("")
+
+    assert DaemonClient.is_serving(socket_path, timeout=0.1) is False
+
+
+def test_ensure_resident_service_keeps_starting_daemon(monkeypatch, tmp_path: Path) -> None:
+    """A live pid plus a socket that starts answering is not unlinked."""
+    import argparse
+
+    from code_search.cli import main as cli_main
+    from code_search.engine.daemon import write_pidfile
+
+    socket_path = default_socket_path(tmp_path)
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    socket_path.write_text("")  # bound but not ready yet
+    write_pidfile(tmp_path)  # records this (live) process
+
+    probes = {"count": 0}
+
+    def fake_is_serving(_path: Path, timeout: float = 0.1) -> bool:
+        probes["count"] += 1
+        return probes["count"] > 1
+
+    monkeypatch.setattr(
+        "code_search.engine.daemon.DaemonClient.is_serving",
+        staticmethod(fake_is_serving),
+    )
+    spawned: list[object] = []
+    monkeypatch.setattr("subprocess.Popen", lambda *args, **_: spawned.append(args))
+
+    args = argparse.Namespace(context_dir=str(tmp_path))
+
+    assert cli_main._ensure_resident_service(args) is True
+    assert socket_path.exists(), "a starting daemon must not be unlinked"
+    assert spawned == []
+
+
+def test_ensure_resident_service_removes_stale_socket(tmp_path: Path) -> None:
+    """A socket without a live pid is removed so the next call can start cleanly."""
+    import argparse
+
+    from code_search.cli import main as cli_main
+
+    socket_path = default_socket_path(tmp_path)
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    socket_path.write_text("")
+
+    args = argparse.Namespace(context_dir=str(tmp_path))
+
+    assert cli_main._ensure_resident_service(args) is False
+    assert not socket_path.exists()
+
+
 def test_daemon_forwarded_search_surfaces_scope_signal_and_override(
     monkeypatch: Any, tmp_path: Path, capsys: Any
 ) -> None:

@@ -6,6 +6,9 @@ from code_search.engine.confidence import (
     AMBIGUOUS_CAP,
     BOOST_CONTROLLER_ENDPOINT,
     BOOST_DEFINITION,
+    FLOOR_CONCEPT_DEFINITION,
+    FLOOR_CONFIG_CONTENT,
+    FLOOR_ENDPOINT_DEFINITION,
     FLOOR_EXACT_FQN,
     FLOOR_EXACT_FQN_DEFINITION,
     FLOOR_EXACT_SYMBOL,
@@ -35,6 +38,10 @@ def _evidence(
     content: str = "class Widget {}",
     file_path: str = "src/Widget.java",
     query_identifier: str | None = None,
+    concept_ratio: float = 0.0,
+    endpoint_match: bool = False,
+    config_intent: bool = False,
+    content_type: str = "code",
 ) -> MatchEvidence:
     return MatchEvidence(
         query_subwords=query_subwords if query_subwords is not None else ["widget"],
@@ -45,6 +52,10 @@ def _evidence(
         content=content,
         file_path=file_path,
         query_identifier=query_identifier,
+        concept_ratio=concept_ratio,
+        endpoint_match=endpoint_match,
+        config_intent=config_intent,
+        content_type=content_type,
     )
 
 
@@ -217,3 +228,30 @@ def test_definition_outranks_reference_at_equal_overlap() -> None:
     reference = _evidence(is_definition=False)
     context = QueryMatchContext()
     assert calibrated_confidence(definition, context) > calibrated_confidence(reference, context)
+
+
+def test_concept_definition_floor() -> None:
+    """A definition whose symbol name carries the query concepts is at least medium."""
+    evidence = _evidence(
+        is_definition=True,
+        concept_ratio=0.6,
+        vector_score=0.1,
+        query_subwords=["follow"],
+        chunk_subwords=["follow"],
+    )
+    score = calibrated_confidence(evidence, QueryMatchContext())
+    assert score >= FLOOR_CONCEPT_DEFINITION
+
+
+def test_endpoint_definition_floor() -> None:
+    """An annotated endpoint for the query's HTTP verb is at least medium."""
+    evidence = _evidence(is_definition=True, endpoint_match=True, vector_score=0.0)
+    score = calibrated_confidence(evidence, QueryMatchContext())
+    assert score == FLOOR_ENDPOINT_DEFINITION
+
+
+def test_config_content_floor_under_config_intent() -> None:
+    """A config chunk under a config-scent query is at least medium."""
+    evidence = _evidence(config_intent=True, content_type="config", vector_score=0.0)
+    score = calibrated_confidence(evidence, QueryMatchContext())
+    assert score == FLOOR_CONFIG_CONTENT

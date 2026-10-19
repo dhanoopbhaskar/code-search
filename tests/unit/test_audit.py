@@ -122,6 +122,49 @@ def test_write_entry_defaults(audit_db: AuditDatabase) -> None:
     assert entries[0]["query_summary"] is None
 
 
+def test_concurrent_writers_append_every_row(audit_db: AuditDatabase) -> None:
+    """Serialised writes from many threads never lose rows or lock the DB."""
+    import threading
+
+    writers = 8
+    per_writer = 25
+    errors: list[BaseException] = []
+
+    def write(worker: int) -> None:
+        try:
+            for index in range(per_writer):
+                audit_db.write_entry(
+                    query_type="search",
+                    query_summary=f"worker-{worker}-{index}",
+                )
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=write, args=(worker,)) for worker in range(writers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert errors == [], errors
+    assert audit_db.count_entries() == writers * per_writer
+
+
+def test_initialize_after_writes_reopens_write_connection(audit_db: AuditDatabase) -> None:
+    """``initialize`` closes the cached writer and later writes use a fresh one."""
+    audit_db.write_entry(query_type="search", query_summary="before")
+    previous = audit_db._write_conn
+    assert previous is not None
+
+    audit_db.initialize()
+
+    assert audit_db._write_conn is None
+    audit_db.write_entry(query_type="search", query_summary="after")
+    assert audit_db._write_conn is not None
+    assert audit_db._write_conn is not previous
+    assert audit_db.count_entries() == 2
+
+
 def test_append_only_no_update(audit_db: AuditDatabase) -> None:
     entry_id = audit_db.write_entry(query_type="search")
     assert entry_id is not None

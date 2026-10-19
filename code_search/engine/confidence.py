@@ -22,6 +22,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from code_search.engine.query_terms import collapse_terms
+
 # --- Match-type evidence constants -------------------------------------------------
 # These are module-level and documented so the calibration is auditable and the
 # score is reproducible; the values are exercised directly by the unit tests.
@@ -45,6 +47,15 @@ AMBIGUOUS_CAP = 0.69
 SEMANTIC_ONLY_FLOOR = 0.50
 #: Minimum vector cosine for the semantic-only floor to apply.
 SEMANTIC_ONLY_VECTOR_MIN = 0.50
+#: Floor for a definition whose symbol name carries most of the query's
+#: distinctive concept terms (the concept-symbol pass).
+FLOOR_CONCEPT_DEFINITION = 0.65
+#: Minimum IDF-weighted concept ratio for the concept floor to apply.
+CONCEPT_FLOOR_RATIO = 0.50
+#: Floor for a definition annotated for the query's HTTP endpoint verb.
+FLOOR_ENDPOINT_DEFINITION = 0.65
+#: Floor for a configuration chunk under a configuration-scent query.
+FLOOR_CONFIG_CONTENT = 0.55
 
 _QUALIFIED_SEGMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _CONTROLLER_ANNOTATION_RE = re.compile(r"@(?:Get|Post|Put|Delete|Patch|Request)Mapping\b")
@@ -212,6 +223,12 @@ class MatchEvidence:
         content: The chunk source.
         file_path: The containing file path (controller filename fallback).
         query_identifier: Optional copy of the query's bare identifier.
+    concept_ratio: IDF-weighted fraction of the query's distinctive terms
+        found in the symbol name (``0.0`` when the concept pass did not fire).
+    endpoint_match: Whether the chunk is an annotated endpoint definition for
+        the query's HTTP verb.
+    config_intent: Whether the query asks for configuration content.
+    content_type: The chunk's content axis (``code``/``config``/``docs``).
     """
 
     query_subwords: list[str]
@@ -222,6 +239,10 @@ class MatchEvidence:
     content: str
     file_path: str
     query_identifier: str | None = None
+    concept_ratio: float = 0.0
+    endpoint_match: bool = False
+    config_intent: bool = False
+    content_type: str = "code"
 
 
 def subword_overlap(query_subwords: list[str], chunk_subwords: list[str]) -> float:
@@ -241,9 +262,28 @@ def subword_overlap(query_subwords: list[str], chunk_subwords: list[str]) -> flo
     if not query_subwords:
         return 0.0
     chunk = set(chunk_subwords)
-    distinct = set(query_subwords)
-    hits = sum(1 for w in distinct if w in chunk)
+    distinct = collapse_terms(dict.fromkeys(query_subwords))
+    hits = sum(1 for w in distinct if _concept_present(w, chunk))
     return hits / len(distinct)
+
+
+def _concept_present(query_term: str, chunk_terms: set[str]) -> bool:
+    """Return whether *query_term* matches a chunk sub-word.
+
+    Exact matches win; otherwise a shared prefix of at least four characters
+    bridges inflectional variants (``favorit``/``favorite``) and identifier
+    extensions (``valid``/``validate``) without matching unrelated short words.
+    """
+    if query_term in chunk_terms:
+        return True
+    if len(query_term) < 4:
+        return False
+    return any(
+        len(term) >= 4
+        and (term.startswith(query_term) or query_term.startswith(term))
+        and abs(len(term) - len(query_term)) <= 3
+        for term in chunk_terms
+    )
 
 
 def confidence_score(
@@ -312,6 +352,17 @@ def calibrated_confidence(evidence: MatchEvidence, context: QueryMatchContext) -
 
     if overlap == 0.0 and vector_score >= SEMANTIC_ONLY_VECTOR_MIN:
         score = max(score, SEMANTIC_ONLY_FLOOR)
+
+    # Match-type evidence from the ranking passes: a definition whose own
+    # symbol name states the query's concepts, an annotated endpoint for the
+    # query's HTTP verb, or a config chunk under a config-scent query is a
+    # real match even when the dense arm's cosine is modest.
+    if evidence.is_definition and evidence.concept_ratio >= CONCEPT_FLOOR_RATIO:
+        score = max(score, FLOOR_CONCEPT_DEFINITION)
+    if evidence.is_definition and evidence.endpoint_match:
+        score = max(score, FLOOR_ENDPOINT_DEFINITION)
+    if evidence.config_intent and evidence.content_type == "config":
+        score = max(score, FLOOR_CONFIG_CONTENT)
 
     return _clamp_unit(score)
 

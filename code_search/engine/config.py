@@ -598,7 +598,7 @@ class Settings:
         default_factory=lambda: float(os.environ.get("CODE_SEARCH_CONFIDENCE_HIGH_FLOOR", "0.7"))
     )
     confidence_medium_floor: float = field(
-        default_factory=lambda: float(os.environ.get("CODE_SEARCH_CONFIDENCE_MEDIUM_FLOOR", "0.45"))
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_CONFIDENCE_MEDIUM_FLOOR", "0.40"))
     )
 
     # --- File-level coherence  ---
@@ -648,6 +648,13 @@ class Settings:
     )
 
     # --- Indexing ---
+    # Respect repository .gitignore files during discovery and stale pruning so
+    # generated artifacts (build output, tool caches) never enter the index.
+    respect_gitignore: bool = field(
+        default_factory=lambda: (
+            os.environ.get("CODE_SEARCH_RESPECT_GITIGNORE", "true").lower() in ("true", "1", "yes")
+        )
+    )
     lock_timeout: float = field(
         default_factory=lambda: float(os.environ.get("CODE_SEARCH_LOCK_TIMEOUT", "30.0"))
     )
@@ -748,6 +755,60 @@ class Settings:
     )
     embedded_symbol_boost: float = field(
         default_factory=lambda: float(os.environ.get("CODE_SEARCH_EMBEDDED_SYMBOL_BOOST", "0.5"))
+    )
+    # Concept-symbol boost: natural-language queries ("how does following a
+    # user work") should lift definitions whose symbol name carries the
+    # query's distinctive terms, even when the lexical arm's common terms
+    # (``user``) dominate. The boost is bounded by the pool maximum and scaled
+    # by the IDF-weighted fraction of distinctive query terms found in the
+    # FQN, so a generic class-name match stays small.
+    concept_symbol_boost: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_CONCEPT_SYMBOL_BOOST", "0.7"))
+    )
+    concept_symbol_cap: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_CONCEPT_SYMBOL_CAP", "0.6"))
+    )
+    # A matched concept that appears in the method/function *member* name
+    # (``ProfileService.follow`` for "following", ``isTokenValid`` for "JWT
+    # valid") is a much stronger signal than a class-name match. The anchor
+    # boost is allowed to exceed the ordinary cap so the named answer can
+    # overtake a frequent domain word's fused lead.
+    concept_symbol_anchor_boost: float = field(
+        default_factory=lambda: float(
+            os.environ.get("CODE_SEARCH_CONCEPT_SYMBOL_ANCHOR_BOOST", "1.8")
+        )
+    )
+    concept_symbol_anchor_cap: float = field(
+        default_factory=lambda: float(
+            os.environ.get("CODE_SEARCH_CONCEPT_SYMBOL_ANCHOR_CAP", "2.0")
+        )
+    )
+    concept_symbol_min_ratio: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_CONCEPT_SYMBOL_MIN_RATIO", "0.2"))
+    )
+    concept_symbol_common_df: float = field(
+        default_factory=lambda: float(
+            os.environ.get("CODE_SEARCH_CONCEPT_SYMBOL_COMMON_DF", "0.25")
+        )
+    )
+    concept_symbol_terms_max: int = field(
+        default_factory=lambda: int(os.environ.get("CODE_SEARCH_CONCEPT_SYMBOL_TERMS_MAX", "6"))
+    )
+    # A term matched by more than this share of the current candidate pool is
+    # not a discriminator and is excluded from the concept-symbol boost.
+    concept_symbol_pool_max_share: float = field(
+        default_factory=lambda: float(
+            os.environ.get("CODE_SEARCH_CONCEPT_SYMBOL_POOL_MAX_SHARE", "0.35")
+        )
+    )
+    # Endpoint-intent boost: a query that names an HTTP method and an endpoint
+    # ("POST endpoint that creates an article") should lift the annotated
+    # controller method, not a model field whose name happens to share a term.
+    endpoint_intent_boost: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_ENDPOINT_INTENT_BOOST", "2.0"))
+    )
+    endpoint_intent_cap: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_ENDPOINT_INTENT_CAP", "1.5"))
     )
     dts_penalty: float = field(
         default_factory=lambda: float(os.environ.get("CODE_SEARCH_DTS_PENALTY", "0.7"))
@@ -1055,6 +1116,15 @@ class Settings:
             ("stem_match_boost", 0.0, float("inf")),
             ("nl_boost_max", 0.0, float("inf")),
             ("embedded_symbol_boost", 0.0, float("inf")),
+            ("concept_symbol_boost", 0.0, float("inf")),
+            ("concept_symbol_cap", 0.0, float("inf")),
+            ("concept_symbol_anchor_boost", 0.0, float("inf")),
+            ("concept_symbol_anchor_cap", 0.0, float("inf")),
+            ("concept_symbol_min_ratio", 0.0, 1.0),
+            ("concept_symbol_common_df", 0.0, 1.0),
+            ("concept_symbol_pool_max_share", 0.0, 1.0),
+            ("endpoint_intent_boost", 0.0, float("inf")),
+            ("endpoint_intent_cap", 0.0, float("inf")),
             ("definition_owner_boost", 0.0, float("inf")),
             ("declared_rule_boost", 0.0, float("inf")),
             ("model_file_penalty", _MIN_PENALTY, 1.0),

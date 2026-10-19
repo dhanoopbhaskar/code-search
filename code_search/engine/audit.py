@@ -11,7 +11,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -73,7 +73,11 @@ class AuditDatabase:
     """Append-only SQLite database for query audit trail.
 
     Enforces immutability via SQLite triggers: once written, entries cannot
-    be updated or deleted.
+    be updated or deleted. Connections run in WAL mode with
+    ``synchronous=NORMAL``: a committed entry survives a process crash, but a
+    power loss during the WAL flush may drop the most recent commits. The
+    trail is append-only telemetry, and skipping the per-commit fsync keeps
+    audit writes off the query-response latency path.
     """
 
     def __init__(self, db_path: Path) -> None:
@@ -85,6 +89,7 @@ class AuditDatabase:
         self._db_path = db_path
         self._local = threading.local()
         self._write_lock = threading.Lock()
+        self._write_conn: sqlite3.Connection | None = None
 
     @property
     def _conn(self) -> sqlite3.Connection:
@@ -102,6 +107,10 @@ class AuditDatabase:
         """
         conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL;")
+        # WAL + NORMAL skips the per-commit fsync while preserving crash
+        # consistency; the audit trail is append-only and a query response
+        # must not wait on disk durability.
+        conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
         conn.row_factory = sqlite3.Row
         return conn
@@ -125,6 +134,10 @@ class AuditDatabase:
             finally:
                 conn.close()
             self._local.conn = None
+            with suppress(Exception):
+                if self._write_conn is not None:
+                    self._write_conn.close()
+            self._write_conn = None
 
     @staticmethod
     def _migrate_query_type_check(conn: sqlite3.Connection) -> None:
@@ -177,16 +190,15 @@ class AuditDatabase:
             A live :class:`sqlite3.Connection` for a single write transaction.
         """
         with self._write_lock:
-            conn = self._create_connection()
+            if self._write_conn is None:
+                self._write_conn = self._create_connection()
+            conn = self._write_conn
             try:
                 yield conn
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
-            finally:
-                conn.close()
-                self._local.conn = None
 
     def write_entry(
         self,

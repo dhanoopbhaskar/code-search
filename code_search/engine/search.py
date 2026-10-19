@@ -52,6 +52,7 @@ from code_search.engine.match_boost import (
     strongest_tier,
 )
 from code_search.engine.paths import normalize_indexed_path
+from code_search.engine.query_terms import collapse_terms, morphological_variants
 from code_search.engine.reranking import demote_test_file_candidates
 from code_search.engine.scent_detection import (
     compute_scent_adjustment,
@@ -75,6 +76,46 @@ _FILENAME_LOOKUP_MAX_TERMS = 2
 
 # The exhaustive matching-semantics vocabulary (literal/all_tokens/any_token).
 VALID_MATCHING_SEMANTICS = ("literal", "all_tokens", "any_token")
+
+#: HTTP verb words and the Spring mapping annotation each one implies.
+_HTTP_METHOD_ANNOTATIONS: dict[str, str] = {
+    "get": "GetMapping",
+    "post": "PostMapping",
+    "put": "PutMapping",
+    "patch": "PatchMapping",
+    "delete": "DeleteMapping",
+}
+
+#: Words that mark an HTTP-verb query as an endpoint question.
+_ENDPOINT_WORDS: frozenset[str] = frozenset(
+    {
+        "endpoint",
+        "endpoints",
+        "route",
+        "routes",
+        "api",
+        "apis",
+        "request",
+        "requests",
+        "controller",
+        "controllers",
+        "mapping",
+        "handler",
+        "http",
+    }
+)
+
+#: Chunk node types that represent callable members (not classes or fields).
+_METHOD_NODE_TYPES: frozenset[str] = frozenset(
+    {
+        "function_definition",
+        "method_definition",
+        "method_declaration",
+        "constructor_declaration",
+        "arrow_function",
+    }
+)
+
 
 # Common English stopwords filtered out when CODE_SEARCH_FILTER_STOPWORDS is enabled.
 STOPWORDS: set[str] = {
@@ -384,7 +425,9 @@ def identify_subwords(text: str) -> list[str]:
     return [part.lower() for part in parts if part]
 
 
-def decompose_query(query: str, filter_stopwords: bool = False) -> list[str]:
+def decompose_query(
+    query: str, filter_stopwords: bool = False, *, expand_variants: bool = True
+) -> list[str]:
     """Decompose query tokens into deduplicated sub-words.
 
     ``token valid`` -> ``["token", "valid"]``; ``isTokenValid`` ->
@@ -392,14 +435,22 @@ def decompose_query(query: str, filter_stopwords: bool = False) -> list[str]:
     so camelCase boundaries survive (``findAnyMethodThatDoesNotExist`` ->
     ``["find", "any", "method", "that", "does", "not", "exist"]``).
     Order-preserving.
+
+    With *expand_variants* (the default), each sub-word is followed by its
+    conservative morphological base forms (``following`` -> ``follow``,
+    ``favoriting`` -> ``favorit``/``favorite``) so the lexical and confidence
+    layers can bridge natural-language inflection. Callers that count terms
+    rather than match them pass ``expand_variants=False``.
     """
     words: list[str] = []
     for token in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", query):
         if filter_stopwords and token.lower() in STOPWORDS:
             continue
         for w in identify_subwords(token):
-            if w and w not in words:
-                words.append(w)
+            variants = morphological_variants(w) if expand_variants else [w]
+            for variant in variants:
+                if variant and variant not in words:
+                    words.append(variant)
     return words
 
 
@@ -602,7 +653,7 @@ class BM25Search:
         code term, is present in the corpus (verbatim or as a ≥3-char prefix),
         and carries IDF at or above ``idf_floor``.
         """
-        subwords = decompose_query(query, self._filter_stopwords)
+        subwords = decompose_query(query, self._filter_stopwords, expand_variants=False)
         if not subwords:
             return []
         total, token_df, prefix_df, corpus = self._corpus_subword_stats()
@@ -639,7 +690,7 @@ class BM25Search:
         """
         return [
             w
-            for w in decompose_query(query, self._filter_stopwords)
+            for w in decompose_query(query, self._filter_stopwords, expand_variants=False)
             if len(w) >= 3 and w not in STOPWORDS and w not in NON_INFORMATIVE_CODE_TERMS
         ]
 
@@ -648,7 +699,11 @@ class BM25Search:
         query_tokens = tokenize(query, self._filter_stopwords)
         if not query_tokens:
             return ""
-        subwords = decompose_query(query, self._filter_stopwords)
+        # Retrieval stays on the exact sub-words: expanding morphological
+        # variants here would change which chunks enter the lexical candidate
+        # pool for neutral queries. Variant expansion is applied by the
+        # concept/confidence layers, which re-rank an unchanged pool.
+        subwords = decompose_query(query, self._filter_stopwords, expand_variants=False)
         exact_terms = self._corpus_subword_terms()
         subword_query = build_fts_query(subwords, exact_terms)
         content_query = " OR ".join(query_tokens)
@@ -873,6 +928,26 @@ def _symbol_short_name(fqn: str) -> str:
     if "::" in fqn:
         return fqn.rsplit("::", 1)[-1]
     return fqn.rsplit(".", 1)[-1]
+
+
+def _concept_matches(term: str, subwords: set[str], min_prefix: int = 4) -> bool:
+    """Return whether *term* matches a symbol sub-word exactly or by prefix.
+
+    Shared prefixes must also be close in length (at most three extra
+    characters), so inflectional pairs (``favorit``/``favorite``,
+    ``follow``/``following``) match while semantically unrelated extensions
+    (``access``/``accessible``) do not.
+    """
+    if term in subwords:
+        return True
+    if len(term) < min_prefix:
+        return False
+    return any(
+        len(word) >= min_prefix
+        and (word.startswith(term) or term.startswith(word))
+        and abs(len(word) - len(term)) <= 3
+        for word in subwords
+    )
 
 
 def _rescue_tier(file_stem: str, symbol_stem: str) -> str | None:
@@ -1525,6 +1600,15 @@ class HybridSearch:
             match_boost_evidence.update(
                 self._match_boost_pass(name_context, exact_filename_ids, fused)
             )
+        # Concept-symbol pass: lift definitions whose symbol name carries the
+        # query's distinctive (rare) terms. Applied after the exact match boost
+        # so the pool maximum it scales against already includes those boosts.
+        concept_evidence: dict[int, dict[str, Any]] = {}
+        if symbol_name is None and not defer_vector and self._settings.concept_symbol_boost > 0.0:
+            concept_evidence = self._symbol_concept_pass(query, fused, content)
+        endpoint_evidence: dict[int, dict[str, Any]] = {}
+        if symbol_name is None and not defer_vector and self._settings.endpoint_intent_boost > 0.0:
+            endpoint_evidence = self._endpoint_intent_pass(query, fused, content)
         # Ranked relevance floor: the top fused score must reach
         # ``ranked_score_floor`` or the no-match envelope (with the rescue
         # tiers tried) is returned instead of a fake top-10. A score exactly
@@ -1705,6 +1789,13 @@ class HybridSearch:
                         1.0 + self._settings.config_inject_primary_extra
                     )
             weighted_score = score * weight * content_weight
+            # Non-test queries should not have a keyword-dense test class
+            # displace the production answer. The pre-fusion demotion is
+            # intentionally mild (test files are still useful candidates);
+            # this post-fusion pass applies the same penalty again, and the
+            # factor is skipped when the query asks for tests.
+            if is_test and not self._test_intent(query):
+                weighted_score = weighted_score * self._settings.noise_penalty
             if chunk_id in exact_ids:
                 weighted_score = weighted_score + self._settings.exact_match_boost
             if fused_vector_score > 0.0 and rank_class == "code":
@@ -1726,6 +1817,7 @@ class HybridSearch:
                 if not reconciled:
                     weighted_score = weighted_score * infra_weight
 
+            concept_evidence_for_chunk = concept_evidence.get(chunk_id) or {}
             conf = calibrated_confidence(
                 MatchEvidence(
                     query_subwords=query_subwords,
@@ -1736,6 +1828,10 @@ class HybridSearch:
                     content=chunk["content"],
                     file_path=chunk["file_path"],
                     query_identifier=match_context.query_identifier,
+                    concept_ratio=float(concept_evidence_for_chunk.get("ratio", 0.0)),
+                    endpoint_match=chunk_id in endpoint_evidence,
+                    config_intent=config_scent,
+                    content_type=chunk_content_type,
                 ),
                 match_context,
             )
@@ -1791,6 +1887,8 @@ class HybridSearch:
                     "embedded_symbol": embedded_evidence.get(chunk_id),
                     "declared_rule": rule_evidence.get(chunk_id),
                     "match_boost": match_boost_evidence.get(chunk_id),
+                    "symbol_concept": concept_evidence.get(chunk_id),
+                    "endpoint_intent": endpoint_evidence.get(chunk_id),
                     "path_class": path_class_of(chunk["file_path"]),
                     "reranked": False,
                 }
@@ -2316,6 +2414,377 @@ class HybridSearch:
                 embedded[chunk_id] = {"symbol": name, "boost": boost}
             rescue.update(self._stem_rescue(fused, name))
         return embedded, rescue
+
+    def _endpoint_intent_pass(
+        self, query: str, fused: dict[int, float], content: str
+    ) -> dict[int, dict[str, Any]]:
+        """Boost controller methods annotated for the query's HTTP verb.
+
+        A query such as ``"POST endpoint that creates an article"`` names an
+        HTTP verb and an endpoint, but the verb lives in an annotation rather
+        than the symbol name. The pass finds definitions whose content or
+        declared rules carry the matching mapping annotation, scores them by
+        how many query terms appear in the FQN/file path, and lifts the best
+        matching endpoint above model/plumbing chunks.
+
+        Args:
+            query: The raw user query.
+            fused: The fused score pool (mutated in place).
+            content: The active content scope.
+
+        Returns:
+            Per-chunk evidence for ``score_sources.endpoint_intent``.
+        """
+        tokens = {word.lower() for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", query)}
+        annotations = [
+            annotation for verb, annotation in _HTTP_METHOD_ANNOTATIONS.items() if verb in tokens
+        ]
+        if not annotations or not (tokens & _ENDPOINT_WORDS):
+            return {}
+        terms = [
+            term
+            for term in collapse_terms(decompose_query(query, filter_stopwords=True))
+            if len(term) >= 3 and term not in STOPWORDS and term not in NON_INFORMATIVE_CODE_TERMS
+        ]
+        if not terms:
+            return {}
+        pool_max = self._pool_max(fused)
+        if pool_max <= 0.0:
+            return {}
+        annotation = annotations[0]
+        if content == "all":
+            content_clause = ""
+        elif content == DEFAULT_CONTENT_SCOPE:
+            content_clause = " AND content_type != 'docs'"
+        else:
+            content_clause = " AND content_type = ?"
+        params: list[Any] = [f"%{annotation}%", f"%{annotation}%"]
+        if content not in ("all", DEFAULT_CONTENT_SCOPE):
+            params.append(content)
+        try:
+            with self._db.connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, fqn, file_path, chunk_node_type FROM code_chunks "
+                    "WHERE is_definition = 1 "
+                    "AND (content LIKE ? OR declared_rules LIKE ?)"
+                    + content_clause
+                    + " LIMIT 200;",
+                    params,
+                ).fetchall()
+        except Exception as exc:
+            logger.warning("Endpoint-intent lookup failed: %s", exc)
+            return {}
+        evidence: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            if row["chunk_node_type"] not in _METHOD_NODE_TYPES:
+                continue
+            fqn_terms = set(
+                decompose_query((row["fqn"] or "").rsplit("::", 1)[-1], expand_variants=False)
+            )
+            path_terms = set(decompose_query(row["file_path"] or "", expand_variants=False))
+            matched = [
+                term
+                for term in terms
+                if _concept_matches(term, fqn_terms) or _concept_matches(term, path_terms)
+            ]
+            if not matched:
+                continue
+            ratio = len(matched) / len(terms)
+            test_factor = 1.0
+            if _is_test_file(row["file_path"]):
+                test_factor = 1.0 if self._test_intent(query) else self._settings.noise_penalty
+            boost = min(
+                pool_max * self._settings.endpoint_intent_boost * (0.5 + 0.5 * ratio) * test_factor,
+                self._settings.endpoint_intent_cap * pool_max,
+            )
+            chunk_id = int(row["id"])
+            fused[chunk_id] = fused.get(chunk_id, 0.0) + boost
+            evidence[chunk_id] = {
+                "annotation": annotation,
+                "terms": matched,
+                "boost": boost,
+            }
+        return evidence
+
+    def _leader_matches_concept(self, fused: dict[int, float], terms: list[str]) -> bool:
+        """Return whether the pool leader's name already carries a concept term.
+
+        The concept-symbol pass exists to rescue concepts the fused ranking
+        missed. When the current best candidate already states one of the
+        distinctive terms in its FQN, the concept has surfaced: applying the
+        boost would only displace other evidence (redacted config/test chunks,
+        for example) without improving the answer. Skipping in that case also
+        keeps the result set independent of whether the dense arm happened to
+        be warm when the query ran.
+
+        Args:
+            fused: The fused score pool.
+            terms: The distinctive concept terms that matched some FQN.
+
+        Returns:
+            ``True`` when the highest-scoring pooled chunk's FQN matches any
+            of *terms*.
+        """
+        if not fused or not terms:
+            return False
+        leader = max(fused, key=lambda cid: fused[cid])
+        try:
+            with self._db.connect() as conn:
+                row = conn.execute(
+                    "SELECT fqn FROM code_chunks WHERE id = ?;", (leader,)
+                ).fetchone()
+        except Exception as exc:
+            logger.debug("Concept leader lookup failed: %s", exc)
+            return False
+        if row is None:
+            return False
+        leader_terms = set(
+            decompose_query((row["fqn"] or "").rsplit("::", 1)[-1], expand_variants=False)
+        )
+        return any(_concept_matches(term, leader_terms) for term in terms)
+
+    def _concept_match_terms(self, query: str) -> list[str]:
+        """Return the query's distinctive concept terms for symbol matching.
+
+        Terms are the collapsed morphological concepts of the query with
+        stopwords, generic code words, short words, out-of-corpus words, and
+        corpus-common words removed. Keeping only the rarest terms (by document
+        frequency) prevents a ubiquitous word such as ``article`` from
+        dominating a symbol-name match.
+
+        Args:
+            query: The raw user query.
+
+        Returns:
+            Up to ``concept_symbol_terms_max`` terms, rarest first.
+        """
+        stats_fn = getattr(self._bm25, "_corpus_subword_stats", None)
+        if not callable(stats_fn):
+            return []
+        total, token_df, prefix_df, _corpus = stats_fn()
+        if total <= 0:
+            return []
+        concepts = collapse_terms(
+            decompose_query(query, filter_stopwords=True),
+            preferred=set(token_df),
+        )
+        max_common = max(3, int(total * self._settings.concept_symbol_common_df))
+        scored: list[tuple[int, str]] = []
+        for term in concepts:
+            if len(term) < 3 or term in STOPWORDS or term in NON_INFORMATIVE_CODE_TERMS:
+                continue
+            df = token_df[term] if term in token_df else prefix_df.get(term[:3], 0)
+            if df <= 0 or df > max_common:
+                continue
+            scored.append((df, term))
+        scored.sort(key=lambda pair: pair[0])
+        return [term for _df, term in scored[: self._settings.concept_symbol_terms_max]]
+
+    def _concept_term_weights(self, terms: list[str], fused: dict[int, float]) -> dict[str, float]:
+        """Return inverse-pool-frequency weights for the concept terms.
+
+        A term matched by most of the current candidate pool is a weak
+        discriminator (``user`` in a large user-management codebase); a term
+        matched by only a few candidates is strong (``follow``). The weight is
+        ``log(1 + pool_size / (1 + pool_df))``.
+
+        Args:
+            terms: The distinctive concept terms.
+            fused: The fused candidate pool.
+
+        Returns:
+            A mapping from term to its positive weight.
+        """
+        top_ids = sorted(fused, key=lambda cid: fused[cid], reverse=True)[:100]
+        counts = dict.fromkeys(terms, 0)
+        if top_ids:
+            placeholders = ",".join("?" for _ in top_ids)
+            try:
+                with self._db.connect() as conn:
+                    rows = conn.execute(
+                        f"SELECT subwords FROM code_chunks WHERE id IN ({placeholders});",
+                        top_ids,
+                    ).fetchall()
+            except Exception as exc:
+                logger.debug("Concept pool-frequency lookup failed: %s", exc)
+                rows = []
+            for row in rows:
+                subwords = set((row["subwords"] or "").split())
+                for term in terms:
+                    if _concept_matches(term, subwords):
+                        counts[term] += 1
+        denominator = len(top_ids) or 1
+        return {term: math.log(1.0 + denominator / (1.0 + counts[term])) for term in terms}
+
+    @staticmethod
+    def _test_intent(query: str) -> bool:
+        """Return whether the query explicitly asks for a test/spec artifact."""
+        tokens = {word.lower() for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", query)}
+        return bool(tokens & {"test", "tests", "testing", "spec", "specs", "unit", "suite"})
+
+    @staticmethod
+    def _member_subwords(fqn: str) -> set[str]:
+        """Return the sub-words of a chunk FQN's member/method name.
+
+        ``path::ProfileService.follow(Profile,Profile)`` yields ``{follow}``;
+        a class chunk without a member yields an empty set so class-name
+        matches are never treated as method anchors.
+
+        Args:
+            fqn: The chunk's fully qualified name.
+
+        Returns:
+            The member-name sub-words, lowercased.
+        """
+        short = fqn.rsplit("::", 1)[-1].split("(", 1)[0]
+        if "." not in short:
+            return set()
+        member = short.rsplit(".", 1)[-1]
+        return set(decompose_query(member, expand_variants=False))
+
+    def _symbol_concept_pass(
+        self, query: str, fused: dict[int, float], content: str
+    ) -> dict[int, dict[str, Any]]:
+        """Boost definitions whose symbol name matches distinctive query terms.
+
+        Natural-language queries are often answered by a method whose name
+        states the concept (``follow``, ``favoriteArticle``, ``isTokenValid``)
+        while the fused rank is dominated by frequent domain words. The pass
+        looks up definition chunks through the FQN FTS column, weights each
+        query term by its inverse frequency in the current candidate pool, and
+        adds a bounded boost scaled by the fraction of distinctive terms the
+        symbol carries. Matching definitions outside the pool are injected so
+        a concept-only match can still surface.
+
+        Args:
+            query: The raw user query.
+            fused: The fused score pool (mutated in place).
+            content: The active content scope.
+
+        Returns:
+            Per-chunk evidence for ``score_sources.symbol_concept``.
+        """
+        terms = self._concept_match_terms(query)
+        if not terms:
+            return {}
+        pool_max = self._pool_max(fused)
+        if pool_max <= 0.0:
+            return {}
+        weights = self._concept_term_weights(terms, fused)
+        total_weight = sum(weights.values())
+        if total_weight <= 0.0:
+            return {}
+        if content == "all":
+            content_clause = ""
+        elif content == DEFAULT_CONTENT_SCOPE:
+            content_clause = " AND c.content_type != 'docs'"
+        else:
+            content_clause = " AND c.content_type = ?"
+        # Query each term separately: a single OR expression ordered by rowid
+        # lets a frequent term (``user``) fill the row limit before a rarer
+        # term (``follow``) is ever seen.
+        rows_by_id: dict[int, Any] = {}
+        try:
+            with self._db.connect() as conn:
+                for term in terms:
+                    params: list[Any] = [f"fqn : {term}*"]
+                    if content not in ("all", DEFAULT_CONTENT_SCOPE):
+                        params.append(content)
+                    rows = conn.execute(
+                        "SELECT f.rowid AS id, c.fqn AS fqn, c.file_path AS file_path, "
+                        "c.chunk_node_type AS chunk_node_type "
+                        "FROM chunks_fts AS f JOIN code_chunks AS c ON c.id = f.rowid "
+                        "WHERE chunks_fts MATCH ? AND c.is_definition = 1"
+                        + content_clause
+                        + " ORDER BY bm25(chunks_fts) LIMIT 40;",
+                        params,
+                    ).fetchall()
+                    for row in rows:
+                        rows_by_id.setdefault(int(row["id"]), row)
+        except Exception as exc:
+            logger.warning("Concept-symbol lookup failed: %s", exc)
+            return {}
+        rows = list(rows_by_id.values())
+        fqn_rows = [
+            (
+                row,
+                set(
+                    decompose_query(
+                        (row["fqn"] or "").rsplit("::", 1)[-1],
+                        expand_variants=False,
+                    )
+                ),
+            )
+            for row in rows
+        ]
+        effective_terms = [
+            term
+            for term in terms
+            if any(_concept_matches(term, fqn_terms) for _row, fqn_terms in fqn_rows)
+        ]
+        if not effective_terms:
+            return {}
+        # Keep only terms that are rare in the current candidate pool: a
+        # term matched by a large share of the pool (the domain class name
+        # ``article`` in an article service) is a weak discriminator even when
+        # it is the only FQN match.
+        pool_size = min(len(fused), 100) or 1
+        rarity_floor = math.log(
+            1.0 + pool_size / (1.0 + self._settings.concept_symbol_pool_max_share * pool_size)
+        )
+        effective_terms = [term for term in effective_terms if weights[term] >= rarity_floor]
+        if not effective_terms:
+            return {}
+        # The concept is already present in the best-ranked candidate: this
+        # pass would reorder the pool rather than recover a miss.
+        if self._leader_matches_concept(fused, effective_terms):
+            return {}
+        total_weight = sum(weights[term] for term in effective_terms)
+        if total_weight <= 0.0:
+            return {}
+        evidence: dict[int, dict[str, Any]] = {}
+        for row, fqn_terms in fqn_rows:
+            matched = [term for term in effective_terms if _concept_matches(term, fqn_terms)]
+            if not matched:
+                continue
+            ratio = sum(weights[term] for term in matched) / total_weight
+            if ratio < self._settings.concept_symbol_min_ratio:
+                continue
+            chunk_id = int(row["id"])
+            has_evidence = fused.get(chunk_id, 0.0) > 0.0
+            if not has_evidence and ratio < 0.34:
+                continue
+            test_factor = 1.0
+            if _is_test_file(row["file_path"]):
+                test_factor = 1.0 if self._test_intent(query) else self._settings.noise_penalty
+            boost = min(
+                pool_max * self._settings.concept_symbol_boost * ratio * test_factor,
+                self._settings.concept_symbol_cap * pool_max,
+            )
+            member_terms = self._member_subwords(row["fqn"] or "")
+            anchors = [term for term in matched if _concept_matches(term, member_terms)]
+            is_method = row["chunk_node_type"] in _METHOD_NODE_TYPES
+            if anchors and is_method:
+                # A method whose own name states the concept is the named
+                # answer, not merely a related definition.
+                anchor_factor = test_factor
+                if test_factor < 1.0:
+                    anchor_factor = test_factor * test_factor
+                anchor_boost = min(
+                    pool_max * self._settings.concept_symbol_anchor_boost * ratio * anchor_factor,
+                    self._settings.concept_symbol_anchor_cap * pool_max,
+                )
+                boost = max(boost, anchor_boost)
+            if boost <= 0.0:
+                continue
+            fused[chunk_id] = fused.get(chunk_id, 0.0) + boost
+            evidence[chunk_id] = {
+                "terms": matched,
+                "ratio": round(ratio, 3),
+                "boost": boost,
+                "anchor": bool(anchors) and is_method,
+            }
+        return evidence
 
     def _symbol_reference_inject(self, fused: dict[int, float], symbol_name: str) -> None:
         """Inject definition chunks of a bare ambiguous partial symbol reference.
@@ -3766,7 +4235,7 @@ class HybridSearch:
         stripped = intent_re.sub(" ", lowered)
         remaining = [
             w
-            for w in decompose_query(stripped)
+            for w in decompose_query(stripped, expand_variants=False)
             if len(w) >= 3
             and w not in STOPWORDS
             and (w in _ENUMERATION_KIND_WORDS or w not in NON_INFORMATIVE_CODE_TERMS)
@@ -3791,7 +4260,7 @@ class HybridSearch:
         """
         subwords = [
             w
-            for w in decompose_query(query)
+            for w in decompose_query(query, expand_variants=False)
             if len(w) >= 3
             and w not in STOPWORDS
             and (w in _ENUMERATION_KIND_WORDS or w not in NON_INFORMATIVE_CODE_TERMS)

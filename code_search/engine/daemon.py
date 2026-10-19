@@ -18,14 +18,11 @@ import threading
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
-from code_search.engine.config import Settings
-from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
-from code_search.engine.index_service import IndexChangeDetector
-from code_search.engine.redactor import Redactor
-from code_search.engine.response_service import build_response
-from code_search.engine.search import DEFAULT_CONTENT_SCOPE, HybridSearch
+if TYPE_CHECKING:
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
 
 logger = logging.getLogger(__name__)
 
@@ -300,6 +297,10 @@ class QueryDaemon:
             A success payload with ``results`` and ``freshness``.
         """
         import time as _time
+
+        from code_search.engine.index_service import IndexChangeDetector
+        from code_search.engine.response_service import build_response
+        from code_search.engine.search import DEFAULT_CONTENT_SCOPE
 
         start = _time.monotonic()
         envelope = comps["search"].search(
@@ -651,7 +652,9 @@ class QueryDaemon:
         from pathlib import Path
 
         from code_search.engine.classification import FileRole, file_role
+        from code_search.engine.config import Settings
         from code_search.engine.paths import normalize_indexed_path, resolve_stored_path
+        from code_search.engine.redactor import Redactor
 
         start = _time.monotonic()
         embedding_gen: EmbeddingGenerator = comps["embedding_gen"]
@@ -989,6 +992,28 @@ class DaemonClient:
         """
         return socket_path.exists()
 
+    @staticmethod
+    def is_serving(socket_path: Path, timeout: float = 0.1) -> bool:
+        """Return whether a daemon actually answers ``ping`` on *socket_path*.
+
+        Unlike :meth:`is_running`, this distinguishes a live listener from a
+        stale socket file left behind by a crashed daemon.
+
+        Args:
+            socket_path: The unix-socket path to probe.
+            timeout: Connect/read timeout in seconds.
+
+        Returns:
+            ``True`` when the socket answers a ``ping`` request.
+        """
+        if not socket_path.exists():
+            return False
+        try:
+            response = DaemonClient(socket_path, timeout=timeout).request("ping")
+        except Exception:
+            return False
+        return bool(response.get("ok"))
+
     def request(self, action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         """Send one request to the daemon and return its parsed response.
 
@@ -1081,6 +1106,35 @@ def _read_pidfile(context_dir: Path) -> int | None:
         return int(_pidfile_path(context_dir).read_text().strip())
     except Exception:
         return None
+
+
+def pid_is_alive(context_dir: Path) -> bool:
+    """Return whether the pidfile records a live process.
+
+    Used before removing a socket that does not answer yet: a daemon that has
+    bound its socket but is still initialising must not be mistaken for a
+    crashed one. ``os.kill(pid, 0)`` performs the existence check without
+    sending a signal; ``PermissionError`` means the process exists but belongs
+    to another user.
+
+    Args:
+        context_dir: The daemon's context directory (``.context/``).
+
+    Returns:
+        ``True`` when a pid is recorded and the process exists.
+    """
+    pid = _read_pidfile(context_dir)
+    if pid is None or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def clear_pidfile(context_dir: Path) -> None:

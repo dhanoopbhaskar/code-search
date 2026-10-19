@@ -110,7 +110,156 @@ EXCLUSION_PATTERNS: set[str] = {
     ".benchmarks",
     "htmlcov",
     ".tox",
+    # Agent/tool artifacts are never source code.
+    ".opencode",
+    ".claude",
+    ".agents",
+    "graphify-out",
+    "temp_deps",
+    # Tool/package-manager caches and IDE metadata are generated state, and
+    # build-metadata files under them (``.mvn/wrapper/*.properties``) otherwise
+    # outrank real source.
+    ".mvn",
+    ".nuget",
+    ".idea",
+    ".vscode",
+    ".cache",
 }
+
+#: Files that are never indexed regardless of their detected language.
+#: ``.DS_Store`` is macOS Finder metadata, not source.
+EXCLUDED_FILE_NAMES: set[str] = {".DS_Store"}
+
+
+class GitIgnoreMatcher:
+    """Match paths against a repository's ``.gitignore`` files.
+
+    Specs can be loaded eagerly for a whole tree (the default) or added one
+    directory at a time while discovery walks (:meth:`add_directory`), so
+    indexing does not pay for a second full-tree walk just to find ignore
+    files. Nested specs apply after their parents, and a path under an ignored
+    directory stays ignored even when a deeper rule negates the path itself,
+    which is Git's documented behaviour. Patterns are evaluated with
+    :mod:`pathspec`'s ``gitwildmatch`` implementation.
+    """
+
+    _SKIP_DIRS = frozenset({".git", "node_modules", "__pycache__", ".venv", "venv"})
+
+    def __init__(self, root_path: Path, *, load_tree: bool = True) -> None:
+        """Create a matcher for *root_path*.
+
+        Args:
+            root_path: The repository root being indexed.
+            load_tree: Whether to walk the tree now and load every
+                ``.gitignore``. Pass ``False`` when the caller will add each
+                directory during its own walk.
+        """
+        self._root = root_path.absolute()
+        self._root_posix = self._root.as_posix()
+        # Specs are keyed by their base directory as a POSIX prefix ending in
+        # ``/``. String prefix checks avoid ``Path.relative_to`` per candidate,
+        # which dominates discovery time on large trees.
+        self._specs: list[tuple[str, Any]] = []
+        self._spec_bases: set[str] = set()
+        try:
+            from pathspec import GitIgnoreSpec
+        except ImportError:  # pragma: no cover - dependency is declared
+            logger.warning("pathspec is unavailable; .gitignore files are not honoured")
+            self._spec_class: Any = None
+            return
+        self._spec_class = GitIgnoreSpec
+        if load_tree:
+            self._load_tree()
+
+    def _load_tree(self) -> None:
+        """Load every ``.gitignore`` under the root in one walk."""
+        for dirpath, dirnames, filenames in os.walk(self._root):
+            dirnames[:] = [name for name in dirnames if name not in self._SKIP_DIRS]
+            self.add_directory(Path(dirpath), filenames)
+
+    def add_directory(self, base: Path, filenames: Any) -> None:
+        """Load *base*'s ``.gitignore`` when present and not already loaded.
+
+        Args:
+            base: The directory currently being visited.
+            filenames: The directory's file names (any container supporting
+                ``in``).
+        """
+        if self._spec_class is None or ".gitignore" not in filenames:
+            return
+        base = base.absolute()
+        base_posix = base.as_posix()
+        if base_posix in self._spec_bases:
+            return
+        try:
+            lines = (base / ".gitignore").read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return
+        self._spec_bases.add(base_posix)
+        prefix = base_posix.rstrip("/") + "/"
+        self._specs.append((prefix, self._spec_class.from_lines(lines)))
+        # Parent specs must be evaluated first so a deeper rule can override.
+        self._specs.sort(key=lambda item: len(item[0]))
+
+    def _matches(self, path_posix: str, *, is_dir: bool) -> tuple[bool, bool]:
+        """Return ``(ignored, matched)`` for an absolute POSIX path.
+
+        *matched* distinguishes "no rule matched" from "a negation rule
+        matched", which matters for the parent-directory check.
+
+        Args:
+            path_posix: The absolute candidate path in POSIX form.
+            is_dir: Whether the candidate is a directory.
+
+        Returns:
+            The final ignore decision and whether any rule matched.
+        """
+        ignored = False
+        matched = False
+        for prefix, spec in self._specs:
+            if not path_posix.startswith(prefix):
+                continue
+            candidate = path_posix[len(prefix) :]
+            if is_dir:
+                candidate += "/"
+            result = spec.check_file(candidate)
+            if result.include is not None:
+                ignored = bool(result.include)
+                matched = True
+        return ignored, matched
+
+    def is_ignored(self, path: Path, *, is_dir: bool = False) -> bool:
+        """Return whether *path* is ignored by the loaded specs.
+
+        Args:
+            path: The candidate path (inside the repository root).
+            is_dir: Whether *path* is a directory.
+
+        Returns:
+            ``True`` when the path, or an ancestor directory, is ignored.
+        """
+        try:
+            path_posix = path.absolute().as_posix()
+        except OSError:
+            return False
+        if path_posix != self._root_posix and not path_posix.startswith(self._root_posix + "/"):
+            return False
+        ignored, matched = self._matches(path_posix, is_dir=is_dir)
+        if ignored:
+            return True
+        if not matched:
+            return False
+        # Git cannot re-include a path while one of its parent directories is
+        # excluded, so a negation for a file under an ignored directory does
+        # not make the file discoverable.
+        parent = path_posix[len(self._root_posix) :].lstrip("/")
+        while "/" in parent:
+            parent = parent.rsplit("/", 1)[0]
+            parent_ignored, _ = self._matches(f"{self._root_posix}/{parent}", is_dir=True)
+            if parent_ignored:
+                return True
+        return False
+
 
 # Prose / transient file extensions that are never indexed unless
 # ``index_prose`` (or an explicit resource-extension allowlist) opts them in.
@@ -281,6 +430,7 @@ class ASTParser:
         language_config: LanguageConfig | None = None,
         index_prose: bool = False,
         settings: Settings | None = None,
+        respect_gitignore: bool | None = None,
     ) -> None:
         """Initialize the parser with optional exclusions and language overrides.
 
@@ -297,8 +447,14 @@ class ASTParser:
                 shell scripts) are indexed by default for this instance.
             settings: Engine settings used for the chunk-merge bounds;
                 defaults to ``Settings.from_env()`` when omitted.
+            respect_gitignore: Whether repository ``.gitignore`` files are
+                honoured; defaults to the active settings value (or ``True``).
         """
         self._exclusion_patterns = exclusion_patterns or EXCLUSION_PATTERNS
+        if respect_gitignore is None:
+            respect_gitignore = settings.respect_gitignore if settings else True
+        self._respect_gitignore = respect_gitignore
+        self._gitignore_cache: dict[Path, GitIgnoreMatcher | None] = {}
         self._index_prose = index_prose
         self._settings = settings
         self._parsers: dict[str, Any] = {}
@@ -397,6 +553,20 @@ class ASTParser:
                 return EXTENSIONLESS_INFRA_FILES[file_path.name.lower()]
         return None
 
+    def _gitignore_for(self, root_path: Path) -> GitIgnoreMatcher | None:
+        """Return the cached whole-tree matcher for *root_path*, or ``None``.
+
+        Used by :meth:`is_excluded_file`, which runs outside discovery. The
+        first call walks the tree once to locate every ``.gitignore``; later
+        calls reuse the cache.
+        """
+        if not self._respect_gitignore:
+            return None
+        key = root_path.absolute()
+        if key not in self._gitignore_cache:
+            self._gitignore_cache[key] = GitIgnoreMatcher(key)
+        return self._gitignore_cache[key]
+
     def discover_files(
         self,
         root_path: Path,
@@ -417,6 +587,13 @@ class ASTParser:
         patterns = set(exclusion_patterns or ()) | set(self._exclusion_patterns)
         res_exts = set(resource_extensions or [])
         opt_in_prose = bool(index_prose if index_prose is not None else self._index_prose)
+        # Build the matcher as discovery visits directories instead of walking
+        # the tree a second time up front.
+        gitignore = (
+            GitIgnoreMatcher(root_path.absolute(), load_tree=False)
+            if self._respect_gitignore
+            else None
+        )
         files: list[Path] = []
         for dirpath, dirnames, filenames in os.walk(root_path):
             rel = Path(dirpath).relative_to(root_path)
@@ -424,8 +601,21 @@ class ASTParser:
             if parts & patterns:
                 dirnames.clear()
                 continue
+            if gitignore is not None:
+                gitignore.add_directory(Path(dirpath), filenames)
+            kept_dirs: list[str] = []
+            for dirname in dirnames:
+                child = Path(dirpath) / dirname
+                if gitignore is not None and gitignore.is_ignored(child, is_dir=True):
+                    continue
+                kept_dirs.append(dirname)
+            dirnames[:] = kept_dirs
             for fname in filenames:
+                if fname in EXCLUDED_FILE_NAMES:
+                    continue
                 fpath = Path(dirpath) / fname
+                if gitignore is not None and gitignore.is_ignored(fpath):
+                    continue
                 suffix = fpath.suffix.lower()
                 is_prose = suffix in PROSE_EXTENSIONS or _is_lockfile(fpath)
                 lang = self.detect_language(fpath)
@@ -531,13 +721,27 @@ class ASTParser:
         return " ".join(t for t in texts if t.strip())
 
     def is_excluded_file(self, file_path: Path, root_path: Path) -> bool:
-        """Check whether *file_path* falls under one of the exclusion patterns."""
+        """Check whether *file_path* is excluded by patterns or ``.gitignore``.
+
+        Args:
+            file_path: The candidate file path.
+            root_path: The indexed repository root.
+
+        Returns:
+            ``True`` when the path must not be indexed (or must be pruned from
+            an existing index).
+        """
+        if file_path.name in EXCLUDED_FILE_NAMES:
+            return True
         try:
             rel = file_path.relative_to(root_path)
             parts = set(rel.parts)
-            return bool(parts & self._exclusion_patterns)
+            if parts & self._exclusion_patterns:
+                return True
         except ValueError:
             return False
+        gitignore = self._gitignore_for(root_path)
+        return bool(gitignore and gitignore.is_ignored(file_path))
 
     def get_chunks_for_file(self, file_path: Path, source_bytes: bytes) -> list[ParsedNode]:
         """Extract indexable AST chunks (definitions, declarations, imports, comments, etc.)."""

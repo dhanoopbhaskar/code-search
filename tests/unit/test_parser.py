@@ -358,6 +358,35 @@ def test_build_generated_excluded_via_build(parser: ASTParser, tmp_path: Path) -
     assert not any(p.startswith("build/") for p in paths)
 
 
+def test_tool_and_ide_dirs_excluded(parser: ASTParser, tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir(parents=True)
+    (tmp_path / "src" / "main.py").write_text("x = 1")
+    excluded = (".mvn", ".nuget", ".idea", ".vscode", ".cache")
+    for d in excluded:
+        (tmp_path / d).mkdir(parents=True, exist_ok=True)
+        (tmp_path / d / "gen.py").write_text("x = 1")
+
+    files = parser.discover_files(tmp_path)
+    paths = [str(f.relative_to(tmp_path)) for f in files]
+
+    assert "src/main.py" in paths
+    for d in excluded:
+        assert not any(p.startswith(f"{d}/") for p in paths), f"{d} should be excluded"
+        assert parser.is_excluded_file(tmp_path / d / "gen.py", tmp_path) is True
+
+
+def test_ds_store_is_excluded(parser: ASTParser, tmp_path: Path) -> None:
+    (tmp_path / ".DS_Store").write_text("finder metadata")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("x = 1")
+
+    files = parser.discover_files(tmp_path)
+    paths = {str(f.relative_to(tmp_path)) for f in files}
+
+    assert paths == {"src/main.py"}
+    assert parser.is_excluded_file(tmp_path / ".DS_Store", tmp_path) is True
+
+
 def test_prose_and_shell_not_discovered_by_default(parser: ASTParser, tmp_path: Path) -> None:
     (tmp_path / "src").mkdir(parents=True)
     (tmp_path / "src" / "main.py").write_text("x = 1")
@@ -618,3 +647,100 @@ def test_us3_expression_merge_bounded_by_chunk_target_chars() -> None:
     defs = [c for c in chunks if c.get("chunk_node_type") == "function_definition"]
     assert len(defs) == 1
     assert defs[0]["is_definition"] is True
+
+
+def test_discover_files_respects_gitignore(parser: ASTParser, tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("x = 1")
+    (tmp_path / "generated").mkdir()
+    (tmp_path / "generated" / "artifact.py").write_text("y = 2")
+    (tmp_path / "generated" / "keep.py").write_text("z = 3")
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "debug.py").write_text("w = 4")
+    (tmp_path / ".gitignore").write_text("generated/*\n!generated/keep.py\nlogs/\n")
+
+    files = {path.relative_to(tmp_path).as_posix() for path in parser.discover_files(tmp_path)}
+
+    assert files == {"src/main.py", "generated/keep.py"}
+
+
+def test_is_excluded_file_honours_gitignore(parser: ASTParser, tmp_path: Path) -> None:
+    (tmp_path / "build").mkdir()
+    ignored = tmp_path / "build" / "Generated.java"
+    ignored.write_text("class Generated {}")
+    (tmp_path / ".gitignore").write_text("build/\n")
+
+    assert parser.is_excluded_file(ignored, tmp_path) is True
+
+
+def test_respect_gitignore_false_discovers_ignored_file(tmp_path: Path) -> None:
+    """The opt-out indexes paths that the repository ``.gitignore`` excludes."""
+    (tmp_path / ".gitignore").write_text("generated/\n")
+    (tmp_path / "generated").mkdir()
+    (tmp_path / "generated" / "artifact.py").write_text("x = 1")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("y = 2")
+
+    opt_out = ASTParser(respect_gitignore=False)
+    files = {path.relative_to(tmp_path).as_posix() for path in opt_out.discover_files(tmp_path)}
+
+    assert files == {"generated/artifact.py", "src/main.py"}
+
+
+def test_gitignore_anchored_pattern_only_matches_root(parser: ASTParser, tmp_path: Path) -> None:
+    """A leading slash anchors the pattern to the ``.gitignore`` directory."""
+    for relative in ("generated/root.py", "pkg/generated/nested.py", "src/main.py"):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x = 1")
+    (tmp_path / ".gitignore").write_text("/generated\n")
+
+    files = {path.relative_to(tmp_path).as_posix() for path in parser.discover_files(tmp_path)}
+
+    assert files == {"pkg/generated/nested.py", "src/main.py"}
+
+
+def test_gitignore_nested_spec_applies_only_to_its_subtree(
+    parser: ASTParser, tmp_path: Path
+) -> None:
+    """A nested ``.gitignore`` governs its own directory, not the whole tree."""
+    for relative in ("src/ignored.py", "other/ignored.py", "src/keep.py"):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x = 1")
+    (tmp_path / "src" / ".gitignore").write_text("ignored.py\n")
+
+    files = {path.relative_to(tmp_path).as_posix() for path in parser.discover_files(tmp_path)}
+
+    assert files == {"other/ignored.py", "src/keep.py"}
+
+
+def test_gitignore_negation_cannot_reinclude_under_ignored_directory(
+    parser: ASTParser, tmp_path: Path
+) -> None:
+    """Git does not re-include a file whose parent directory is excluded."""
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "keep.py").write_text("x = 1")
+    (tmp_path / "build" / "drop.py").write_text("y = 2")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("z = 3")
+    (tmp_path / ".gitignore").write_text("build/\n!build/keep.py\n")
+
+    files = {path.relative_to(tmp_path).as_posix() for path in parser.discover_files(tmp_path)}
+
+    assert files == {"src/main.py"}
+
+
+def test_gitignore_subdirectory_pattern_matches_only_that_path(
+    parser: ASTParser, tmp_path: Path
+) -> None:
+    """A pattern containing a slash matches relative to the ``.gitignore``."""
+    for relative in ("src/generated/gen.py", "generated/gen.py", "src/main.py"):
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x = 1")
+    (tmp_path / ".gitignore").write_text("src/generated/\n")
+
+    files = {path.relative_to(tmp_path).as_posix() for path in parser.discover_files(tmp_path)}
+
+    assert files == {"generated/gen.py", "src/main.py"}
