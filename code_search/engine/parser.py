@@ -414,7 +414,7 @@ class ASTParser:
         are skipped by default. Passing *index_prose*=True (or explicitly
         listing a prose extension in *resource_extensions*) opts them in.
         """
-        patterns = exclusion_patterns or self._exclusion_patterns
+        patterns = set(exclusion_patterns or ()) | set(self._exclusion_patterns)
         res_exts = set(resource_extensions or [])
         opt_in_prose = bool(index_prose if index_prose is not None else self._index_prose)
         files: list[Path] = []

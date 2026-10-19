@@ -87,6 +87,21 @@ def test_discover_files_exclusion_patterns(parser: ASTParser, tmp_path: Path) ->
     assert "vendor/lib.py" not in paths
 
 
+def test_custom_exclusions_layer_over_defaults(parser: ASTParser, tmp_path: Path) -> None:
+    """Passing --exclude must not disable the built-in exclusion list."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("x = 1")
+    for d in ("vendor", "build"):
+        (tmp_path / d).mkdir()
+        (tmp_path / d / "lib.py").write_text("y = 2")
+
+    files = parser.discover_files(tmp_path, exclusion_patterns={"vendor"})
+    paths = [str(f.relative_to(tmp_path)) for f in files]
+    assert "src/main.py" in paths
+    assert "vendor/lib.py" not in paths
+    assert "build/lib.py" not in paths
+
+
 def test_parse_file_nonexistent(parser: ASTParser) -> None:
     result = parser.parse_file(Path("/nonexistent/file.py"))
     assert result is None

@@ -970,6 +970,16 @@ class IndexOrchestrator:
             self._vector_index.save()
             duration_s = time.monotonic() - start_time
 
+            # Rebuild the keyword index before any post-index deletes. A full
+            # build inserts code_chunks with the FTS triggers suspended, so
+            # until the rebuild the external-content index does not match the
+            # table; a delete trigger in the stale sweep below would then fail
+            # with "database disk image is malformed".
+            if not incremental:
+                if status_callback is not None:
+                    status_callback("Rebuilding keyword index")
+                self._metadata.set_fts_chunks(self._ensure_fts_parity(force=True))
+
             # Post-index stale sweep: a full re-index already covers the whole
             # tree, and incremental diffing removes working-tree orphans, so
             # the sweep only re-runs when the indexing policy changed (files
@@ -981,14 +991,12 @@ class IndexOrchestrator:
                     status_callback("Sweeping stale files")
                 self._sweep_stale_files(root_path)
 
-            # Keep the keyword index in parity with code_chunks. Full indexes
-            # rebuild unconditionally; incremental ones only rebuild when the
-            # FTS maintenance triggers have drifted.
-            if status_callback is not None:
-                status_callback(
-                    "Rebuilding keyword index" if not incremental else "Verifying keyword index"
-                )
-            fts_count = self._ensure_fts_parity(force=not incremental)
+            # Incremental indexes rely on the triggers and rebuild only when
+            # the keyword index has drifted; for full builds this is a cheap
+            # parity check after the sweep.
+            if status_callback is not None and incremental:
+                status_callback("Verifying keyword index")
+            fts_count = self._ensure_fts_parity()
             self._metadata.set_fts_chunks(fts_count)
 
             # Post-index edge validation sweep: remove spurious self-edges,
