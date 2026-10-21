@@ -97,7 +97,9 @@ class TestSearchJsonOutput:
     """Search with JSON output and metadata field verification."""
 
     def test_search_article_json_limit3(self, repo_path: Path) -> None:
-        result = _run_cs(["search", "article", "--json", "--limit", "3"], cwd=repo_path)
+        result = _run_cs(
+            ["search", "article", "--json", "--no-compact", "--limit", "3"], cwd=repo_path
+        )
         assert result.returncode == 0
         rows = _search_rows(result.stdout)
         assert len(rows) <= 3
@@ -106,7 +108,9 @@ class TestSearchJsonOutput:
                 assert key in rows[0], f"Missing key '{key}'"
 
     def test_search_repository_json_metadata(self, repo_path: Path) -> None:
-        result = _run_cs(["search", "repository", "--json", "--limit", "5"], cwd=repo_path)
+        result = _run_cs(
+            ["search", "repository", "--json", "--no-compact", "--limit", "5"], cwd=repo_path
+        )
         assert result.returncode == 0
         for r in _search_rows(result.stdout):
             meta_keys = (
@@ -132,7 +136,9 @@ class TestSearchJsonOutput:
             assert r["score"] >= 0.0, f"Score {r['score']} must be non-negative"
 
     def test_search_below_threshold_flag(self, repo_path: Path) -> None:
-        result = _run_cs(["search", "article", "--json", "--limit", "10"], cwd=repo_path)
+        result = _run_cs(
+            ["search", "article", "--json", "--no-compact", "--limit", "10"], cwd=repo_path
+        )
         assert result.returncode == 0
         for r in _search_rows(result.stdout):
             assert "below_threshold" in r
@@ -185,7 +191,10 @@ class TestSearchResourceFiles:
     """Resource file indexing (XML, Properties, Gradle, etc.)."""
 
     def test_search_mybatis_mapper(self, repo_path: Path) -> None:
-        result = _run_cs(["search", "mybatis mapper", "--json", "--limit", "25"], cwd=repo_path)
+        result = _run_cs(
+            ["search", "mybatis mapper", "--content", "all", "--json", "--limit", "25"],
+            cwd=repo_path,
+        )
         assert result.returncode == 0
         xml_files = [
             r for r in _search_rows(result.stdout) if r.get("file_path", "").endswith(".xml")

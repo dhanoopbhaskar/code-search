@@ -366,7 +366,9 @@ class TestCliSearch:
             assert s >= 0.0, f"Score {s} is negative"
 
     def test_search_below_threshold_flag(self, repo_path: Path, indexed: dict) -> None:
-        result = _search(repo_path, "UserService", extra=["--json", "--limit", "10"])
+        result = _search(
+            repo_path, "UserService", extra=["--json", "--no-compact", "--limit", "10"]
+        )
         assert result.returncode == 0
         raw = result.stdout.strip()
         if raw == "No results found.":
