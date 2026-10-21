@@ -193,3 +193,21 @@ def test_edge_store_imports_are_not_symbol_edges(tmp_path: Path) -> None:
         count = conn.execute("SELECT COUNT(*) AS c FROM graph_edges;").fetchone()["c"]
     assert count == 0
     assert store.get_call_graph(1) == {"callers": [], "callees": []}
+
+
+def test_render_architecture_reports_graph_coverage() -> None:
+    """The map report makes extraction/resolution coverage visible."""
+    report = ArchitectureReport(
+        stats={
+            "symbols": 3,
+            "symbols_extracted": 4,
+            "symbol_coverage": 0.75,
+            "edges": 2,
+            "edges_total": 4,
+            "edges_resolved": 3,
+            "edge_coverage": 0.75,
+        }
+    )
+    text = render_architecture_markdown(report)
+    assert "Symbol coverage: 75.0% (3 connected / 4 extracted)" in text
+    assert "Edge coverage: 75.0% (3 / 4)" in text

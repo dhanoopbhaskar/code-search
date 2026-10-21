@@ -102,8 +102,9 @@ class Reranker:
 
         Applies the definition boost (only when the chunk's FQN references a
         queried fragment), the test-file and non-canonical penalties, and the
-        per-file session weight. Final scores are clamped to ``[0.0, 1.0]``
-        and each result gains a ``"session_weight"`` key.
+        per-file session weight. Final scores are lower-bounded at ``0.0``
+        but not upper-capped, and each result gains a ``"session_weight"``
+        key.
 
         When *query* is supplied, the definition-owner boost raises the owner
         symbol's definition chunk under definition-intent queries and the
@@ -221,7 +222,11 @@ class Reranker:
                 score *= barrel_penalty
             if r["file_path"] in session_weights:
                 score *= session_weights[r["file_path"]]
-            score = max(0.0, min(1.0, score))
+            # Keep scores non-negative, but do not clamp the upper bound: the
+            # fused score legitimately exceeds 1.0 for strong matches, and
+            # clamping collapsed every strong candidate to 1.00 (destroying
+            # discrimination between them).
+            score = max(0.0, score)
             r["score"] = score
             r["session_weight"] = session_weights.get(r["file_path"], 1.0)
             # Preserve the score_sources breakdown: mark the

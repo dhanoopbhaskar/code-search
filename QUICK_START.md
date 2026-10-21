@@ -117,6 +117,7 @@ code-search search "database connection pool" --language java --no-include-tests
 | `--matching {literal,all_tokens,any_token}` | `all_tokens` | Exhaustive matching semantics (`--mode exhaustive` only); `literal` treats the whole query as one verbatim substring |
 | `--regex` | off | Treat the query as a Python regular expression (`--mode exhaustive` only); invalid patterns return an `invalid_regex` explanation |
 | `--no-startup-check` | off | Skip transparent daemon auto-start for this invocation; repeat CLI use is fastest with an already-running `code-search daemon start` |
+| `--explain-ranking` | off | Include `score_sources` for every result and print the class/content multipliers and additive boosts behind the ranking |
 | `--json` | — | JSON output: `{"results": [...], "total_matches": N, "truncated": bool, "freshness": {...}}` |
 
 `--json` reports **`total_matches`** (how many chunks matched the query tokens) and

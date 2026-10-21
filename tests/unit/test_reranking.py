@@ -149,18 +149,20 @@ def test_rerank_sorts_by_score(reranker: Reranker) -> None:
     assert reranked[2]["chunk_id"] == 1
 
 
-def test_rerank_score_clamped(reranker: Reranker) -> None:
+def test_rerank_score_not_upper_clamped(reranker: Reranker) -> None:
+    """Strong scores keep their magnitude instead of saturating at 1.0."""
     results = [
         {
             "chunk_id": 1,
             "file_path": "src/main.py",
-            "score": 0.9,
+            "score": 2.4,
             "is_definition": True,
             "is_test_file": False,
         }
     ]
     reranked = reranker.rerank(results)
-    assert reranked[0]["score"] <= 1.0
+    assert reranked[0]["score"] >= 1.0
+    assert reranked[0]["score"] != 1.0
     assert reranked[0]["score"] >= 0.0
 
 

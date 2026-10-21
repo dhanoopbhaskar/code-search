@@ -13,13 +13,14 @@ import pytest
 
 from tests.evaluation.ranking_eval import (
     FLOORS,
+    MAX_FLOORS,
     RESOLUTION_FLOORS,
     build_fixture_components,
     build_resolution_components,
     evaluate,
     evaluate_resolution,
 )
-from tests.evaluation.ranking_ground_truth import SPRING_BOOT_MAIN_CASES
+from tests.evaluation.ranking_ground_truth import SPRING_BOOT_MAIN_CASES, TSREACT_CASES
 
 
 @pytest.fixture
@@ -43,11 +44,20 @@ def spring_boot_main_report(tmp_path: Path) -> dict[str, Any]:
     return evaluate(components, cases=SPRING_BOOT_MAIN_CASES, corpus="spring_boot_main fixture")
 
 
+@pytest.fixture
+def tsreact_report(tmp_path: Path) -> dict[str, Any]:
+    """Index the TypeScript/React fixture and evaluate the labelled TS cases."""
+    components = build_fixture_components(tmp_path, fixture="tsreact")
+    return evaluate(components, cases=TSREACT_CASES, corpus="tsreact fixture")
+
+
 def test_ranking_eval_meets_all_floors(ranking_report: dict[str, Any]) -> None:
     """Every metric floor is met."""
     metrics = ranking_report["metrics"]
     for name, floor in FLOORS.items():
         assert metrics[name] >= floor, f"{name}={metrics[name]} below floor {floor}"
+    for name, ceiling in MAX_FLOORS.items():
+        assert metrics[name] <= ceiling, f"{name}={metrics[name]} above ceiling {ceiling}"
 
 
 def test_ranking_eval_not_below_baseline(ranking_report: dict[str, Any]) -> None:
@@ -72,6 +82,14 @@ def test_spring_boot_main_application_ranks_entry_point_first(
 ) -> None:
     """`spring boot main application` returns the entry point at rank 1."""
     assert spring_boot_main_report["failures"] == []
+
+
+def test_tsreact_query_cases_meet_rank_ceilings(tsreact_report: dict[str, Any]) -> None:
+    """TS/React filename, symbol, and descriptive queries meet their ceilings."""
+    assert tsreact_report["failures"] == [], tsreact_report["failures"]
+    metrics = tsreact_report["metrics"]
+    assert metrics["recall_at_10"] >= 0.95
+    assert metrics["non_source_contamination"] <= 0.05
 
 
 def test_resolution_eval_meets_all_floors(resolution_report: dict[str, Any]) -> None:

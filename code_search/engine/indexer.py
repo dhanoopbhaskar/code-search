@@ -7,9 +7,11 @@ generates embeddings, and persists everything to the graph database and vector i
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import multiprocessing
 import os
+import posixpath
 import re
 import sqlite3
 import time
@@ -42,6 +44,7 @@ from code_search.engine.graph import (
     RationaleStore,
 )
 from code_search.engine.parser import ASTParser
+from code_search.engine.parser import _is_lockfile as _is_lockfile_path
 from code_search.engine.search import identify_subwords
 from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
@@ -69,6 +72,9 @@ _EMBED_PROGRESS_BATCH = 256
 # each transaction small enough to bound the WAL while cutting commit count by
 # this factor. A crash loses at most one group, which a full rebuild redoes.
 _PERSIST_COMMIT_BATCH = 256
+
+#: Maximum characters retained from a lockfile in its single infra record.
+_LOCKFILE_CHUNK_CHARS = 2000
 
 # Reports pipeline progress as ``(phase, completed, total)``. ``phase`` is one
 # of ``"parsing"``, ``"persisting"``, or ``"embedding"``.
@@ -164,11 +170,16 @@ def _process_file_worker(args: tuple[Path, bytes, str, tuple[str, ...] | None]) 
     extractor = SymbolExtractor(parser)
 
     is_resource = language in {"xml", "sql", "properties", "gradle", "dockerfile", "makefile"}
-    syms = extractor.extract_symbols(file_path, source_bytes)
-    edges = extractor.extract_edges(file_path, source_bytes)
-    chunks = parser.get_chunks_for_file(file_path, source_bytes)
+    if _is_lockfile_path(file_path):
+        syms = []
+        edges = []
+        chunks = [_lockfile_chunk(file_path, source_bytes, language)]
+    else:
+        syms = extractor.extract_symbols(file_path, source_bytes)
+        edges = extractor.extract_edges(file_path, source_bytes)
+        chunks = parser.get_chunks_for_file(file_path, source_bytes)
     parse_failed = False
-    if not chunks:
+    if not chunks and not _is_lockfile_path(file_path):
         if is_resource or language in {"unknown"}:
             chunks = _fallback_chunk_file(file_path, source_bytes, language, 100)
         else:
@@ -179,7 +190,10 @@ def _process_file_worker(args: tuple[Path, bytes, str, tuple[str, ...] | None]) 
             chunk["chunk_type"] = "resource"
             chunk["chunk_node_type"] = "raw_text"
         chunk["content_type"] = classify_content_type(file_path).value
-        chunk["fqn"] = _resolve_chunk_fqn(chunk, syms)
+        if _is_lockfile_path(file_path):
+            chunk["fqn"] = f"{file_path}::lockfile"
+        else:
+            chunk["fqn"] = _resolve_chunk_fqn(chunk, syms)
         chunk["embed_context"] = derive_enclosing_context(chunk, syms)
     rationale = _extract_rationale(file_path, source_bytes, syms)
     content_hash = hashlib.sha256(source_bytes).hexdigest()
@@ -479,6 +493,39 @@ def _fallback_chunk_file(
         else:
             merged.append(chunk)
     return merged
+
+
+def _lockfile_chunk(file_path: Path, source_bytes: bytes, language: str) -> dict[str, Any]:
+    """Build the single infra record for a package lockfile.
+
+    Lockfiles can span tens of thousands of lines and carry no code the graph
+    can use. Indexing them line-block by line-block floods the candidate pool
+    with near-duplicate dependency rows that dense retrieval cannot tell apart
+    from source. A lockfile is therefore represented by one bounded,
+    non-definition ``infra`` chunk so it stays findable by literal dependency
+    evidence without competing on chunk count.
+
+    Args:
+        file_path: The lockfile path.
+        source_bytes: Raw lockfile bytes.
+        language: The detected language token (``json``/``yaml``/...).
+
+    Returns:
+        A one-element chunk list describing the lockfile.
+    """
+    text = source_bytes.decode("utf-8", errors="replace")
+    excerpt = text[:_LOCKFILE_CHUNK_CHARS]
+    line_count = text.count("\n")
+    return {
+        "file_path": str(file_path),
+        "line_start": 0,
+        "line_end": max(0, min(line_count, excerpt.count("\n"))),
+        "content": excerpt,
+        "language": language,
+        "is_definition": False,
+        "chunk_type": "infra",
+        "chunk_node_type": "lockfile",
+    }
 
 
 class IndexOrchestrator:
@@ -1575,6 +1622,113 @@ class IndexOrchestrator:
         if links:
             self._doc_link_store.insert_batch(links)
 
+    @staticmethod
+    def _is_ts_source(file_path: str) -> bool:
+        """Return whether *file_path* is a JavaScript/TypeScript source file."""
+        return Path(file_path).suffix.lower() in {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
+
+    @staticmethod
+    def _ts_module_candidates(base: str) -> list[str]:
+        """Return the index-relative paths a TS module specifier may resolve to.
+
+        Covers explicit extensions, extension-less imports, a ``.js``
+        specifier that points at a ``.ts`` source (ESM-style), and directory
+        barrel ``index`` files.
+        """
+        normalized = posixpath.normpath(base)
+        extensions = (".ts", ".tsx", ".d.ts", ".js", ".jsx", ".mjs", ".cjs")
+        candidates: list[str] = []
+        if any(normalized.endswith(ext) for ext in extensions):
+            candidates.append(normalized)
+            stem = normalized.rsplit(".", 1)[0]
+            candidates.extend(f"{stem}{ext}" for ext in extensions)
+        else:
+            candidates.extend(f"{normalized}{ext}" for ext in extensions)
+            candidates.extend(f"{normalized}/index{ext}" for ext in extensions)
+        return list(dict.fromkeys(candidates))
+
+    @staticmethod
+    def _resolve_ts_alias(
+        specifier: str,
+        base_dir: Path | None,
+        paths: list[tuple[str, list[str]]],
+    ) -> Path | None:
+        """Resolve a non-relative TS import through ``baseUrl``/``paths``.
+
+        Args:
+            specifier: The bare module specifier (``@/components/Button``).
+            base_dir: The ``baseUrl`` directory, or the repository root.
+            paths: ``(pattern, targets)`` pairs from ``compilerOptions.paths``.
+
+        Returns:
+            The candidate absolute path, or ``None`` when the specifier is an
+            external package.
+        """
+        for pattern, targets in paths:
+            wildcard: str | None = None
+            if "*" in pattern:
+                prefix, suffix = pattern.split("*", 1)
+                if not (specifier.startswith(prefix) and specifier.endswith(suffix)):
+                    continue
+                wildcard = specifier[len(prefix) : len(specifier) - len(suffix)]
+            elif specifier != pattern:
+                continue
+            for target in targets:
+                substituted = target.replace("*", wildcard or "")
+                return (base_dir or Path()) / substituted
+        if base_dir is not None:
+            return base_dir / specifier
+        return None
+
+    @staticmethod
+    def _load_tsconfig_aliases(root_path: Path) -> tuple[Path | None, list[tuple[str, list[str]]]]:
+        """Read ``baseUrl``/``paths`` from the repository's tsconfig files.
+
+        ``tsconfig.json`` is read first, then any ``tsconfig.*.json`` variants
+        (Vite projects keep aliases in ``tsconfig.app.json``). Paths are
+        resolved against ``baseUrl`` when present, otherwise the directory
+        holding the tsconfig.
+
+        Args:
+            root_path: The indexed repository root.
+
+        Returns:
+            ``(base_dir, [(pattern, [target, ...]), ...])``; ``(None, [])``
+            when no tsconfig carries path mappings.
+        """
+        config_files = [root_path / "tsconfig.json"]
+        config_files.extend(
+            p for p in sorted(root_path.glob("tsconfig.*.json")) if p.name != "tsconfig.json"
+        )
+        base_dir: Path | None = None
+        paths: list[tuple[str, list[str]]] = []
+        for config_file in config_files:
+            if not config_file.exists():
+                continue
+            try:
+                data = json.loads(config_file.read_text(encoding="utf-8"))
+            except Exception as exc:
+                logger.debug("Skipping unreadable %s: %s", config_file, exc)
+                continue
+            options = data.get("compilerOptions") or {}
+            config_base = config_file.parent
+            configured_base = options.get("baseUrl")
+            resolved_base = (
+                (config_base / str(configured_base)).resolve() if configured_base else config_base
+            )
+            configured_paths = options.get("paths") or {}
+            if not configured_paths:
+                continue
+            if base_dir is None:
+                base_dir = resolved_base
+            for pattern, targets in configured_paths.items():
+                if isinstance(targets, str):
+                    targets = [targets]
+                if not isinstance(targets, list):
+                    continue
+                paths.append((str(pattern), [str(target) for target in targets]))
+        return base_dir, paths
+
     def _persist_module_edges(self, root_path: Path, import_edges: list[dict[str, Any]]) -> None:
         """Resolve import statements to file paths and persist ``module_edges``.
 
@@ -1592,11 +1746,15 @@ class IndexOrchestrator:
             rows = conn.execute(
                 "SELECT conventional_fqn, name, kind, file_path FROM symbols;"
             ).fetchall()
+            indexed_files = conn.execute("SELECT DISTINCT file_path FROM code_chunks;").fetchall()
 
         conventional_files: dict[str, str] = {}
         type_files_by_name: dict[str, set[str]] = {}
         python_modules: dict[str, str] = {}
         all_files: set[str] = set()
+        for indexed in indexed_files:
+            if indexed["file_path"]:
+                all_files.add(self._relative_module_path(str(indexed["file_path"]), root_path))
         for row in rows:
             file_path = str(row["file_path"])
             rel = self._relative_module_path(file_path, root_path)
@@ -1617,6 +1775,41 @@ class IndexOrchestrator:
                 module = ".".join(parts[start:])
                 if module and module not in python_modules:
                     python_modules[module] = rel
+
+        ts_base_dir, ts_paths = self._load_tsconfig_aliases(root_path)
+
+        def resolve_ts_module(source_rel: str, raw: str) -> str | None:
+            """Resolve a TypeScript import specifier to an index-relative file.
+
+            Relative specifiers resolve against the importing file; aliases
+            resolve through ``tsconfig`` ``baseUrl``/``paths``. Extension-less
+            imports and directory imports resolve to ``.ts``/``.tsx``/
+            ``.d.ts``/``.js``/``.jsx`` files and barrel ``index`` files.
+            """
+            specifier = raw.split("#", 1)[0]
+            if not specifier:
+                return None
+            if specifier.startswith("."):
+                base = Path(source_rel).parent / specifier
+            elif specifier.startswith("/"):
+                base = Path(specifier.lstrip("/"))
+            else:
+                alias_target = self._resolve_ts_alias(specifier, ts_base_dir, ts_paths)
+                if alias_target is None:
+                    return None
+                try:
+                    base = (
+                        alias_target.relative_to(root_path)
+                        if alias_target.is_absolute()
+                        else alias_target
+                    )
+                except ValueError:
+                    return None
+            normalized = str(base)
+            for candidate in self._ts_module_candidates(normalized):
+                if candidate in all_files:
+                    return candidate
+            return None
 
         def resolve_target(raw: str) -> str | None:
             """Resolve one raw import target to an index-relative file path."""
@@ -1644,7 +1837,12 @@ class IndexOrchestrator:
                 continue
             source_rel = self._relative_module_path(source_path, root_path)
             raw = str(edge.get("target_fqn") or "")
-            target_path = resolve_target(raw) if raw else None
+            module_raw = str(edge.get("module") or raw)
+            if self._is_ts_source(source_rel):
+                target_path = resolve_ts_module(source_rel, module_raw)
+                raw = module_raw
+            else:
+                target_path = resolve_target(raw) if raw else None
             module_rows.append(
                 {
                     "source_path": source_rel,

@@ -1718,6 +1718,8 @@ class HybridSearch:
             return path_class_cache[file_path]
 
         code_context = self._code_language_context(language)
+        code_intent = self._code_intent(query, language)
+        code_scope = content in ("code", DEFAULT_CONTENT_SCOPE)
         infra_weight = (
             self._settings.infra_deboost if code_context else self._settings.infra_deboost_relaxed
         )
@@ -1740,6 +1742,19 @@ class HybridSearch:
             is_test = _is_test_file(chunk["file_path"])
             is_non_canonical = _is_non_canonical(chunk["file_path"])
             file_role_of = file_role(chunk["file_path"], analysis_paths=analysis_paths)
+            if (
+                code_intent
+                and code_scope
+                and file_role_of is FileRole.INFRA
+                and chunk_id not in exact_ids
+                and chunk_id not in rescue_evidence
+            ):
+                # A build/deployment/lockfile chunk is never an answer to a
+                # code-shaped query unless it carries the exact literal the
+                # query asked for. Multiplicative de-boosting still lets a
+                # keyword-dense lockfile win on score, so the suppression is a
+                # hard drop here.
+                continue
 
             score = float(fused[chunk_id])
             if threshold > 0.0 and score < threshold:
@@ -1802,19 +1817,26 @@ class HybridSearch:
                         1.0 + self._settings.config_inject_primary_extra
                     )
             weighted_score = score * weight * content_weight
+            noise_multiplier = 1.0
+            infra_multiplier = 1.0
+            exact_boost = 0.0
+            min_lift_applied = 0.0
             # Non-test queries should not have a keyword-dense test class
             # displace the production answer. The pre-fusion demotion is
             # intentionally mild (test files are still useful candidates);
             # this post-fusion pass applies the same penalty again, and the
             # factor is skipped when the query asks for tests.
             if is_test and not self._test_intent(query):
-                weighted_score = weighted_score * self._settings.noise_penalty
+                noise_multiplier = self._settings.noise_penalty
+                weighted_score = weighted_score * noise_multiplier
             if chunk_id in exact_ids:
-                weighted_score = weighted_score + self._settings.exact_match_boost
+                exact_boost = self._settings.exact_match_boost
+                weighted_score = weighted_score + exact_boost
             if fused_vector_score > 0.0 and rank_class == "code":
                 # min-vector-lift: a vectorized relevant chunk must not
                 # silently rank below a lexical-only (vector: 0.0) alternative.
-                weighted_score = weighted_score + self._settings.min_lift
+                min_lift_applied = self._settings.min_lift
+                weighted_score = weighted_score + min_lift_applied
 
             # Infra/resource/analysis demotion under a code-language context:
             # infra, resource, and report-artifact files sink below code
@@ -1828,7 +1850,8 @@ class HybridSearch:
                     or (resource_scent and chunk_content_type == "config")
                 )
                 if not reconciled:
-                    weighted_score = weighted_score * infra_weight
+                    infra_multiplier = infra_weight
+                    weighted_score = weighted_score * infra_multiplier
 
             concept_evidence_for_chunk = concept_evidence.get(chunk_id) or {}
             conf = calibrated_confidence(
@@ -1894,6 +1917,16 @@ class HybridSearch:
                         "code": class_weights["code"],
                         "boilerplate": class_weights["boilerplate"],
                         "resource": class_weights["resource"],
+                    },
+                    "multipliers": {
+                        "rank_class": weight,
+                        "content": content_weight,
+                        "test_noise": noise_multiplier,
+                        "infra": infra_multiplier,
+                    },
+                    "additive": {
+                        "exact_match": exact_boost,
+                        "min_vector_lift": min_lift_applied,
                     },
                     "rescue": rescue_evidence.get(chunk_id),
                     "path_boost": path_boost_evidence.get(chunk_id),
@@ -3872,6 +3905,42 @@ class HybridSearch:
             fused[chunk_id] = fused.get(chunk_id, 0.0) + boost
             evidence[chunk_id] = boost
         return evidence
+
+    def _code_intent(self, query: str, explicit_language: str | None) -> bool:
+        """Return whether *query* is asking for source code rather than data.
+
+        A code language context (explicit or inferred) is authoritative. When
+        the language is ambiguous, code-shaped vocabulary — a resolved symbol,
+        a camelCase/snake_case identifier, a qualified name, a filename with a
+        source extension, or a code-language term — signals a code intent.
+        Prose questions and configuration vocabulary do not.
+
+        Args:
+            query: The user query text.
+            explicit_language: Language supplied on the request, if any.
+
+        Returns:
+            ``True`` when source code is the target of the query.
+        """
+        if self._code_language_context(explicit_language):
+            return True
+        if query_symbol_identifier(query) or qualified_query_name(query):
+            return True
+        if self._analysis is not None and self._analysis.definition_intent:
+            return True
+        tokens = re.findall(r"[A-Za-z_$][\w$.:/-]*", query)
+        source_extensions = re.compile(
+            r"\.(?:py|pyi|java|kt|kts|ts|tsx|js|jsx|mjs|cjs|go|rs|rb|swift|php|cs|cpp|cc|c|h|hpp)$",
+            re.IGNORECASE,
+        )
+        for token in tokens:
+            if token.lower() in {"code", "function", "method", "class", "interface", "module"}:
+                return True
+            if "_" in token or "::" in token or source_extensions.search(token):
+                return True
+            if any(char.isupper() for char in token[1:]):
+                return True
+        return False
 
     def _code_language_context(self, explicit_language: str | None) -> bool:
         """Return whether a code-language context is active for the query.

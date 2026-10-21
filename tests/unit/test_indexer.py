@@ -754,3 +754,20 @@ def test_cross_file_resolution_reuses_name_row_cache(tmp_path: Path) -> None:
     assert first[0] is not None
     assert first == second
     assert counting.queries == 1
+
+
+def test_lockfile_indexed_as_one_infra_record(tmp_path: Path) -> None:
+    """A large lockfile becomes a single bounded infra chunk, not line blocks."""
+    lockfile = tmp_path / "package-lock.json"
+    lockfile.write_text(
+        "{\n" + "".join(f'  "pkg{i}": {{"version": "1.0.{i}"}},\n' for i in range(5000)) + "}\n"
+    )
+    result = _process_file_worker((lockfile, lockfile.read_bytes(), "json", None))
+
+    assert len(result["chunks"]) == 1
+    chunk = result["chunks"][0]
+    assert chunk["chunk_node_type"] == "lockfile"
+    assert chunk["chunk_type"] == "infra"
+    assert chunk["is_definition"] is False
+    assert chunk["fqn"].endswith("::lockfile")
+    assert len(chunk["content"]) <= 2000

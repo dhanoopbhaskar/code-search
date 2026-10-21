@@ -744,3 +744,26 @@ def test_gitignore_subdirectory_pattern_matches_only_that_path(
     files = {path.relative_to(tmp_path).as_posix() for path in parser.discover_files(tmp_path)}
 
     assert files == {"generated/gen.py", "src/main.py"}
+
+
+def test_tsx_grammar_parses_jsx_and_chunks_components(parser: ASTParser, tmp_path: Path) -> None:
+    """``.tsx`` uses the TSX grammar: JSX parses and components become chunks."""
+    component = tmp_path / "ArticleList.tsx"
+    component.write_text(
+        "import React from 'react';\n"
+        "export const ArticleList = ({ articles }: { articles: string[] }) => {\n"
+        "  return <ul>{articles.map((item) => <li key={item}>{item}</li>)}</ul>;\n"
+        "};\n"
+        "export default function App() { return <ArticleList articles={[]} />; }\n"
+    )
+    chunks = parser.get_chunks_for_file(component, component.read_bytes())
+
+    component_chunks = [c for c in chunks if c["chunk_node_type"] == "lexical_declaration"]
+    assert component_chunks, "arrow component declaration must be chunked"
+    assert component_chunks[0]["is_definition"] is True
+    assert "ArticleList" in component_chunks[0]["content"]
+    assert "<ul>" in component_chunks[0]["content"]
+
+    function_chunks = [c for c in chunks if c["chunk_node_type"] == "function_declaration"]
+    assert function_chunks, "function declaration must be chunked"
+    assert function_chunks[0]["is_definition"] is True

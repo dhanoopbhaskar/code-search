@@ -258,6 +258,15 @@ path (lexical-only fusion, no model load):
 code-search search "pagination" --no-model
 ```
 
+Scores are ordered, not probabilities: weak matches are demoted, but a strong
+match can exceed `1.0` rather than saturating at `1.00`. To audit why a result
+ranked where it did, `--explain-ranking` adds `score_sources` and prints the
+per-result multipliers and boosts:
+
+```bash
+code-search search "ArticleList loadArticles" --explain-ranking
+```
+
 ### View operational metrics
 
 ```bash

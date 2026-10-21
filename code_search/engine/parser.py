@@ -336,6 +336,10 @@ LANGUAGE_GRAMMAR_MAP: dict[str, str] = {
     "shell": "tree_sitter_bash",
     "yaml": "tree_sitter_yaml",
     "toml": "tree_sitter_toml",
+    # Internal dialect: ``.tsx`` files need the TSX grammar (JSX + TS), while
+    # the public language token for them stays ``typescript`` so filters and
+    # stored language values remain unchanged.
+    "tsx": "tree_sitter_typescript",
 }
 
 _TREE_SITTER_AVAILABLE = False
@@ -518,7 +522,13 @@ class ASTParser:
         lang = self.detect_language(file_path)
         if lang is None:
             return None
-        parser = self._get_parser(lang)
+        # TypeScript's default grammar cannot parse JSX; ``.tsx`` files must use
+        # the sibling ``tsx`` dialect. The public language token stays
+        # ``typescript`` so chunks and symbol records are unchanged.
+        parse_lang = "tsx" if file_path.suffix.lower() == ".tsx" else lang
+        parser = self._get_parser(parse_lang) or (
+            self._get_parser(lang) if parse_lang != lang else None
+        )
         if parser is None:
             return None
         try:
@@ -632,6 +642,35 @@ class ASTParser:
                 ):
                     files.append(fpath)
         return sorted(files)
+
+    @staticmethod
+    def _lexical_declaration_defines_function(node: object) -> bool:
+        """Return whether a ``lexical_declaration`` binds a function value.
+
+        JavaScript/TypeScript express components and thunks as
+        ``const Name = () => ...`` or ``const Name = createAsyncThunk(...)``.
+        The declaration is the meaningful definition anchor (it carries the
+        name), so it is marked as a definition when any declarator's value is
+        an arrow function, a function expression, or a call that constructs the
+        callable.
+
+        Args:
+            node: A tree-sitter ``lexical_declaration`` node.
+
+        Returns:
+            ``True`` when the declaration should be treated as a definition.
+        """
+        function_values = {"arrow_function", "function_expression", "function", "call_expression"}
+        try:
+            for child in node.children:  # type: ignore[attr-defined]
+                if child.type != "variable_declarator":
+                    continue
+                value = child.child_by_field_name("value")
+                if value is not None and value.type in function_values:
+                    return True
+        except Exception:
+            return False
+        return False
 
     @staticmethod
     def get_node_text(node: object, source_bytes: bytes) -> str:
@@ -911,6 +950,7 @@ class ASTParser:
 
         chunk_types: set[str] = {
             "function_definition",
+            "function_declaration",
             "method_definition",
             "class_definition",
             "class_declaration",
@@ -929,6 +969,7 @@ class ASTParser:
 
         new_chunk_types: dict[str, str] = {
             "variable_declaration": "variable_declaration",
+            "lexical_declaration": "lexical_declaration",
             "import_statement": "import_statement",
             "import_from_statement": "import_statement",
             "require_statement": "import_statement",
@@ -942,6 +983,7 @@ class ASTParser:
 
         is_definition_types: set[str] = {
             "function_definition",
+            "function_declaration",
             "method_definition",
             "class_definition",
             "class_declaration",
@@ -985,7 +1027,10 @@ class ASTParser:
                 return
             if text.strip():
                 resolved_type = new_chunk_types.get(node_type, node_type)
-                is_def = node_type in is_definition_types
+                is_def = node_type in is_definition_types or (
+                    node_type == "lexical_declaration"
+                    and self._lexical_declaration_defines_function(node)
+                )
                 rules = declared_rules or self._annotation_rules(node, source_bytes)
                 chunk: ParsedNode = {
                     "file_path": str(file_path),

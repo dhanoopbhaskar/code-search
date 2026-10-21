@@ -8,6 +8,8 @@ hanging.
 
 from __future__ import annotations
 
+import os
+import socket
 import threading
 import time
 from pathlib import Path
@@ -167,6 +169,38 @@ def test_ensure_resident_service_removes_stale_socket(tmp_path: Path) -> None:
 
     assert cli_main._ensure_resident_service(args) is False
     assert not socket_path.exists()
+
+
+def test_ensure_resident_service_requires_a_live_daemon(monkeypatch: Any, tmp_path: Path) -> None:
+    """A spawn that never binds must not claim the model load.
+
+    The caller relies on this ``False`` to start its own warmup; returning
+    ``True`` for a dead daemon leaves every query on the lexical path.
+    """
+    import argparse
+
+    from code_search.cli import main as cli_main
+
+    monkeypatch.setattr("subprocess.Popen", lambda *_a, **_k: object())
+
+    args = argparse.Namespace(context_dir=str(tmp_path))
+
+    assert cli_main._ensure_resident_service(args) is False
+
+
+def test_long_context_path_uses_a_short_socket(tmp_path: Path) -> None:
+    """A deep checkout must still produce a bindable ``AF_UNIX`` path."""
+    context_dir = tmp_path / ("x" * 100) / ".context"
+    context_dir.mkdir(parents=True)
+
+    socket_path = default_socket_path(context_dir)
+
+    assert socket_path != context_dir / "code-search.sock"
+    assert len(os.fsencode(str(socket_path))) <= 107
+    assert socket_path == default_socket_path(context_dir), "path must be deterministic"
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.bind(str(socket_path))
 
 
 def test_daemon_forwarded_search_surfaces_scope_signal_and_override(

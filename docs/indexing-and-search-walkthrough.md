@@ -871,9 +871,10 @@ The CLI and MCP server then:
 
 1. **Rerank** (`Reranker.rerank`) — definition-owner boost (1.5),
    `definition_boost` (1.2), test penalty, non-canonical penalty, model-file
-   penalty, DTS/barrel penalties, infra deboost, session weight; final scores are
-   clamped to `[0, 1]`. This is why engine `score_sources` values can exceed 1.0
-   while the reported `score` is exactly `1.0`.
+   penalty, DTS/barrel penalties, infra deboost, session weight. Scores are
+   lower-bounded at `0.0` but not upper-capped: a strong match can exceed `1.0`,
+   so unrelated results do not all collapse to `1.00` and lose discrimination.
+   Use `--explain-ranking` to print the components behind each score.
 2. **Redact** (`Redactor.redact_results`) — pattern-based masking of API keys,
    JWTs, AWS keys, PEM blocks, passwords, bearer tokens, GitHub/Slack/npm
    tokens, DB connection strings, Spring property secrets; replaces matches with
@@ -1010,14 +1011,15 @@ confidence band.
 
 Why can `fused` be `1.7657` when fusion normalises to `[0, 1]`? Because the
 additive structural passes (match boost, path boost) run **after** fusion and
-add fractions of the pool maximum; `score` is then weighted and finally clamped
-to `[0, 1]` by the reranker.
+add fractions of the pool maximum; `score` is then weighted by the reranker.
+The reranker keeps scores non-negative but does not cap them at `1.0`, so a
+strong match can exceed `1.0` and still outrank a near-miss by its true margin.
 
 - `bm25_score` is SQLite's negative BM25; ignore its magnitude, use ordering.
 - `vector_score` is the **raw** cosine when the dense arm retrieved this chunk,
   otherwise `0.0` (`vector_retrieved` disambiguates).
 - `fused` is post-fusion, pre-weight; `score` is post-weight/post-rerank and
-  clamped.
+  lower-bounded at `0.0` (not upper-capped).
 - `score_sources` exists only when `score_breakdown` is enabled; it is the
   audit trail for "why did this rank here?".
 - `file_matches` is the number of matching chunks in that file before dedup.
@@ -1122,8 +1124,9 @@ rejected by the rescue floor rather than matched to something arbitrary.
 7. **`languages` metadata reflects symbols, not files.** A repo with only config
    or prose files can report `[]`.
 8. **Scores are not probabilities.** `score` is a fused, weighted, reranked
-   number clamped to `[0, 1]`; `confidence` is a separate calibrated band. Use
-   `confidence_band` for triage, `score` for ordering only.
+   number that is non-negative but may exceed `1.0`; `confidence` is a separate
+   calibrated band. Use `confidence_band` for triage, `score` for ordering only,
+   and `--explain-ranking` to audit the components.
 9. **Index state gates service.** `search` refuses to answer unless
    `index_status == "ready"`. A crashed run is recoverable: `cmd_index` clears a
    stale lock/status. A schema or representation-scheme bump forces a full

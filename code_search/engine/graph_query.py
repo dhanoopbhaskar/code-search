@@ -1525,6 +1525,7 @@ class GraphQueryService:
                 "ORDER BY source_symbol_id, target_symbol_id LIMIT ?;",
                 (max_edges,),
             ).fetchall()
+            total_symbols = int(conn.execute("SELECT COUNT(*) AS n FROM symbols;").fetchone()["n"])
 
         entity_ids: set[int] = set()
         god_nodes: list[dict[str, Any]] = []
@@ -1572,6 +1573,9 @@ class GraphQueryService:
 
         cycles = self._import_cycles()
         edge_stats = edge_resolution_stats(self._db)
+        total_edges = sum(int(stat["total"]) for stat in edge_stats.values())
+        resolved_edges = sum(int(stat["resolved"]) for stat in edge_stats.values())
+        resolved_symbols = len(entity_ids)
         isolated = [
             {
                 "fqn": row["fqn"],
@@ -1589,8 +1593,15 @@ class GraphQueryService:
             edge_stats=edge_stats,
             suggested_questions=self._suggest_questions(god_nodes, cycles, isolated),
             stats={
-                "symbols": len(entity_ids),
+                "symbols": resolved_symbols,
+                "symbols_extracted": total_symbols,
+                "symbol_coverage": (
+                    round(resolved_symbols / total_symbols, 3) if total_symbols else 0.0
+                ),
                 "edges": len(edge_rows),
+                "edges_total": total_edges,
+                "edges_resolved": resolved_edges,
+                "edge_coverage": round(resolved_edges / total_edges, 3) if total_edges else 0.0,
                 "elapsed_ms": round((time.monotonic() - start) * 1000, 1),
             },
         )
@@ -1891,6 +1902,15 @@ def render_architecture_markdown(report: ArchitectureReport) -> str:
         f"Symbols: {report.stats.get('symbols', 0)} | "
         f"Resolved edges: {report.stats.get('edges', 0)}"
     )
+    if "symbols_extracted" in report.stats:
+        lines.append(
+            f"Symbol coverage: {report.stats.get('symbol_coverage', 0.0):.1%} "
+            f"({report.stats.get('symbols', 0)} connected / "
+            f"{report.stats.get('symbols_extracted', 0)} extracted) | "
+            f"Edge coverage: {report.stats.get('edge_coverage', 0.0):.1%} "
+            f"({report.stats.get('edges_resolved', 0)} / "
+            f"{report.stats.get('edges_total', 0)})"
+        )
     lines.append("")
     lines.append("## God nodes")
     if report.god_nodes:

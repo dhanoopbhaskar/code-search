@@ -500,10 +500,14 @@ def cmd_search(args: argparse.Namespace) -> int:
         return 2
 
     external_warmup = False
+    autostart_attempted = False
     if not getattr(args, "no_model", False):
         if not getattr(args, "no_startup_check", False):
+            autostart_attempted = True
             external_warmup = _ensure_resident_service(args)
-        forwarded = _try_forward_to_daemon(args)
+        forwarded = None
+        if not getattr(args, "explain_ranking", False):
+            forwarded = _try_forward_to_daemon(args)
         if forwarded is not None:
             return forwarded
 
@@ -542,6 +546,22 @@ def cmd_search(args: argparse.Namespace) -> int:
             comps["embedding_gen"],
             settings,
             no_model=True,
+        )
+
+    explain_ranking = bool(getattr(args, "explain_ranking", False))
+    if explain_ranking:
+        from dataclasses import replace
+
+        from code_search.engine.search import HybridSearch
+
+        settings = replace(settings, score_breakdown=True)
+        comps["settings"] = settings
+        comps["search"] = HybridSearch(
+            comps["db"],
+            comps["vector_index"],
+            comps["embedding_gen"],
+            settings,
+            no_model=bool(getattr(args, "no_model", False)),
         )
 
     status = comps["metadata"].get_index_status()
@@ -597,7 +617,9 @@ def cmd_search(args: argparse.Namespace) -> int:
 
     from code_search.mcp.server import _freshness_signal
 
-    performance_hint = None if external_warmup else _daemon_performance_hint(context_dir)
+    performance_hint = (
+        None if external_warmup or autostart_attempted else _daemon_performance_hint(context_dir)
+    )
 
     def _envelope_out(results: list[dict[str, Any]]) -> dict[str, Any]:
         """Assemble the JSON envelope for the current search mode.
@@ -716,6 +738,8 @@ def cmd_search(args: argparse.Namespace) -> int:
     else:
         index_root = comps["metadata"].get("index_root") or str(context_dir.parent)
         _print_search_results(redacted, settings, root=index_root)
+        if explain_ranking:
+            _print_ranking_explanation(redacted, root=index_root)
         print(f"Query time: {duration_ms} ms")
         _emit_reduced_notice(search_envelope)
         _emit_stale_notice(_freshness_signal(comps))
@@ -1514,6 +1538,44 @@ def _print_search_results(
         )
 
 
+def _print_ranking_explanation(
+    results: list[dict[str, Any]],
+    root: str | Path | None = None,
+) -> None:
+    """Print per-result score components for ``--explain-ranking``.
+
+    Shows the lexical, dense, and fused scores, then the class/content
+    multipliers and additive boosts that produced the final score. The output
+    is intentionally compact: one line per result so a ranking decision can be
+    audited without dumping the full JSON envelope.
+
+    Args:
+        results: Reranked search results carrying ``score_sources``.
+        root: Indexed repository root used to relativize paths.
+    """
+    from code_search.engine.graph_query import relative_display
+
+    print("\nRanking explanation")
+    for rank, result in enumerate(results, start=1):
+        sources = result.get("score_sources") or {}
+        multipliers = sources.get("multipliers") or {}
+        additive = sources.get("additive") or {}
+        location = relative_display(result.get("file_path"), root)
+        print(
+            f"  {rank:>2}. score={result.get('score', 0.0):.4f} "
+            f"fused={sources.get('fused', 0.0):.4f} "
+            f"bm25={sources.get('bm25', 0.0):.4f} "
+            f"vector={sources.get('vector', 0.0):.4f} "
+            f"mult(class={multipliers.get('rank_class', 1.0):.3f},"
+            f"content={multipliers.get('content', 1.0):.3f},"
+            f"test={multipliers.get('test_noise', 1.0):.3f},"
+            f"infra={multipliers.get('infra', 1.0):.3f}) "
+            f"add(exact={additive.get('exact_match', 0.0):.3f},"
+            f"lift={additive.get('min_vector_lift', 0.0):.3f}) "
+            f"{location}"
+        )
+
+
 def _print_symbol_details(
     symbol: dict[str, Any],
     parent_info: dict[str, Any] | None,
@@ -1800,7 +1862,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
 
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     write_pidfile(context_dir)
-    log_path = socket_path.parent / "code-search-daemon.log"
+    log_path = context_dir / "code-search-daemon.log"
     with log_path.open("a", buffering=1) as log_handle:
         proc = subprocess.Popen(
             [
@@ -1860,16 +1922,18 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
     A one-shot invocation with no resident service must still meet the
     interactive budget without a manual pre-warm. This spawns the daemon
     fire-and-forget (the existing ``daemon start`` subprocess path) and probes
-    readiness once with a short timeout. Returns ``True`` when a resident
-    service exists but is not yet warm, so the caller serves the reduced cold
-    path without starting a competing in-process model load.
+    readiness with a short timeout. A resident service only owns the model
+    load once it answers ``ping``; a daemon that failed to bind must not
+    suppress the caller's in-process load.
 
     Args:
         args: Parsed arguments; the context directory is honoured.
 
     Returns:
-        ``True`` when a (possibly still warming) resident service owns the model
-        load; ``False`` when a warm service is already available.
+        ``True`` when a (possibly still warming) resident service answered
+        ``ping`` and owns the model load; ``False`` when a warm service is
+        already available, a stale socket was removed, or the spawned daemon
+        never became reachable.
     """
     import subprocess
     import sys as _sys
@@ -1883,7 +1947,8 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
 
     context_dir = _resolve_context_dir(args)
     socket_path = default_socket_path(context_dir)
-    if socket_path.exists() and not DaemonClient.is_serving(socket_path, timeout=0.1):
+    serving = socket_path.exists() and DaemonClient.is_serving(socket_path, timeout=0.1)
+    if socket_path.exists() and not serving:
         # A starting daemon binds its socket before the model is ready, so a
         # first failed probe is not proof that the socket is stale. When its
         # pidfile names a live process, retry briefly before removing
@@ -1905,10 +1970,11 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
             with suppress(OSError):
                 (context_dir / "code-search.pid").unlink()
             return False
+        serving = True
     if not socket_path.exists():
         socket_path.parent.mkdir(parents=True, exist_ok=True)
         write_pidfile(context_dir)
-        log_path = socket_path.parent / "code-search-daemon.log"
+        log_path = context_dir / "code-search-daemon.log"
         with log_path.open("a", buffering=1) as log_handle:
             subprocess.Popen(
                 [
@@ -1928,15 +1994,25 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
                 stdin=subprocess.DEVNULL,
                 env=os.environ.copy(),
             )
-    try:
-        client = DaemonClient(socket_path, timeout=0.05)
-        resp = client.request("ping")
-        payload = resp.get("payload") or {}
-        if resp.get("ok") and payload.get("warm"):
+    # The socket is bound only after component initialisation, so allow the
+    # freshly spawned daemon a short grace period to answer. Never claim the
+    # model load without a successful ping: doing so on a dead daemon leaves
+    # the one-shot process permanently lexical-only.
+    deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            resp = DaemonClient(socket_path, timeout=0.05).request("ping")
+            payload = resp.get("payload") or {}
+            if resp.get("ok"):
+                return not bool(payload.get("warm"))
+        except Exception:
+            pass
+        if serving:
+            # ``is_serving`` already completed a ping on this live listener.
+            return True
+        if time.monotonic() >= deadline:
             return False
-    except Exception:
-        pass
-    return True
+        time.sleep(0.05)
 
 
 def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
@@ -2259,6 +2335,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-model",
         action="store_true",
         help="Fast path: skip vector-model warm-up, fuse lexical only",
+    )
+    search_parser.add_argument(
+        "--explain-ranking",
+        action="store_true",
+        help="Include the score breakdown for every result and print the ranking components",
     )
     search_parser.set_defaults(func=cmd_search)
 

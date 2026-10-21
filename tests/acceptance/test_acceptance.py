@@ -363,7 +363,7 @@ class TestCliSearch:
         data = _unwrap_search(data)
         for r in data:
             s = r["score"]
-            assert 0.0 <= s <= 1.0, f"Score {s} out of range [0,1]"
+            assert s >= 0.0, f"Score {s} is negative"
 
     def test_search_below_threshold_flag(self, repo_path: Path, indexed: dict) -> None:
         result = _search(repo_path, "UserService", extra=["--json", "--limit", "10"])

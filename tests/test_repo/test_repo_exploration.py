@@ -127,7 +127,9 @@ class TestSearchJsonOutput:
         result = _run_cs(["search", "article", "--json", "--limit", "10"], cwd=repo_path)
         assert result.returncode == 0
         for r in _search_rows(result.stdout):
-            assert 0.0 <= r["score"] <= 1.0, f"Score {r['score']} out of range [0,1]"
+            # Scores are ordered, not probabilities: non-negative but not
+            # upper-capped, so strong matches keep their magnitude.
+            assert r["score"] >= 0.0, f"Score {r['score']} must be non-negative"
 
     def test_search_below_threshold_flag(self, repo_path: Path) -> None:
         result = _run_cs(["search", "article", "--json", "--limit", "10"], cwd=repo_path)
