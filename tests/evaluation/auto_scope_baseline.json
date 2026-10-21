@@ -2,12 +2,12 @@
   "benchmark_index": {
     "cases": {
       "def func": {
-        "content": "code_focused",
+        "content": "code",
         "result_count": 0,
         "result_files": []
       },
       "notes func 3": {
-        "content": "code_focused",
+        "content": "code",
         "result_count": 10,
         "result_files": [
           "f0.py",

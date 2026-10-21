@@ -705,11 +705,11 @@ class MCPServer:
                         (named symbol-kind list).
                     content: Content-type scope — ``code``, ``config``,
                         ``docs``, ``all``, or ``code_focused``. Omitting it
-                        (``None``) means no scope preference: the effective
-                        default is code-focused (code + config), and a
-                        documentation-shaped query whose default search finds
-                        nothing is automatically searched with ``all``. Use
-                        ``content="all"`` to force documentation inclusion.
+                        (``None``) means no scope preference: a code-shaped
+                        query defaults to ``code``, a documentation-shaped
+                        query is widened to ``all``, and other queries use
+                        code-focused (code + config). Use ``content="all"``
+                        to force documentation inclusion.
                     no_model: Fast path that skips the vector model (lexical
                         fusion only).
                     matching: Exhaustive matching semantics — ``literal``,
@@ -1074,6 +1074,7 @@ class MCPServer:
                     comps["edge_store"],
                     comps["search"],
                     settings,
+                    reranker=comps.get("reranker"),
                 )
 
             def _edge_types(value: str) -> set[str]:

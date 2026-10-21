@@ -18,11 +18,12 @@ Design constraints:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -160,15 +161,70 @@ def _candidate_identifiers(text: str) -> list[str]:
     return ordered
 
 
+# Question words and glue that must not drive per-term seed coverage: a
+# parameter type named ``NewCommentParam`` is not evidence that a comment
+# method answers a question about a "new article".
+_QUERY_STOPWORDS = frozenset(
+    {
+        "about",
+        "after",
+        "and",
+        "are",
+        "before",
+        "been",
+        "being",
+        "between",
+        "does",
+        "for",
+        "from",
+        "has",
+        "have",
+        "how",
+        "into",
+        "its",
+        "over",
+        "that",
+        "the",
+        "this",
+        "through",
+        "under",
+        "was",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "with",
+    }
+)
+
+
 def _terms(text: str) -> set[str]:
     """Return lowercased identifier/word terms from *text*."""
     parts = re.split(r"[^A-Za-z0-9_]+|(?<=[a-z0-9])(?=[A-Z])|_", text)
     return {p.lower() for p in parts if len(p) >= 3}
 
 
+def _query_terms(text: str) -> set[str]:
+    """Return significant query terms, excluding question-word glue."""
+    return _terms(text) - _QUERY_STOPWORDS
+
+
+def _symbol_terms(fqn: str, name: str) -> set[str]:
+    """Return the declaration terms of a symbol, excluding parameter types."""
+    declaration = fqn.split("(", 1)[0]
+    return _terms(declaration + " " + name)
+
+
 @dataclass(frozen=True)
 class GraphNode:
-    """A node in a graph answer (symbol, file, or unresolved external leaf)."""
+    """A node in a graph answer (symbol, file, or unresolved external leaf).
+
+    ``reason`` is populated on seed nodes to explain why the seed was chosen;
+    it is ``None`` for nodes reached by traversal.
+    """
 
     key: str
     fqn: str
@@ -181,6 +237,7 @@ class GraphNode:
     distance: int = 0
     signature: str | None = None
     docstring: str | None = None
+    reason: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable node payload."""
@@ -196,6 +253,7 @@ class GraphNode:
             "distance": self.distance,
             "signature": self.signature,
             "docstring": self.docstring,
+            "reason": self.reason,
         }
 
 
@@ -380,6 +438,7 @@ class GraphQueryService:
         module_store: ModuleEdgeStore | None = None,
         rationale_store: RationaleStore | None = None,
         doc_link_store: DocLinkStore | None = None,
+        reranker: Any | None = None,
     ) -> None:
         """Wire the service to the existing engine components.
 
@@ -393,11 +452,15 @@ class GraphQueryService:
             module_store: Optional module-edge store.
             rationale_store: Optional rationale store.
             doc_link_store: Optional documentation-link store.
+            reranker: Optional result reranker. When supplied, seeds are chosen
+                from the same reranked hits the search surface returns instead
+                of the raw fusion order.
         """
         self._db = db
         self._symbols = symbol_store
         self._edges = edge_store
         self._search = search
+        self._reranker = reranker
         self._settings = settings or Settings.from_env()
         self._modules = module_store or ModuleEdgeStore(db)
         self._rationale = rationale_store or RationaleStore(db)
@@ -545,13 +608,26 @@ class GraphQueryService:
         return answer
 
     def _select_seeds(self, question: str, explicit: list[str] | None) -> list[GraphNode]:
-        """Resolve *explicit* seeds or derive up to three from hybrid search."""
+        """Resolve *explicit* seeds or derive up to three from hybrid search.
+
+        Seeds always come from the search hits first: the top hit seeds the
+        traversal, per-term coverage adds a hit for each uncovered query term,
+        and the remaining top hits fill the seed set. When a reranker is wired
+        in, the hits are reranked first so the seeds match the ranking the
+        search surface shows. Every seed carries a ``reason`` describing why it
+        was chosen.
+        """
         if explicit:
             resolved: list[GraphNode] = []
             for reference in explicit:
                 node = self._resolve_seed_node(reference)
                 if node is not None:
-                    resolved.append(node)
+                    resolved.append(
+                        replace(
+                            node,
+                            reason=(f"explicit seed {reference!r} resolved from the symbol index"),
+                        )
+                    )
             return resolved[:3]
 
         try:
@@ -564,11 +640,14 @@ class GraphQueryService:
         except Exception:
             return []
         results = envelope.get("results") or []
-        mapped: list[tuple[dict[str, Any], GraphNode]] = []
-        for result in results:
+        if self._reranker is not None and results:
+            with contextlib.suppress(Exception):
+                results = self._reranker.rerank(results, query=question)
+        mapped: list[tuple[int, dict[str, Any], GraphNode]] = []
+        for rank, result in enumerate(results, start=1):
             node = self._map_chunk_to_symbol(result)
             if node is not None:
-                mapped.append((result, node))
+                mapped.append((rank, result, node))
         if not mapped:
             # Lexical fallback: when the ranker finds nothing (a short
             # imperative question on a tiny index), resolve the identifiers
@@ -579,45 +658,62 @@ class GraphQueryService:
                 symbol = envelope.get("symbol")
                 if symbol is None:
                     continue
-                node = self._node_from_symbol(symbol)
+                node = replace(
+                    self._node_from_symbol(symbol),
+                    reason=(
+                        f"identifier {identifier!r} named in the query "
+                        "resolved from the symbol index"
+                    ),
+                )
                 if all(node.key != existing.key for existing in fallback_seeds):
                     fallback_seeds.append(node)
                 if len(fallback_seeds) >= 3:
                     break
             return fallback_seeds
 
-        min_score = float(mapped[0][0].get("score") or 0.0) * 0.25
-        chosen: list[GraphNode] = [mapped[0][1]]
+        first_rank, first_result, first_node = mapped[0]
+        min_score = float(first_result.get("score") or 0.0) * 0.25
+        chosen: list[GraphNode] = [
+            replace(first_node, reason=self._seed_reason(first_rank, first_result))
+        ]
         chosen_ids = {chosen[0].key}
 
         # Per-term guarantee: make sure one common identifier cannot starve
         # the other query terms by adding a seed covering each uncovered term.
-        query_terms = _terms(question)
-        covered = _terms(mapped[0][1].fqn + " " + mapped[0][1].name)
+        query_terms = _query_terms(question)
+        covered = _symbol_terms(first_node.fqn, first_node.name)
         for term in sorted(query_terms - covered):
-            for result, node in mapped:
+            for rank, result, node in mapped:
                 if node.key in chosen_ids:
                     continue
                 if float(result.get("score") or 0.0) < min_score:
                     continue
-                if term in _terms(node.fqn + " " + node.name):
-                    chosen.append(node)
+                node_terms = _symbol_terms(node.fqn, node.name)
+                if term in node_terms:
+                    reason = f"hybrid search hit #{rank} covers query term {term!r}"
+                    chosen.append(replace(node, reason=reason))
                     chosen_ids.add(node.key)
-                    covered |= _terms(node.fqn + " " + node.name)
+                    covered |= node_terms
                     break
             if len(chosen) >= 3:
                 break
 
-        for result, node in mapped:
+        for rank, result, node in mapped:
             if len(chosen) >= 3:
                 break
             if node.key in chosen_ids:
                 continue
             if float(result.get("score") or 0.0) < min_score:
                 continue
-            chosen.append(node)
+            chosen.append(replace(node, reason=self._seed_reason(rank, result)))
             chosen_ids.add(node.key)
         return chosen
+
+    @staticmethod
+    def _seed_reason(rank: int, result: dict[str, Any]) -> str:
+        """Return the human-readable provenance for a hybrid-search seed."""
+        score = float(result.get("score") or 0.0)
+        return f"hybrid search hit #{rank} (score {score:.3f})"
 
     def _resolve_seed_node(self, reference: str) -> GraphNode | None:
         """Resolve an explicit seed reference to a graph node."""
@@ -1778,7 +1874,8 @@ def render_query_text(answer: GraphAnswer, *, root: str | Path | None = None) ->
         for node in grouped[file_path]:
             marker = "*" if node.key in seed_keys else " "
             location = f":{node.line_start}" if node.line_start is not None else ""
-            lines.append(f"  {marker} {display_symbol(node.fqn)} ({node.kind}){location}")
+            reason = f" — {node.reason}" if node.key in seed_keys and node.reason else ""
+            lines.append(f"  {marker} {display_symbol(node.fqn)} ({node.kind}){location}{reason}")
     relations = [edge for edge in answer.edges if edge.relation != "CONTAINS"]
     if relations:
         lines.append("relations:")

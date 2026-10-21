@@ -17,7 +17,8 @@ from code_search.engine.intent_detection import (
 
 DOCS_QUERIES = ["readme documentation", "how to deploy", "operations guide", "tutorial"]
 CONFIG_QUERIES = ["database configuration", "connection pool settings", "yaml property timeout"]
-NEUTRAL_QUERIES = ["user login handler", "sum two numbers", "ArticleService.save"]
+CODE_QUERIES = ["login_handler", "function", "login", "guide_factory"]
+NEUTRAL_QUERIES = ["user login handler", "sum two numbers", "ArticleService.save", "AuthService"]
 
 
 class TestClassifyDocsIntent:
@@ -44,6 +45,21 @@ class TestClassifyConfigIntent:
         assert classify_content_intent(query) is ContentIntent.CONFIG
 
 
+class TestClassifyCodeIntent:
+    def test_code_shaped_queries_classify_code(self) -> None:
+        for query in CODE_QUERIES:
+            assert classify_content_intent(query) is ContentIntent.CODE, query
+
+    def test_config_wins_over_code_vocabulary(self) -> None:
+        # "connection" is config vocabulary even though it is also code-shaped.
+        assert classify_content_intent("database connection settings") is ContentIntent.CONFIG
+
+    def test_exact_symbol_queries_keep_the_broader_default(self) -> None:
+        # Exact identifiers already outrank configuration via exact matching.
+        for query in ("AuthService", "ArticleService.save", "ArticleRepository.findById"):
+            assert classify_content_intent(query) is ContentIntent.NEUTRAL, query
+
+
 class TestPrecedence:
     def test_docs_wins_over_config(self) -> None:
         # Both docs ("guide") and config ("database") vocabulary are present.
@@ -53,9 +69,9 @@ class TestPrecedence:
         for query in NEUTRAL_QUERIES:
             assert classify_content_intent(query) is ContentIntent.NEUTRAL, query
 
-    def test_symbol_named_like_docs_word_stays_neutral(self) -> None:
+    def test_symbol_named_like_docs_word_is_code(self) -> None:
         # A symbol that merely contains a docs word must not trigger docs intent.
-        assert classify_content_intent("guide_factory") is ContentIntent.NEUTRAL
+        assert classify_content_intent("guide_factory") is ContentIntent.CODE
 
 
 class TestScopeSignalAccuracy:
@@ -93,6 +109,9 @@ class TestScopeSignalAccuracy:
     def test_neutral_never_signals(self) -> None:
         assert build_scope_signal(ContentIntent.NEUTRAL, "code", "default", None) is None
 
+    def test_code_never_signals(self) -> None:
+        assert build_scope_signal(ContentIntent.CODE, "code", "default", None) is None
+
     def test_signal_is_surface_neutral(self) -> None:
         """The message names a neutral scope, never a CLI flag."""
         for intent in (ContentIntent.DOCS, ContentIntent.CONFIG):
@@ -109,3 +128,6 @@ class TestScopeOverride:
 
     def test_neutral_override_is_effective_scope(self) -> None:
         assert scope_override(ContentIntent.NEUTRAL, "code_focused") == "code_focused"
+
+    def test_code_override_is_effective_scope(self) -> None:
+        assert scope_override(ContentIntent.CODE, "code") == "code"

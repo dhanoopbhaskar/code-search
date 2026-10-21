@@ -113,7 +113,7 @@ code-search search "database connection pool" --language java --no-include-tests
 | `--limit N` | `10` | Max results |
 | `--language LANG` | — | Filter by language (python, java, typescript, etc.) |
 | `--include-tests` / `--no-include-tests` | `false` | Include/exclude test files (excluded by default; indexed tests are only searchable with `--include-tests`) |
-| `--content {code,config,docs,all,code_focused}` | `code_focused` | Content axis; the code-focused default excludes prose/docs from ranked results unless `--content docs`/`all` is requested |
+| `--content {code,config,docs,all,code_focused}` | intent inference | Content axis; code-shaped queries default to `code`, documentation-shaped queries widen to `all`, and other queries use `code_focused` (code + config, docs excluded) |
 | `--matching {literal,all_tokens,any_token}` | `all_tokens` | Exhaustive matching semantics (`--mode exhaustive` only); `literal` treats the whole query as one verbatim substring |
 | `--regex` | off | Treat the query as a Python regular expression (`--mode exhaustive` only); invalid patterns return an `invalid_regex` explanation |
 | `--no-startup-check` | off | Skip transparent daemon auto-start for this invocation; repeat CLI use is fastest with an already-running `code-search daemon start` |
@@ -461,7 +461,8 @@ Returns `outcome`, `seeds[]`, `nodes[]`, `edges[]`, `truncated`, `stats`, and
 `AMBIGUOUS`, or `UNRESOLVED`) plus its stored `resolution_tier`. Seeds are
 reported explicitly so an irrelevant neighbourhood is auditable; `outcome` is
 `no_seed` when the ranker and lexical fallback cannot map the question to a
-symbol.
+symbol. Each seed carries a `reason` (for example `hybrid search hit #1 (score
+1.234)`) so the choice of starting point is auditable.
 
 #### `shortest_path`
 
@@ -597,7 +598,7 @@ Rebuild the index after major changes so the vector layer reflects the current c
 | "Find all usages of `DEBUG` constant" | `grep` | Exact string/regex pattern search is still best for grep |
 | "Count how many times `foo` appears" | `grep` | Exact counting is a lexical operation, not a search task |
 | "Find exact literal string `foo` across codebase" | `search --mode exhaustive` | Exhaustive mode scans all indexed files for literal/token matches; returns exact `total_count` |
-| "Search only config files for X" | `search --content config` | Content-type scoping: `code`, `config`, `docs`, `all`, or `code_focused` (default) |
+| "Search only config files for X" | `search --content config` | Content-type scoping: `code`, `config`, `docs`, `all`, or `code_focused` (queries default by intent) |
 
 ### Typical agent workflow
 
@@ -616,13 +617,13 @@ Rebuild the index after major changes so the vector layer reflects the current c
 - `exhaustive`: Line-oriented literal/token scan across all indexed files; returns exact `total_count`; use `matching` (`literal`/`all_tokens`/`any_token`) for semantics
 
 **Content scope** (`--content` / `content`):
-- `code_focused` (default): Source code only; excludes config/resource/docs
-- `code`: Source code only (stricter than `code_focused`)
+- `code`: Source code only; the inferred default for code-shaped queries
+- `code_focused`: Source code plus configuration, docs excluded; the inferred default for configuration-shaped and neutral queries
 - `config`: Configuration files (YAML, TOML, JSON, XML, properties, etc.)
 - `docs`: Prose documentation (Markdown, RST, text)
 - `all`: All content types
 
-When a query shaped for config/docs is run under `code`/`code_focused` scope, the response includes a visible hint: *"config content excluded by code scope; use --content config to include"*.
+When a query shaped for config/docs is run under an excluding `code` scope, the response includes a visible hint: *"config content excluded by code scope; use --content config to include"*.
 
 ### Production-only search
 

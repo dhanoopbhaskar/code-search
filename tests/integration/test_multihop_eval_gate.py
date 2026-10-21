@@ -43,6 +43,21 @@ def test_multihop_chain_recall_floor(indexed_multihop: dict[str, Any]) -> None:
 
 
 @pytest.mark.integration
+def test_query_seeds_carry_hybrid_provenance(indexed_multihop: dict[str, Any]) -> None:
+    """Every derived seed records that it came from a hybrid search hit."""
+    answer = _service(indexed_multihop).query(
+        "how does favoriting an article flow from the controller to the repository"
+    )
+    assert answer.outcome == "resolved"
+    assert answer.seeds
+    for seed in answer.seeds:
+        assert seed.reason is not None
+        assert seed.reason.startswith("hybrid search hit #")
+    payload = answer.as_dict()
+    assert all(seed["reason"] for seed in payload["seeds"])
+
+
+@pytest.mark.integration
 def test_module_imports_are_resolved(indexed_multihop: dict[str, Any]) -> None:
     """Java imports produce resolved module edges and retain their raw target."""
     from code_search.engine.graph import ModuleEdgeStore

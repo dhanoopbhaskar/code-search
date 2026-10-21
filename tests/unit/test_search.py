@@ -12,7 +12,7 @@ class _MockBM25Search:
     def search(self, _query: str = "", **_kwargs: object) -> list[tuple[int, float]]:
         return self._results
 
-    def count(self, _query: str = "") -> int:
+    def count(self, _query: str = "", **_kwargs: object) -> int:
         return len(self._results)
 
 

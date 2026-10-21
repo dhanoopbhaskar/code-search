@@ -1111,6 +1111,7 @@ def _graph_query_service(comps: dict[str, Any]) -> Any:
         comps["edge_store"],
         comps["search"],
         comps.get("settings"),
+        reranker=comps.get("reranker"),
     )
 
 
@@ -2375,12 +2376,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["code", "config", "docs", "all", "code_focused"],
         default=None,
         help="Content-type scope: code, config, docs, all, or code_focused. "
-        "Omitting it means no scope preference: the effective default is "
-        "code-focused (code + config), and a documentation-shaped query whose "
-        "default search finds nothing is automatically searched with content "
-        "scope all. A configuration-shaped query under a scope that excludes "
-        "configuration (code) reports how to include it. Force a scope with "
-        "--content all (documentation) or --content config (configuration).",
+        "Omitting it means no scope preference: a code-shaped query defaults "
+        "to code, a documentation-shaped query is widened to all, and other "
+        "queries use code_focused (code + config). A configuration-shaped "
+        "query under a scope that excludes configuration (code) reports how "
+        "to include it. Force a scope with --content all (documentation) or "
+        "--content config (configuration).",
     )
     search_parser.add_argument("--language", help="Filter by language")
     search_parser.add_argument(

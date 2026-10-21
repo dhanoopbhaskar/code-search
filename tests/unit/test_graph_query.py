@@ -14,8 +14,11 @@ from code_search.engine.graph_query import (
     GraphAnswer,
     GraphEdge,
     GraphNode,
+    GraphQueryService,
     ImpactAnswer,
     PathAnswer,
+    _query_terms,
+    _symbol_terms,
     display_symbol,
     edge_resolution_stats,
     render_architecture_markdown,
@@ -75,6 +78,48 @@ def test_render_query_text_marks_seeds_and_confidence() -> None:
     text = render_query_text(answer)
     assert "* f::A" in text
     assert "f::A --CALLS/EXTRACTED--> f::B" in text
+
+
+def test_render_query_text_shows_seed_reason() -> None:
+    """Seed provenance is rendered next to the seed marker."""
+    seed = GraphNode(
+        "f::A",
+        "f::A",
+        "A",
+        "function",
+        "f",
+        1,
+        2,
+        reason="hybrid search hit #1 (score 1.234)",
+    )
+    answer = GraphAnswer("how", seeds=[seed], nodes=[seed], edges=[])
+    text = render_query_text(answer)
+    assert "* f::A" in text
+    assert "hybrid search hit #1" in text
+
+
+def test_seed_payload_includes_reason() -> None:
+    """The structured seed payload carries its provenance."""
+    seed = GraphNode("f::A", "f::A", "A", "function", "f", 1, 2, reason="explicit seed")
+    payload = GraphAnswer("how", seeds=[seed], nodes=[seed], edges=[]).as_dict()
+    assert payload["seeds"][0]["reason"] == "explicit seed"
+
+
+def test_seed_reason_formats_hybrid_hit() -> None:
+    """The seed reason names the hit rank and score."""
+    reason = GraphQueryService._seed_reason(2, {"score": 0.5})
+    assert reason == "hybrid search hit #2 (score 0.500)"
+
+
+def test_seed_terms_ignore_question_words_and_parameter_types() -> None:
+    """Seed coverage uses declaration names, not question glue or parameter types."""
+    assert "where" not in _query_terms("where a new article is saved")
+    terms = _symbol_terms(
+        "f::CommentsApi.createComment(String,User,NewCommentParam)",
+        "createComment",
+    )
+    assert "comment" in terms
+    assert "new" not in terms
 
 
 def test_render_path_text_handles_no_path() -> None:

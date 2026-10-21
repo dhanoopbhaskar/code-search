@@ -61,11 +61,12 @@ from code_search.engine.scent_detection import (
 
 logger = logging.getLogger(__name__)
 
-# The content-scope vocabulary: the four explicit
-# axes plus the code-focused default. ``code_focused`` resolves to the pool
-# ``content_type != 'docs'`` (code + config); prose is returned only under an
-# explicit ``docs``/``all`` scope. This is the default ranked scope on both
-# surfaces and in the engine.
+# The content-scope vocabulary: the four explicit axes plus the code-focused
+# scope. ``code_focused`` resolves to the pool ``content_type != 'docs'``
+# (code + config); prose is returned only under an explicit ``docs``/``all``
+# scope. It is the default for configuration-shaped and neutral queries; a
+# code-shaped query defaults to the stricter ``code`` scope so configuration
+# files cannot outrank source.
 DEFAULT_CONTENT_SCOPE = "code_focused"
 VALID_CONTENT_SCOPES = ("code", "config", "docs", "all", DEFAULT_CONTENT_SCOPE)
 
@@ -732,15 +733,17 @@ class BM25Search:
         result = self._search_topk(query, top_k, count_only=False, content=content)
         return result if isinstance(result, list) else []
 
-    def count(self, query: str) -> int:
+    def count(self, query: str, content: str = "all") -> int:
         """Return the number of FTS5-matching chunks for *query* (uncapped).
 
         The count reflects total distinct matches for the query tokens before
         the top-k pool slice, so a response can report ``total_matches`` and a
-        ``truncated`` flag. Returns ``0`` when the query
-        produces no MATCH expression or the search fails.
+        ``truncated`` flag. *content* applies the same axis filter as
+        :meth:`search`, so ``total_matches`` never advertises chunks the
+        response scope excluded. Returns ``0`` when the query produces no
+        MATCH expression or the search fails.
         """
-        result = self._search_topk(query, None, count_only=True)
+        result = self._search_topk(query, None, count_only=True, content=content)
         return result if isinstance(result, int) else 0
 
     def _search_topk(
@@ -760,23 +763,28 @@ class BM25Search:
             fqn_w = self._settings.bm25_fqn_weight
             path_w = self._settings.bm25_path_weight
             rules_w = self._settings.bm25_rules_weight
+            content_clause = (
+                ""
+                if content == "all"
+                else (
+                    " AND c.content_type != 'docs'"
+                    if content == DEFAULT_CONTENT_SCOPE
+                    else " AND c.content_type = ?"
+                )
+            )
             with self._db.connect() as conn:
                 if count_only:
+                    params: list[Any] = [fts5_query]
+                    if content not in ("all", DEFAULT_CONTENT_SCOPE):
+                        params.append(content)
                     row = conn.execute(
-                        "SELECT COUNT(*) AS n FROM chunks_fts WHERE chunks_fts MATCH ?;",
-                        (fts5_query,),
+                        "SELECT COUNT(*) AS n FROM chunks_fts AS f "
+                        "JOIN code_chunks AS c ON c.id = f.rowid "
+                        "WHERE chunks_fts MATCH ?" + content_clause + ";",
+                        params,
                     ).fetchone()
                     return cast(int, row["n"]) if row is not None else 0
-                content_clause = (
-                    ""
-                    if content == "all"
-                    else (
-                        " AND c.content_type != 'docs'"
-                        if content == DEFAULT_CONTENT_SCOPE
-                        else " AND c.content_type = ?"
-                    )
-                )
-                params: list[Any] = [fts5_query]
+                params = [fts5_query]
                 if content not in ("all", DEFAULT_CONTENT_SCOPE):
                     params.append(content)
                 params.append(top_k)
@@ -1214,8 +1222,9 @@ class HybridSearch:
             content: One of ``"code"``, ``"config"``, ``"docs"``, ``"all"``, or
                 ``"code_focused"``. ``None`` (or an unknown value) means no
                 explicit scope preference: a documentation-shaped ranked query
-                is widened to ``all`` automatically; every other query uses the
-                code-focused default (code + config).
+                is widened to ``all`` automatically, a code-shaped query is
+                narrowed to ``code``, and configuration-shaped/neutral queries
+                use the code-focused default (code + config).
             matching: Exhaustive-only matching semantics — ``literal``,
                 ``all_tokens``, or ``any_token`` — the three exhaustive semantics. Ignored outside
                 exhaustive mode.
@@ -1237,36 +1246,33 @@ class HybridSearch:
         intent = classify_content_intent(query) if inference_enabled else ContentIntent.NEUTRAL
         suggested: str | None = None
 
-        if mode == "ranked" and inference_enabled and not explicit and intent is ContentIntent.DOCS:
-            # A strong documentation intent widens the scope directly instead
-            # of only hinting after code results already outranked the docs.
-            # The effective scope is reported as ``inferred`` so the response
-            # explains why prose was included.
-            envelope = self._search_impl(
-                query,
-                limit=limit,
-                language=language,
-                include_tests=include_tests,
-                alpha=alpha,
-                mode=mode,
-                content="all",
-                matching=matching,
-                regex=regex,
-            )
-            origin = "inferred"
-        else:
-            envelope = self._search_impl(
-                query,
-                limit=limit,
-                language=language,
-                include_tests=include_tests,
-                alpha=alpha,
-                mode=mode,
-                content=content,
-                matching=matching,
-                regex=regex,
-            )
-            origin = "explicit" if explicit else "default"
+        effective_content = content
+        origin = "explicit" if explicit else "default"
+        if mode == "ranked" and inference_enabled and not explicit:
+            if intent is ContentIntent.DOCS:
+                # A strong documentation intent widens the scope directly
+                # instead of only hinting after code results already
+                # outranked the docs. The effective scope is reported as
+                # ``inferred`` so the response explains why prose was
+                # included.
+                effective_content = "all"
+                origin = "inferred"
+            elif intent is ContentIntent.CODE:
+                # A code-shaped query searches source only: configuration and
+                # build files must not outrank code on shared vocabulary.
+                effective_content = "code"
+
+        envelope = self._search_impl(
+            query,
+            limit=limit,
+            language=language,
+            include_tests=include_tests,
+            alpha=alpha,
+            mode=mode,
+            content=effective_content,
+            matching=matching,
+            regex=regex,
+        )
 
         effective = envelope.get("content") or DEFAULT_CONTENT_SCOPE
         envelope["content"] = effective
@@ -1987,7 +1993,7 @@ class HybridSearch:
         if results and all(r.get("vector_degraded") for r in results):
             logger.info("Vector search unavailable. Results based on BM25 only.")
 
-        total_matches = self._bm25.count(query)
+        total_matches = max(self._bm25.count(query, content=content), len(results))
         if exact_ids and total_matches == 0:
             total_matches = len(exact_ids)
         return {
@@ -3610,7 +3616,7 @@ class HybridSearch:
                 }
             )
         results = self._apply_file_coherence(results)
-        total_matches = bm25.count(query)
+        total_matches = max(bm25.count(query, content=content), len(results))
         return {
             "results": results[:limit],
             "total_matches": total_matches,

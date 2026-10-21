@@ -683,15 +683,19 @@ flowchart TD
 
 #### Step 1 — content scope and intent
 
-`content=None` is **not** `all`. With no explicit scope the effective default is
-`code_focused` (code + config, **docs excluded**). Two intent behaviours layer on
-top:
+`content=None` is **not** `all`. With no explicit scope, ranked search infers
+the scope from the query text:
 
-- documentation-shaped query (`readme`, `how to deploy`, …): run the default
-  first; if it returns results, return them unchanged with a strong suggestion;
-  if empty, re-run with `all` and label `origin: "inferred"`;
-- configuration-shaped query: config is already included, so scope does not
-  change; the response still names the accurate direction.
+- fuzzy code-shaped query (a short word such as `login`, a snake_case
+  identifier, or code vocabulary such as `function`/`controller`): search
+  `code` only, so configuration and build files cannot outrank source;
+- exact symbol-shaped query (`AuthService`, `ArticleService.save`): use
+  `code_focused`, since exact matching already outranks configuration;
+- documentation-shaped query (`readme`, `how to deploy`, …): widen to `all` and
+  label `origin: "inferred"`, lifting prose chunks;
+- configuration-shaped query: use `code_focused` (code + config, **docs
+  excluded**) and name the accurate direction;
+- neutral query: use `code_focused`.
 
 An explicit `--content` / `content=` always overrides inference. The envelope
 echoes `content` plus a `scope` object
@@ -1105,9 +1109,9 @@ rejected by the rescue floor rather than matched to something arbitrary.
    returning it masks `jwt.secret` to `[REDACTED]` while `db.password` survives
    because the heuristic patterns do not match that exact shape. Treat
    `.context/` as sensitive: it contains chunk text from the repository.
-2. **`content=None` means `code_focused`, not `all`.** Docs are excluded by
-   default; inference only widens to `all` for a docs-shaped query that returns
-   nothing.
+2. **`content=None` is resolved by query intent, never to `all` implicitly.**
+   Code-shaped queries use `code`, docs-shaped queries widen to `all`, and
+   other queries use `code_focused` (code + config, docs excluded).
 3. **Cold queries are answered, not blocked.** They use the reduced lexical path
    and say so. Warm them with the daemon or a prior query.
 4. **FQNs are absolute-path-scoped.** Two checkouts of the same repo produce

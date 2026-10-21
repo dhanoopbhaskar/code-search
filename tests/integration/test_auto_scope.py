@@ -144,6 +144,38 @@ class TestNonRankedModes:
         assert envelope["scope"]["suggested"] is None
 
 
+class TestCodeIntentScope:
+    def test_code_shaped_query_defaults_to_strict_code_scope(
+        self, indexed_transparency: dict[str, Any]
+    ) -> None:
+        """A fuzzy code-shaped query searches source only, so configuration
+        cannot outrank it on shared vocabulary."""
+        envelope = indexed_transparency["search"].search("save", limit=10)
+        assert envelope["content"] == "code"
+        assert envelope["scope"]["intent"] == "code"
+        assert envelope["scope"]["origin"] == "default"
+        assert envelope["scope"]["signal"] is None
+        assert envelope["results"]
+        assert all(r.get("content_type") == "code" for r in envelope["results"])
+
+    def test_exact_symbol_query_keeps_the_broader_default(
+        self, indexed_transparency: dict[str, Any]
+    ) -> None:
+        """Exact symbol names already outrank configuration, so they keep the
+        config-inclusive default."""
+        envelope = indexed_transparency["search"].search("ArticleService.save", limit=10)
+        assert envelope["content"] == "code_focused"
+        assert envelope["scope"]["intent"] == "neutral"
+
+    def test_config_shaped_query_keeps_config_in_scope(
+        self, indexed_transparency: dict[str, Any]
+    ) -> None:
+        """Configuration-shaped queries still use the config-inclusive default."""
+        envelope = indexed_transparency["search"].search("database configuration", limit=10)
+        assert envelope["content"] == "code_focused"
+        assert envelope["scope"]["intent"] == "config"
+
+
 class TestConfigIntentAccuracy:
     def test_default_scope_keeps_config_reachable_without_signal(
         self, indexed_transparency: dict[str, Any]

@@ -68,18 +68,20 @@ code-search search "public Comment save" --mode exhaustive --matching literal --
 ```
 
 `--content {code,config,docs,all,code_focused}` scopes a search to one content
-axis. Omitting `--content` means **no scope preference**: the effective default
-is **code-focused** — prose/docs chunks (markdown/`.rst`/`.txt`) are excluded
-from ranked results, so docs never pollute code answers, while configuration is
-included. On top of that default, **intent inference** runs on the ranked path:
-a documentation-shaped query (for example "readme documentation", "how to
-deploy") widens the scope to `all` immediately and lifts prose chunks, so a code
-result that merely mentions the words does not automatically outrank the prose
-answer. A configuration-shaped query never
-changes the effective scope (configuration is already included), and its
-guidance is **accurate**: a scope that includes configuration never claims
-configuration is excluded. An explicit `--content` value always overrides
-inference.
+axis. Omitting `--content` means **no scope preference** and lets **query-intent
+inference** choose on the ranked path. A fuzzy code-shaped query (a short
+word such as "login", a snake_case identifier, or code vocabulary such as
+"function" or "controller") searches `code` only, so configuration and build
+files cannot outrank source on shared vocabulary. Exact symbol-shaped queries
+(`AuthService`, `ArticleService.save`) keep the broader default because their
+exact-match boost already outranks configuration. A documentation-shaped query
+(for example "readme documentation", "how to deploy") widens the scope to
+`all` immediately and lifts prose chunks, so a code result that merely mentions
+the words does not automatically outrank the prose answer. Other queries use
+`code_focused` (code + config, **docs excluded**); a configuration-shaped query
+keeps configuration reachable and its guidance is **accurate** — a scope that
+includes configuration never claims configuration is excluded. An explicit
+`--content` value always overrides inference.
 
 Test files are excluded from ranked search by default; add `--include-tests`
 (or `include_test_files: true` on MCP) when the test itself is the answer.
@@ -178,7 +180,9 @@ inventing a proxy.
 
 `code-search query` seeds a bounded graph traversal from the hybrid search
 ranker and returns a compact neighbourhood with a confidence label on every
-edge (`EXTRACTED`, `INFERRED`, `AMBIGUOUS`, or `UNRESOLVED`).
+edge (`EXTRACTED`, `INFERRED`, `AMBIGUOUS`, or `UNRESOLVED`). Seeds are taken
+from the same reranked hits the search surface returns, and each seed reports
+why it was chosen (hybrid rank/score, term coverage, or an explicit reference).
 
 ```bash
 code-search query "how does favoriting an article flow from controller to repository"
