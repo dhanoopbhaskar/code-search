@@ -117,6 +117,18 @@ def test_daemon_search_forwarded(daemon_env: dict[str, Any]) -> None:
     assert any("main.py" in r["file_path"] for r in results)
 
 
+def test_daemon_search_reports_match_split(daemon_env: dict[str, Any]) -> None:
+    """A daemon-ranked payload carries the production/test split so the
+    forwarded human path can report hidden tests."""
+    resp = daemon_env["client"].request(
+        "search", {"query": "validate token", "limit": 10, "include_tests": False}
+    )
+    payload = resp["payload"]
+    assert payload["production_matches"] >= 1
+    assert payload["test_matches"] == 0
+    assert payload["production_matches"] + payload["test_matches"] <= payload["total_matches"]
+
+
 def test_daemon_search_envelope_is_mode_aware(daemon_env: dict[str, Any]) -> None:
     """The daemon payload reports total_matches/best_effort for ranked
     and total_count/complete for exhaustive/enumerate."""
@@ -135,7 +147,7 @@ def test_daemon_search_envelope_is_mode_aware(daemon_env: dict[str, Any]) -> Non
     )
     payload = exhaustive["payload"]
     assert payload["total_count"] >= 1
-    assert "total_matches" not in payload
+    assert payload["total_matches"] == payload["total_count"]
     assert payload["complete"] is True
 
     enumerate_resp = daemon_env["client"].request(
@@ -144,7 +156,7 @@ def test_daemon_search_envelope_is_mode_aware(daemon_env: dict[str, Any]) -> Non
     )
     payload = enumerate_resp["payload"]
     assert payload["total_count"] >= 1
-    assert "total_matches" not in payload
+    assert payload["total_matches"] == payload["total_count"]
     assert payload["complete"] is True
 
 

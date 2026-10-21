@@ -159,3 +159,28 @@ def test_typo_and_framework_callee_both_unresolved_distinguishable_by_raw(
     assert "repository.save" in raw_texts, f"framework callee missing from {raw_texts}"
     assert "reposiroty.save" in raw_texts, f"typo callee missing from {raw_texts}"
     assert len(raw_texts) >= 2, "typo and framework callees must be distinguishable by raw text"
+
+
+@pytest.mark.integration
+@pytest.mark.slow
+def test_query_collapses_external_leaves_by_default(
+    transparency_comps: dict[str, Any],
+) -> None:
+    """``query`` hides external/unresolved leaves unless opted in."""
+    from code_search.engine.graph_query import GraphQueryService
+
+    comps = transparency_comps
+    service = GraphQueryService(
+        comps["db"],
+        comps["symbol_store"],
+        comps["edge_store"],
+        comps["search"],
+        comps["settings"],
+    )
+
+    collapsed = service.query("save", seeds=["ArticleService.save(Article)"])
+    assert not [node for node in collapsed.nodes if node.source == "external"]
+    assert collapsed.stats["collapsed_externals"] >= 1
+
+    expanded = service.query("save", seeds=["ArticleService.save(Article)"], include_external=True)
+    assert [node for node in expanded.nodes if node.source == "external"]

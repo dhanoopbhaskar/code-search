@@ -20,7 +20,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from code_search.engine.config import Settings, _is_test_file
+from code_search.engine.config import Settings
 
 if TYPE_CHECKING:
     from code_search.engine.audit import AuditDatabase
@@ -482,7 +482,8 @@ def cmd_search(args: argparse.Namespace) -> int:
 
     Args:
         args: Parsed arguments; ``query``, ``limit``, ``language``,
-            ``include_tests``, ``json``, ``no_model`` are honoured.
+            ``include_tests``, ``json``, ``no_model``, ``no_startup_check``,
+            and ``regex`` are honoured.
 
     Returns:
         A process exit code: ``0`` on success, ``1`` when the index is not
@@ -494,10 +495,19 @@ def cmd_search(args: argparse.Namespace) -> int:
     if profile_error is not None:
         return profile_error
 
+    if getattr(args, "regex", False) and getattr(args, "mode", "ranked") != "exhaustive":
+        print("--regex requires --mode exhaustive", file=sys.stderr)
+        return 2
+
     external_warmup = False
+    autostart_attempted = False
     if not getattr(args, "no_model", False):
-        external_warmup = _ensure_resident_service(args)
-        forwarded = _try_forward_to_daemon(args)
+        if not getattr(args, "no_startup_check", False):
+            autostart_attempted = True
+            external_warmup = _ensure_resident_service(args)
+        forwarded = None
+        if not getattr(args, "explain_ranking", False):
+            forwarded = _try_forward_to_daemon(args)
         if forwarded is not None:
             return forwarded
 
@@ -538,6 +548,22 @@ def cmd_search(args: argparse.Namespace) -> int:
             no_model=True,
         )
 
+    explain_ranking = bool(getattr(args, "explain_ranking", False))
+    if explain_ranking:
+        from dataclasses import replace
+
+        from code_search.engine.search import HybridSearch
+
+        settings = replace(settings, score_breakdown=True)
+        comps["settings"] = settings
+        comps["search"] = HybridSearch(
+            comps["db"],
+            comps["vector_index"],
+            comps["embedding_gen"],
+            settings,
+            no_model=bool(getattr(args, "no_model", False)),
+        )
+
     status = comps["metadata"].get_index_status()
     if status not in ("ready",):
         print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
@@ -559,6 +585,7 @@ def cmd_search(args: argparse.Namespace) -> int:
         mode=getattr(args, "mode", "ranked"),
         content=getattr(args, "content", None),
         matching=getattr(args, "matching", None),
+        regex=getattr(args, "regex", False),
     )
     raw_results = search_envelope["results"]
     mode = str(search_envelope.get("mode", "ranked"))
@@ -590,7 +617,9 @@ def cmd_search(args: argparse.Namespace) -> int:
 
     from code_search.mcp.server import _freshness_signal
 
-    performance_hint = None if external_warmup else _daemon_performance_hint(context_dir)
+    performance_hint = (
+        None if external_warmup or autostart_attempted else _daemon_performance_hint(context_dir)
+    )
 
     def _envelope_out(results: list[dict[str, Any]]) -> dict[str, Any]:
         """Assemble the JSON envelope for the current search mode.
@@ -601,8 +630,11 @@ def cmd_search(args: argparse.Namespace) -> int:
         The serving envelope (index-change status + scope hint) is attached
         so the caller always sees an explanation when one is due.
         """
+        from code_search.engine.response_service import relativize_results
+
+        index_root = comps["metadata"].get("index_root") or str(context_dir.parent)
         out: dict[str, Any] = {
-            "results": results,
+            "results": relativize_results(results, index_root),
             count_field: total,
             "truncated": truncated,
             "vector_health": vector_health,
@@ -612,6 +644,10 @@ def cmd_search(args: argparse.Namespace) -> int:
             "performance_hint": performance_hint,
             "freshness": _freshness_signal(comps),
         }
+        if count_field != "total_matches":
+            out["total_matches"] = total
+        if search_envelope.get("token_savings") is not None:
+            out["token_savings"] = search_envelope["token_savings"]
         if serving_envelope.get("envelope") is not None:
             out["envelope"] = serving_envelope["envelope"]
         out["index_status"] = serving_envelope["index_status"]
@@ -619,6 +655,9 @@ def cmd_search(args: argparse.Namespace) -> int:
         out["reload_required"] = bool(serving_envelope.get("reload_required"))
         if search_envelope.get("content") is not None:
             out["content"] = search_envelope["content"]
+        for count_key in ("production_matches", "test_matches"):
+            if search_envelope.get(count_key) is not None:
+                out[count_key] = search_envelope[count_key]
         if search_envelope.get("scope") is not None:
             out["scope"] = search_envelope["scope"]
         if search_envelope.get("matching_semantics") is not None:
@@ -644,6 +683,10 @@ def cmd_search(args: argparse.Namespace) -> int:
 
         # Surface per-line occurrence metadata in exhaustive responses
         if mode == "exhaustive":
+            if search_envelope.get("regex"):
+                out["regex"] = True
+            if search_envelope.get("pattern") is not None:
+                out["pattern"] = search_envelope["pattern"]
             if search_envelope.get("occurrence_count") is not None:
                 out["occurrence_count"] = search_envelope["occurrence_count"]
             if search_envelope.get("literal") is not None:
@@ -673,6 +716,11 @@ def cmd_search(args: argparse.Namespace) -> int:
                 )
             else:
                 print("No results found.")
+            _print_match_breakdown(
+                search_envelope.get("production_matches"),
+                search_envelope.get("test_matches"),
+                args.include_tests,
+            )
             _emit_reduced_notice(search_envelope)
             if serving_envelope.get("envelope"):
                 print(serving_envelope["envelope"], file=sys.stderr)
@@ -692,6 +740,17 @@ def cmd_search(args: argparse.Namespace) -> int:
 
     redacted = comps["redactor"].redact_results(reranked)
 
+    compact = bool(getattr(args, "compact", True))
+    max_snippet_lines = getattr(args, "max_snippet_lines", None)
+    if (
+        not explain_ranking
+        and (args.json or max_snippet_lines is not None)
+        and (compact or max_snippet_lines is not None)
+    ):
+        from code_search.engine.response_service import compact_results
+
+        redacted = compact_results(redacted, max_snippet_lines or 20)
+
     total_redacted = sum(r.get("redacted_count", 0) for r in redacted)
     engine_duration = search_envelope.get("query_time_ms")
     duration_ms = (
@@ -703,7 +762,15 @@ def cmd_search(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(_envelope_out(redacted), indent=2, default=str))
     else:
-        _print_search_results(redacted, settings)
+        index_root = comps["metadata"].get("index_root") or str(context_dir.parent)
+        _print_search_results(redacted, settings, root=index_root)
+        _print_match_breakdown(
+            search_envelope.get("production_matches"),
+            search_envelope.get("test_matches"),
+            args.include_tests,
+        )
+        if explain_ranking:
+            _print_ranking_explanation(redacted, root=index_root)
         print(f"Query time: {duration_ms} ms")
         _emit_reduced_notice(search_envelope)
         _emit_stale_notice(_freshness_signal(comps))
@@ -767,6 +834,7 @@ def cmd_symbol(args: argparse.Namespace) -> int:
     kind = envelope["kind"]
     symbol = envelope["symbol"]
     candidates = envelope["candidates"]
+    index_root = comps["metadata"].get("index_root") or str(context_dir.parent)
 
     if kind == "ambiguous":
         duration_ms_entry = int((time.monotonic() - start) * 1000)
@@ -782,7 +850,7 @@ def cmd_symbol(args: argparse.Namespace) -> int:
             }
             print(json.dumps(output_amb, indent=2, default=str))
         else:
-            _print_ambiguous_candidates(args.fqn, candidates)
+            _print_ambiguous_candidates(args.fqn, candidates, root=index_root)
             _emit_stale_notice(_freshness_signal(comps))
         comps["audit_db"].write_entry(
             query_type="get_symbol_definition",
@@ -815,9 +883,12 @@ def cmd_symbol(args: argparse.Namespace) -> int:
                 f"Symbol not found: {args.fqn}. Did you mean: {best.get('name')}? "
                 f"(edit_distance {best.get('edit_distance')})"
             )
+            from code_search.engine.graph_query import display_symbol, relative_display
+
             for c in suggestions:
-                loc = f"{c['file_path']}:{c['line_start']}-{c['line_end']}"
-                print(f"  {c['fqn'] or ''} ({c['name']}, {c['kind']}) @ {loc}")
+                path = relative_display(c.get("file_path"), index_root)
+                loc = f"{path}:{c['line_start']}-{c['line_end']}"
+                print(f"  {display_symbol(c['fqn'] or '')} ({c['name']}, {c['kind']}) @ {loc}")
         else:
             print(f"Symbol not found: {args.fqn}")
             _emit_stale_notice(_freshness_signal(comps))
@@ -869,7 +940,7 @@ def cmd_symbol(args: argparse.Namespace) -> int:
         }
         print(json.dumps(output_sym, indent=2, default=str))
     else:
-        _print_symbol_details(symbol, parent_info, redacted_source)
+        _print_symbol_details(symbol, parent_info, redacted_source, root=index_root)
         _emit_stale_notice(_freshness_signal(comps))
 
     duration_ms = int((time.monotonic() - start) * 1000)
@@ -939,22 +1010,23 @@ def cmd_graph(args: argparse.Namespace) -> int:
     symbol = data.get("symbol")
     callers = data.get("callers") or []
     callees = data.get("callees") or []
+    index_root = comps["metadata"].get("index_root") or str(context_dir.parent)
 
     if args.json:
         data.setdefault("freshness", _freshness_signal(comps))
         data["query_time_ms"] = round((time.monotonic() - start) * 1000)
         print(json.dumps(data, indent=2, default=str))
     elif direction == "implements":
-        _print_implementations(data, args.fqn)
+        _print_implementations(data, args.fqn, root=index_root)
         _emit_stale_notice(_freshness_signal(comps))
     elif symbol is None and data.get("candidates"):
-        _print_ambiguous_candidates(args.fqn, data.get("candidates") or [])
+        _print_ambiguous_candidates(args.fqn, data.get("candidates") or [], root=index_root)
         _emit_stale_notice(_freshness_signal(comps))
     elif symbol is None:
         print(f"Symbol not found: {args.fqn}")
         _emit_stale_notice(_freshness_signal(comps))
     else:
-        _print_graph_results(symbol, callers, callees)
+        _print_graph_results(symbol, callers, callees, root=index_root)
         _emit_stale_notice(_freshness_signal(comps))
 
     if direction == "implements":
@@ -1016,13 +1088,14 @@ def cmd_implementations(args: argparse.Namespace) -> int:
 
     result = find_implementations(comps["symbol_store"], comps["edge_store"], args.fqn)
     implementations = result.get("implementations") or []
+    index_root = comps["metadata"].get("index_root") or str(context_dir.parent)
 
     if args.json:
         result["freshness"] = _freshness_signal(comps)
         result["query_time_ms"] = round((time.monotonic() - start) * 1000)
         print(json.dumps(result, indent=2, default=str))
     else:
-        _print_implementations(result, args.fqn)
+        _print_implementations(result, args.fqn, root=index_root)
         _emit_stale_notice(_freshness_signal(comps))
 
     duration_ms = int((time.monotonic() - start) * 1000)
@@ -1051,6 +1124,7 @@ def _graph_query_service(comps: dict[str, Any]) -> Any:
         comps["edge_store"],
         comps["search"],
         comps.get("settings"),
+        reranker=comps.get("reranker"),
     )
 
 
@@ -1084,6 +1158,70 @@ def _git_changed_files(root: Path, ref: str) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def cmd_find_related(args: argparse.Namespace) -> int:
+    """Return chunks semantically related to the chunk at a file/line anchor.
+
+    Shares the MCP ``find_related`` payload builder so both surfaces report the
+    same neighbours, status, and freshness. Text output renders paths relative
+    to the indexed root; JSON keeps the same portable spelling.
+
+    Args:
+        args: Parsed arguments; ``file_path``, ``line``, ``limit``, and
+            ``json`` are honoured.
+
+    Returns:
+        A process exit code: ``0`` on success, ``1`` when the index is not
+        initialised.
+    """
+    start = time.monotonic()
+    _setup_logging(args.verbose)
+    context_dir = _resolve_context_dir(args)
+    comps = _initialize_components(context_dir)
+    settings = comps["settings"]
+    if comps["metadata"].get_index_status() != "ready":
+        print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
+        return 1
+
+    from code_search.engine.response_service import relativize_results
+    from code_search.mcp.server import _find_related_payload, _freshness_signal
+
+    payload = json.loads(_find_related_payload(comps, args.file_path, args.line, args.limit))
+    root = comps["metadata"].get("index_root") or str(context_dir.parent)
+    results = relativize_results(payload.get("results") or [], root)
+    payload["results"] = results
+
+    if args.json:
+        print(json.dumps(payload, indent=2, default=str))
+    elif payload.get("error"):
+        print(payload["error"], file=sys.stderr)
+    else:
+        header = f"{'Similarity':<11} {'File':<40} {'Symbol':<35}"
+        print(header)
+        print("-" * len(header))
+        for result in results:
+            location = f"{result['file_path']}:{result['line_start']}-{result['line_end']}"
+            print(
+                f"  {result.get('similarity', 0.0):.3f}     "
+                f"{location:<40} {result.get('fqn') or '':<35}"
+            )
+        if payload.get("explanation"):
+            print(payload["explanation"], file=sys.stderr)
+        _emit_stale_notice(_freshness_signal(comps))
+
+    duration_ms = int((time.monotonic() - start) * 1000)
+    comps["audit_db"].write_entry(
+        query_type="find_related",
+        query_summary=f"{args.file_path}:{args.line}"[: settings.query_summary_length],
+        result_count=len(results),
+        duration_ms=duration_ms,
+        redacted_count=0,
+    )
+    mc = comps.get("metrics_collector")
+    if mc:
+        mc.record_query(duration_ms)
+    return 0
+
+
 def cmd_query(args: argparse.Namespace) -> int:
     """Answer a natural-language question by traversing the code graph."""
     start = time.monotonic()
@@ -1102,6 +1240,7 @@ def cmd_query(args: argparse.Namespace) -> int:
         max_nodes=args.max_nodes,
         edge_types=_parse_edge_types(args.edge_types),
         token_budget=args.token_budget,
+        include_external=getattr(args, "include_externals", False),
     )
     from code_search.engine.graph_query import render_query_text
     from code_search.mcp.server import _freshness_signal
@@ -1112,7 +1251,8 @@ def cmd_query(args: argparse.Namespace) -> int:
         payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
         print(json.dumps(payload, indent=2, default=str))
     else:
-        print(render_query_text(answer))
+        root = comps["metadata"].get("index_root") or str(context_dir.parent)
+        print(render_query_text(answer, root=root))
         _emit_stale_notice(_freshness_signal(comps))
 
     duration_ms = int((time.monotonic() - start) * 1000)
@@ -1200,7 +1340,8 @@ def cmd_explain(args: argparse.Namespace) -> int:
         payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
         print(json.dumps(payload, indent=2, default=str))
     else:
-        print(render_explain_text(answer))
+        root = comps["metadata"].get("index_root") or str(context_dir.parent)
+        print(render_explain_text(answer, root=root))
         _emit_stale_notice(_freshness_signal(comps))
 
     duration_ms = int((time.monotonic() - start) * 1000)
@@ -1242,6 +1383,7 @@ def cmd_affected(args: argparse.Namespace) -> int:
 
     service = _graph_query_service(comps)
     answer = service.impact(changed, depth=args.depth)
+    from code_search.engine.graph_query import render_impact_text
     from code_search.mcp.server import _freshness_signal
 
     if args.json:
@@ -1250,21 +1392,7 @@ def cmd_affected(args: argparse.Namespace) -> int:
         payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
         print(json.dumps(payload, indent=2, default=str))
     else:
-        summary = answer.summary
-        print(
-            f"impact: {summary.get('symbols', 0)} symbols in "
-            f"{summary.get('files', 0)} files "
-            f"({summary.get('tests', 0)} tests) from "
-            f"{summary.get('changed_files', 0)} changed files"
-        )
-        grouped: dict[str, list[Any]] = {}
-        for node in answer.impacted:
-            grouped.setdefault(node.file_path or "external", []).append(node)
-        for file_path in sorted(grouped):
-            print(file_path)
-            for node in grouped[file_path]:
-                marker = " [test]" if _is_test_file(file_path) else ""
-                print(f"  {node.fqn} ({node.kind}){marker}")
+        print(render_impact_text(answer, root=index_root))
         _emit_stale_notice(_freshness_signal(comps))
 
     duration_ms = int((time.monotonic() - start) * 1000)
@@ -1468,17 +1596,26 @@ def _query_terms(query: str) -> list[str] | None:
     return [identifier] if identifier else None
 
 
-def _print_search_results(results: list[dict[str, Any]], settings: Settings | None = None) -> None:
+def _print_search_results(
+    results: list[dict[str, Any]],
+    settings: Settings | None = None,
+    root: str | Path | None = None,
+) -> None:
     """Print search results as a human-readable aligned table.
 
     Low-confidence-band results carry a ``[borderline]`` marker so consumers
-    know to verify them.
+    know to verify them. Paths and symbols are shown relative to the indexed
+    root so the table stays readable; JSON output keeps the absolute paths.
 
     Args:
         results: The search result dicts, already reranked and redacted.
         settings: Runtime settings used for the snippet length; defaults to
             :func:`code_search.engine.config.Settings.from_env` when omitted.
+        root: Indexed repository root used to relativize paths. Absolute paths
+            are left unchanged when omitted or when a result lies outside it.
     """
+    from code_search.engine.graph_query import display_symbol, relative_display
+
     settings = settings or Settings.from_env()
     snippet_len = settings.snippet_length
     header = f"{'Score':<7} {'File':<35} {'Symbol':<35} Snippet"
@@ -1486,8 +1623,9 @@ def _print_search_results(results: list[dict[str, Any]], settings: Settings | No
     print("-" * len(header))
     for r in results:
         score = f"{r['score']:.2f}"
-        file_loc = f"{r['file_path']}:{r['line_start']}-{r['line_end']}"
-        fqn = r.get("fqn") or ""
+        file_path = relative_display(r.get("file_path"), root)
+        file_loc = f"{file_path}:{r['line_start']}-{r['line_end']}"
+        fqn = display_symbol(r.get("fqn") or "")
         snippet = (r.get("content") or "")[:snippet_len].replace("\n", " ")
         test_tag = " [test file]" if r.get("is_test_file") else ""
         redacted_tag = f" [{r['redacted_count']} redacted]" if r.get("redacted_count") else ""
@@ -1497,10 +1635,75 @@ def _print_search_results(results: list[dict[str, Any]], settings: Settings | No
         )
 
 
+def _print_match_breakdown(
+    production_matches: int | None,
+    test_matches: int | None,
+    include_tests: bool,
+) -> None:
+    """Print the production/test match split when the envelope reports it.
+
+    Ranked envelopes carry both counts, so hidden test files never change the
+    total silently. The split is printed even when no test chunk matched, and
+    the ``--include-tests`` hint appears only when tests are actually hidden.
+    Both the local and daemon-forwarded human paths call this so they render
+    identically.
+
+    Args:
+        production_matches: Production chunk count, or ``None`` when unknown.
+        test_matches: Test chunk count, or ``None`` when unknown.
+        include_tests: Whether test chunks were requested.
+    """
+    if production_matches is None or test_matches is None:
+        return
+    if not production_matches and not test_matches:
+        return
+    hidden = "" if include_tests or not test_matches else " (hidden; use --include-tests)"
+    print(f"Matches: {production_matches} production + {test_matches} test{hidden}")
+
+
+def _print_ranking_explanation(
+    results: list[dict[str, Any]],
+    root: str | Path | None = None,
+) -> None:
+    """Print per-result score components for ``--explain-ranking``.
+
+    Shows the lexical, dense, and fused scores, then the class/content
+    multipliers and additive boosts that produced the final score. The output
+    is intentionally compact: one line per result so a ranking decision can be
+    audited without dumping the full JSON envelope.
+
+    Args:
+        results: Reranked search results carrying ``score_sources``.
+        root: Indexed repository root used to relativize paths.
+    """
+    from code_search.engine.graph_query import relative_display
+
+    print("\nRanking explanation")
+    for rank, result in enumerate(results, start=1):
+        sources = result.get("score_sources") or {}
+        multipliers = sources.get("multipliers") or {}
+        additive = sources.get("additive") or {}
+        location = relative_display(result.get("file_path"), root)
+        print(
+            f"  {rank:>2}. score={result.get('score', 0.0):.4f} "
+            f"fused={sources.get('fused', 0.0):.4f} "
+            f"bm25={sources.get('bm25', 0.0):.4f} "
+            f"vector={sources.get('vector', 0.0):.4f} "
+            f"mult(class={multipliers.get('rank_class', 1.0):.3f},"
+            f"content={multipliers.get('content', 1.0):.3f},"
+            f"test={multipliers.get('test_noise', 1.0):.3f},"
+            f"infra={multipliers.get('infra', 1.0):.3f}) "
+            f"add(exact={additive.get('exact_match', 0.0):.3f},"
+            f"lift={additive.get('min_vector_lift', 0.0):.3f}) "
+            f"{location}"
+        )
+
+
 def _print_symbol_details(
     symbol: dict[str, Any],
     parent_info: dict[str, Any] | None,
     source_code: str = "",
+    root: str | Path | None = None,
 ) -> None:
     """Print a symbol's identity, parent, and (redacted) source code.
 
@@ -1509,30 +1712,42 @@ def _print_symbol_details(
         parent_info: Optional ``{fqn, name, kind}`` dict for the enclosing
             parent symbol, or ``None``.
         source_code: The redacted source text to print, if any.
+        root: Indexed repository root used to relativize the file location.
     """
+    from code_search.engine.graph_query import display_symbol, relative_display
+
     print(f"Symbol: {symbol['name']}")
-    print(f"  FQN:    {symbol['fqn']}")
+    print(f"  FQN:    {display_symbol(symbol['fqn'])}")
     if symbol.get("signature"):
         print(f"  Sig:    {symbol['signature']}")
     print(f"  Kind:   {symbol['kind']}")
-    print(f"  File:   {symbol['file_path']}:{symbol['line_start']}-{symbol['line_end']}")
+    location = relative_display(symbol.get("file_path"), root)
+    print(f"  File:   {location}:{symbol['line_start']}-{symbol['line_end']}")
     if parent_info:
-        print(f"  Parent: {parent_info['fqn']} ({parent_info['kind']})")
+        print(f"  Parent: {display_symbol(parent_info['fqn'])} ({parent_info['kind']})")
     if source_code:
         print(f"\n{source_code}")
 
 
-def _print_ambiguous_candidates(symbol: str, candidates: list[dict[str, Any]]) -> None:
+def _print_ambiguous_candidates(
+    symbol: str,
+    candidates: list[dict[str, Any]],
+    root: str | Path | None = None,
+) -> None:
     """Print a ranked, best-first ambiguous-symbol list with evidence.
 
     Args:
         symbol: The queried symbol name.
         candidates: Ranked candidate definition dicts to display.
+        root: Indexed repository root used to relativize locations.
     """
+    from code_search.engine.graph_query import display_symbol, relative_display
+
     print(f"Symbol '{symbol}' is ambiguous — {len(candidates)} candidates (best first):")
     for index, c in enumerate(candidates[:10], start=1):
-        loc = f"{c['file_path']}:{c['line_start']}-{c['line_end']}"
-        print(f"  {index}. {c['fqn'] or ''} ({c['name']}, {c['kind']}) @ {loc}")
+        loc = relative_display(c.get("file_path"), root)
+        loc = f"{loc}:{c['line_start']}-{c['line_end']}"
+        print(f"  {index}. {display_symbol(c['fqn'] or '')} ({c['name']}, {c['kind']}) @ {loc}")
         evidence = c.get("evidence") or []
         if evidence:
             print(f"     evidence: {', '.join(str(e) for e in evidence)}")
@@ -1542,6 +1757,7 @@ def _print_graph_results(
     symbol: dict[str, Any],
     callers: list[dict[str, Any]],
     callees: list[dict[str, Any]],
+    root: str | Path | None = None,
 ) -> None:
     """Print a call graph as caller/callee lists with arrow glyphs.
 
@@ -1549,21 +1765,30 @@ def _print_graph_results(
         symbol: The graph root symbol dict.
         callers: Dicts describing symbols that call the root.
         callees: Dicts describing symbols the root calls.
+        root: Indexed repository root used to relativize locations.
     """
-    print(f"Call graph for: {symbol['fqn']}\n")
+    from code_search.engine.graph_query import display_symbol, relative_display
+
+    print(f"Call graph for: {display_symbol(symbol['fqn'])}\n")
     if callers:
         print(f"Callers ({len(callers)}):")
         for c in callers:
             sig = _compact_signature(c.get("target_signature"))
-            print(f"  \u2190 {c['fqn']:<45} {c['file_path']}:{c['line_start']}{sig}")
+            location = relative_display(c.get("file_path"), root)
+            print(f"  \u2190 {display_symbol(c['fqn']):<45} {location}:{c['line_start']}{sig}")
     if callees:
         print(f"Callees ({len(callees)}):")
         for c in callees:
             sig = _compact_signature(c.get("target_signature"))
-            print(f"  \u2192 {c['fqn']:<45} {c['file_path']}:{c['line_start']}{sig}")
+            location = relative_display(c.get("file_path"), root)
+            print(f"  \u2192 {display_symbol(c['fqn']):<45} {location}:{c['line_start']}{sig}")
 
 
-def _print_implementations(result: dict[str, Any], query: str) -> None:
+def _print_implementations(
+    result: dict[str, Any],
+    query: str,
+    root: str | Path | None = None,
+) -> None:
     """Print an implementation-lookup result in human-readable form.
 
     Renders the four outcomes honestly: resolved implementations with their
@@ -1573,10 +1798,13 @@ def _print_implementations(result: dict[str, Any], query: str) -> None:
     Args:
         result: The shared implementation envelope from ``find_implementations``.
         query: The caller-supplied reference (for headings and messages).
+        root: Indexed repository root used to relativize locations.
     """
+    from code_search.engine.graph_query import display_symbol, relative_display
+
     outcome = result.get("outcome")
     if outcome == "ambiguous":
-        _print_ambiguous_candidates(query, result.get("candidates") or [])
+        _print_ambiguous_candidates(query, result.get("candidates") or [], root=root)
         return
     if outcome == "not_found":
         print(f"Symbol not found: {query}")
@@ -1586,19 +1814,22 @@ def _print_implementations(result: dict[str, Any], query: str) -> None:
         return
     implementations = result.get("implementations") or []
     declaring = result.get("declaring_type") or {}
-    print(f"Implementations of {query} via {declaring.get('fqn')} ({len(implementations)}):")
+    declaring_fqn = display_symbol(str(declaring.get("fqn") or ""))
+    print(f"Implementations of {query} via {declaring_fqn} ({len(implementations)}):")
     for impl in implementations:
         type_row = impl.get("type") or {}
         site = impl.get("site") or {}
         relationship = impl.get("relationship")
         inherited = site.get("inherited")
         label = "inherited" if inherited else "declared"
-        loc_type = f"{type_row.get('file_path')}:{type_row.get('line_start')}"
-        print(f"  {type_row.get('fqn')}  ({relationship}, {label})")
+        type_path = relative_display(type_row.get("file_path"), root)
+        loc_type = f"{type_path}:{type_row.get('line_start')}"
+        print(f"  {display_symbol(str(type_row.get('fqn') or ''))}  ({relationship}, {label})")
         if site:
-            loc_site = f"{site.get('file_path')}:{site.get('line_start')}"
+            site_path = relative_display(site.get("file_path"), root)
+            loc_site = f"{site_path}:{site.get('line_start')}"
             origin = site.get("declaring_type_fqn") if inherited else site.get("fqn")
-            print(f"    {origin} @ {loc_site}")
+            print(f"    {display_symbol(str(origin or ''))} @ {loc_site}")
         else:
             print(f"    {loc_type}")
 
@@ -1754,7 +1985,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
 
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     write_pidfile(context_dir)
-    log_path = socket_path.parent / "code-search-daemon.log"
+    log_path = context_dir / "code-search-daemon.log"
     with log_path.open("a", buffering=1) as log_handle:
         proc = subprocess.Popen(
             [
@@ -1814,16 +2045,18 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
     A one-shot invocation with no resident service must still meet the
     interactive budget without a manual pre-warm. This spawns the daemon
     fire-and-forget (the existing ``daemon start`` subprocess path) and probes
-    readiness once with a short timeout. Returns ``True`` when a resident
-    service exists but is not yet warm, so the caller serves the reduced cold
-    path without starting a competing in-process model load.
+    readiness with a short timeout. A resident service only owns the model
+    load once it answers ``ping``; a daemon that failed to bind must not
+    suppress the caller's in-process load.
 
     Args:
         args: Parsed arguments; the context directory is honoured.
 
     Returns:
-        ``True`` when a (possibly still warming) resident service owns the model
-        load; ``False`` when a warm service is already available.
+        ``True`` when a (possibly still warming) resident service answered
+        ``ping`` and owns the model load; ``False`` when a warm service is
+        already available, a stale socket was removed, or the spawned daemon
+        never became reachable.
     """
     import subprocess
     import sys as _sys
@@ -1837,7 +2070,8 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
 
     context_dir = _resolve_context_dir(args)
     socket_path = default_socket_path(context_dir)
-    if socket_path.exists() and not DaemonClient.is_serving(socket_path, timeout=0.1):
+    serving = socket_path.exists() and DaemonClient.is_serving(socket_path, timeout=0.1)
+    if socket_path.exists() and not serving:
         # A starting daemon binds its socket before the model is ready, so a
         # first failed probe is not proof that the socket is stale. When its
         # pidfile names a live process, retry briefly before removing
@@ -1859,10 +2093,11 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
             with suppress(OSError):
                 (context_dir / "code-search.pid").unlink()
             return False
+        serving = True
     if not socket_path.exists():
         socket_path.parent.mkdir(parents=True, exist_ok=True)
         write_pidfile(context_dir)
-        log_path = socket_path.parent / "code-search-daemon.log"
+        log_path = context_dir / "code-search-daemon.log"
         with log_path.open("a", buffering=1) as log_handle:
             subprocess.Popen(
                 [
@@ -1882,15 +2117,25 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
                 stdin=subprocess.DEVNULL,
                 env=os.environ.copy(),
             )
-    try:
-        client = DaemonClient(socket_path, timeout=0.05)
-        resp = client.request("ping")
-        payload = resp.get("payload") or {}
-        if resp.get("ok") and payload.get("warm"):
+    # The socket is bound only after component initialisation, so allow the
+    # freshly spawned daemon a short grace period to answer. Never claim the
+    # model load without a successful ping: doing so on a dead daemon leaves
+    # the one-shot process permanently lexical-only.
+    deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            resp = DaemonClient(socket_path, timeout=0.05).request("ping")
+            payload = resp.get("payload") or {}
+            if resp.get("ok"):
+                return not bool(payload.get("warm"))
+        except Exception:
+            pass
+        if serving:
+            # ``is_serving`` already completed a ping on this live listener.
+            return True
+        if time.monotonic() >= deadline:
             return False
-    except Exception:
-        pass
-    return True
+        time.sleep(0.05)
 
 
 def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
@@ -1916,6 +2161,9 @@ def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
                     "mode": getattr(args, "mode", "ranked"),
                     "content": getattr(args, "content", None),
                     "matching": getattr(args, "matching", None),
+                    "regex": getattr(args, "regex", False),
+                    "compact": getattr(args, "compact", True),
+                    "max_snippet_lines": getattr(args, "max_snippet_lines", None),
                 },
             )
         elif command == "symbol":
@@ -1938,11 +2186,17 @@ def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
             logger.warning("Daemon request failed: %s", resp.get("error"))
             return None
         payload = resp["payload"]
+        root = (payload.get("freshness") or {}).get("index_root") or str(context_dir.parent)
         if args.json:
             print(json.dumps(payload, indent=2, default=str))
         else:
             if command == "search":
-                _print_search_results(payload.get("results") or [])
+                _print_search_results(payload.get("results") or [], root=root)
+                _print_match_breakdown(
+                    payload.get("production_matches"),
+                    payload.get("test_matches"),
+                    args.include_tests,
+                )
                 if payload.get("query_time_ms") is not None:
                     print(f"Query time: {round(float(payload['query_time_ms']))} ms")
                 _emit_stale_notice(payload.get("freshness") or {})
@@ -1950,15 +2204,20 @@ def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
                     print(payload["envelope"], file=sys.stderr)
                 _print_scope_override(payload.get("scope") or {})
             elif command == "symbol":
+                from code_search.engine.graph_query import display_symbol, relative_display
+
                 if payload.get("symbol"):
                     sym = payload["symbol"]
+                    location = relative_display(sym.get("file_path"), root)
                     print(
-                        f"{sym.get('fqn')} ({sym.get('kind')}) @ "
-                        f"{sym.get('file_path')}:{sym.get('line_start')}-{sym.get('line_end')}"
+                        f"{display_symbol(str(sym.get('fqn') or ''))} ({sym.get('kind')}) @ "
+                        f"{location}:{sym.get('line_start')}-{sym.get('line_end')}"
                     )
                     print(sym.get("source_code") or "")
                 elif payload.get("ambiguous"):
-                    _print_ambiguous_candidates(args.fqn, payload.get("candidates") or [])
+                    _print_ambiguous_candidates(
+                        args.fqn, payload.get("candidates") or [], root=root
+                    )
                 elif payload.get("candidates"):
                     suggestions = [c for c in payload["candidates"] if c.get("suggestion")]
                     if suggestions:
@@ -1968,31 +2227,43 @@ def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
                             f"{best.get('name')}? (edit_distance {best.get('edit_distance')})"
                         )
                         for c in suggestions:
-                            loc = f"{c['file_path']}:{c['line_start']}-{c['line_end']}"
-                            print(f"  {c['fqn'] or ''} ({c['name']}, {c['kind']}) @ {loc}")
+                            path = relative_display(c.get("file_path"), root)
+                            loc = f"{path}:{c['line_start']}-{c['line_end']}"
+                            print(
+                                f"  {display_symbol(c['fqn'] or '')} "
+                                f"({c['name']}, {c['kind']}) @ {loc}"
+                            )
                     else:
                         print(
                             f"Symbol '{args.fqn}' is ambiguous — "
                             f"{len(payload['candidates'])} candidates:"
                         )
                         for c in payload["candidates"][:10]:
-                            loc = f"{c['file_path']}:{c['line_start']}-{c['line_end']}"
-                            print(f"  {c['fqn'] or ''} ({c['name']}, {c['kind']}) @ {loc}")
+                            path = relative_display(c.get("file_path"), root)
+                            loc = f"{path}:{c['line_start']}-{c['line_end']}"
+                            print(
+                                f"  {display_symbol(c['fqn'] or '')} "
+                                f"({c['name']}, {c['kind']}) @ {loc}"
+                            )
                 else:
                     print(f"Symbol not found: {args.fqn}")
                 _emit_stale_notice(payload.get("freshness") or {})
             elif command == "graph":
                 if args.direction == "implements":
-                    _print_implementations(payload, args.fqn)
+                    _print_implementations(payload, args.fqn, root=root)
                 elif payload.get("found"):
-                    _print_graph_results(payload["symbol"], payload["callers"], payload["callees"])
+                    _print_graph_results(
+                        payload["symbol"], payload["callers"], payload["callees"], root=root
+                    )
                 elif payload.get("ambiguous"):
-                    _print_ambiguous_candidates(args.fqn, payload.get("candidates") or [])
+                    _print_ambiguous_candidates(
+                        args.fqn, payload.get("candidates") or [], root=root
+                    )
                 else:
                     print(f"Symbol not found: {args.fqn}")
                 _emit_stale_notice(payload.get("freshness") or {})
             elif command == "implementations":
-                _print_implementations(payload, args.fqn)
+                _print_implementations(payload, args.fqn, root=root)
                 _emit_stale_notice(payload.get("freshness") or {})
         return 0
     except Exception as exc:
@@ -2065,6 +2336,13 @@ def build_parser() -> argparse.ArgumentParser:
     global_args = argparse.ArgumentParser(add_help=False)
     global_args.add_argument("--context-dir", help="Path to context directory")
     global_args.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
+    global_args.add_argument(
+        "--no-startup-check",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Skip transparent daemon auto-start and serve this invocation locally "
+        "(repeat CLI use is faster once a daemon is already running)",
+    )
 
     parser = argparse.ArgumentParser(
         prog="code-search",
@@ -2142,19 +2420,19 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["code", "config", "docs", "all", "code_focused"],
         default=None,
         help="Content-type scope: code, config, docs, all, or code_focused. "
-        "Omitting it means no scope preference: the effective default is "
-        "code-focused (code + config), and a documentation-shaped query whose "
-        "default search finds nothing is automatically searched with content "
-        "scope all. A configuration-shaped query under a scope that excludes "
-        "configuration (code) reports how to include it. Force a scope with "
-        "--content all (documentation) or --content config (configuration).",
+        "Omitting it means no scope preference: a code-shaped query defaults "
+        "to code, a documentation-shaped query is widened to all, and other "
+        "queries use code_focused (code + config). A configuration-shaped "
+        "query under a scope that excludes configuration (code) reports how "
+        "to include it. Force a scope with --content all (documentation) or "
+        "--content config (configuration).",
     )
     search_parser.add_argument("--language", help="Filter by language")
     search_parser.add_argument(
         "--include-tests",
         action="store_true",
-        default=True,
-        help="Include test files in search (default: True)",
+        default=False,
+        help="Include test files in search (default: False; tests are demoted, not indexed-out)",
     )
     search_parser.add_argument(
         "--no-include-tests",
@@ -2177,11 +2455,35 @@ def build_parser() -> argparse.ArgumentParser:
         "all_tokens (AND, default), or any_token (OR); applies only in "
         "--mode exhaustive",
     )
+    search_parser.add_argument(
+        "--regex",
+        action="store_true",
+        help="Treat the query as a regular expression; requires --mode exhaustive",
+    )
     search_parser.add_argument("--json", action="store_true", help="JSON output")
     search_parser.add_argument(
         "--no-model",
         action="store_true",
         help="Fast path: skip vector-model warm-up, fuse lexical only",
+    )
+    search_parser.add_argument(
+        "--explain-ranking",
+        action="store_true",
+        help="Include the score breakdown for every result and print the ranking components",
+    )
+    search_parser.add_argument(
+        "--compact",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Agent-sized JSON (default): identifiers, locations, signatures, "
+        "and a short content snippet instead of full blocks and score "
+        "breakdowns; use --no-compact for the full envelope",
+    )
+    search_parser.add_argument(
+        "--max-snippet-lines",
+        type=int,
+        default=None,
+        help="Trim each result to at most N content lines (adds a signature)",
     )
     search_parser.set_defaults(func=cmd_search)
 
@@ -2224,6 +2526,17 @@ def build_parser() -> argparse.ArgumentParser:
     implementations_parser.add_argument("--json", action="store_true", help="JSON output")
     implementations_parser.set_defaults(func=cmd_implementations)
 
+    related_parser = subparsers.add_parser(
+        "find-related",
+        parents=[global_args],
+        help="Find chunks semantically related to a file/line anchor",
+    )
+    related_parser.add_argument("file_path", help="File path (absolute or project-relative)")
+    related_parser.add_argument("--line", type=int, required=True, help="Anchor line number")
+    related_parser.add_argument("--limit", type=int, default=5, help="Max related chunks")
+    related_parser.add_argument("--json", action="store_true", help="JSON output")
+    related_parser.set_defaults(func=cmd_find_related)
+
     query_parser = subparsers.add_parser(
         "query", parents=[global_args], help="Answer a question by traversing the code graph"
     )
@@ -2237,6 +2550,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     query_parser.add_argument(
         "--token-budget", type=int, default=1500, help="Soft output token budget"
+    )
+    query_parser.add_argument(
+        "--include-externals",
+        action="store_true",
+        help="Include unresolved/external callee leaves (collapsed by default)",
     )
     query_parser.add_argument("--json", action="store_true", help="JSON output")
     query_parser.set_defaults(func=cmd_query)

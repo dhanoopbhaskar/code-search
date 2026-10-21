@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import textwrap
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -195,30 +197,50 @@ def test_daemon_autostart_is_local_only(tmp_path: Path, monkeypatch: pytest.Monk
     import argparse
 
     from code_search.cli.main import _ensure_resident_service
-    from code_search.engine.daemon import default_socket_path
+    from code_search.engine.daemon import DaemonClient, QueryDaemon, default_socket_path
     from code_search.engine.redactor import air_gap_enforcement
 
     captured: dict[str, Any] = {}
+    started: dict[str, Any] = {}
 
     class _FakeProc:
         pid = 4242
 
     def fake_popen(cmd: list[str], **_kwargs: Any) -> _FakeProc:
         captured["cmd"] = cmd
+        port = Path(cmd[cmd.index("--port") + 1])
+        daemon = QueryDaemon(port, Path(args.context_dir).resolve())
+        thread = threading.Thread(target=daemon.start, daemon=True)
+        started["daemon"] = daemon
+        started["thread"] = thread
+        thread.start()
         return _FakeProc()
 
     monkeypatch.setattr("subprocess.Popen", fake_popen)
     args = argparse.Namespace(context_dir=str(tmp_path), command="search", no_model=False)
 
-    with air_gap_enforcement():
-        owns_warmup = _ensure_resident_service(args)
+    try:
+        with air_gap_enforcement():
+            _ensure_resident_service(args)
 
-    assert owns_warmup is True
-    command = captured["cmd"]
-    assert "daemon" in command and "run" in command
-    socket_arg = command[command.index("--port") + 1]
-    expected_socket = default_socket_path(Path(args.context_dir).resolve())
-    assert socket_arg == str(expected_socket)
+        command = captured["cmd"]
+        assert "daemon" in command and "run" in command
+        socket_arg = command[command.index("--port") + 1]
+        expected_socket = default_socket_path(Path(args.context_dir).resolve())
+        assert socket_arg == str(expected_socket)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not DaemonClient.is_serving(
+            expected_socket, timeout=0.2
+        ):
+            time.sleep(0.05)
+        assert DaemonClient.is_serving(expected_socket, timeout=0.2) is True
+    finally:
+        daemon = started.get("daemon")
+        if daemon is not None:
+            daemon.stop()
+        thread = started.get("thread")
+        if thread is not None:
+            thread.join(timeout=5)
 
 
 def test_match_boost_module_imports_are_local() -> None:

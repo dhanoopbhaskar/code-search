@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -680,11 +681,14 @@ class MCPServer:
                 query: str,
                 limit: int = 10,
                 language: str | None = None,
-                include_test_files: bool = True,
+                include_test_files: bool = False,
                 mode: str = "ranked",
                 content: str | None = None,
                 no_model: bool = False,
                 matching: str = "all_tokens",
+                regex: bool = False,
+                compact: bool = True,
+                max_snippet_lines: int | None = None,
             ) -> str:
                 """Run hybrid search, returning redacted, reranked JSON results.
 
@@ -694,22 +698,25 @@ class MCPServer:
                         ``max_results`` (a ``result_limit_capped`` flag is set
                         on each result when truncated).
                     language: Optional language filter.
-                    include_test_files: Whether to include test files.
+                    include_test_files: Whether to include test files;
+                        excluded by default (demoted, not indexed-out).
                     mode: Search mode — ``ranked`` (default), ``exhaustive``
                         (complete line-wise match set), or ``enumerate``
                         (named symbol-kind list).
                     content: Content-type scope — ``code``, ``config``,
                         ``docs``, ``all``, or ``code_focused``. Omitting it
-                        (``None``) means no scope preference: the effective
-                        default is code-focused (code + config), and a
-                        documentation-shaped query whose default search finds
-                        nothing is automatically searched with ``all``. Use
-                        ``content="all"`` to force documentation inclusion.
+                        (``None``) means no scope preference: a code-shaped
+                        query defaults to ``code``, a documentation-shaped
+                        query is widened to ``all``, and other queries use
+                        code-focused (code + config). Use ``content="all"``
+                        to force documentation inclusion.
                     no_model: Fast path that skips the vector model (lexical
                         fusion only).
                     matching: Exhaustive matching semantics — ``literal``,
                         ``all_tokens`` (default), or ``any_token``; ignored
                         outside exhaustive mode.
+                    regex: Exhaustive-only regular-expression mode; the query
+                        is compiled as a Python regex instead of tokenized.
 
                 Returns:
                     A JSON object with ``results`` and ``freshness``.
@@ -731,6 +738,12 @@ class MCPServer:
                     )
                 else:
                     hs = comps["search"]
+                # Same bounded cold-start wait as the daemon: prefer the warm
+                # fused ranking over a silently different lexical-only one.
+                wait_warm = getattr(comps.get("embedding_gen"), "wait_warm", None)
+                if callable(wait_warm) and settings.warmup_wait_s > 0 and not no_model:
+                    with suppress(Exception):
+                        wait_warm(settings.warmup_wait_s)
                 original_limit = limit
                 limit = min(limit, settings.max_results)
                 result_limit_capped = limit < original_limit
@@ -742,6 +755,7 @@ class MCPServer:
                     mode=mode,
                     content=content,
                     matching=matching,
+                    regex=regex,
                 )
                 raw = envelope["results"]
                 env_mode = str(envelope.get("mode", "ranked"))
@@ -758,6 +772,16 @@ class MCPServer:
 
                 redacted = redactor.redact_results(reranked)
                 total_redacted = sum(r.get("redacted_count", 0) for r in redacted)
+                if compact:
+                    from code_search.engine.response_service import compact_results
+
+                    redacted = compact_results(redacted, max_snippet_lines or 20)
+                from code_search.engine.response_service import relativize_results
+
+                result_root = comps["metadata"].get("index_root") or str(
+                    Path(comps["context_dir"]).parent
+                )
+                redacted = relativize_results(redacted, result_root)
 
                 for r in redacted:
                     r["result_limit_capped"] = result_limit_capped
@@ -791,12 +815,23 @@ class MCPServer:
                     "explanation": envelope.get("explanation"),
                     "freshness": _freshness_signal(comps),
                 }
+                if count_field != "total_matches":
+                    response["total_matches"] = total
+                if envelope.get("token_savings") is not None:
+                    response["token_savings"] = envelope["token_savings"]
                 if envelope.get("content") is not None:
                     response["content"] = envelope["content"]
+                for count_key in ("production_matches", "test_matches"):
+                    if envelope.get(count_key) is not None:
+                        response[count_key] = envelope[count_key]
                 if envelope.get("scope") is not None:
                     response["scope"] = envelope["scope"]
                 if envelope.get("matching_semantics") is not None:
                     response["matching_semantics"] = envelope["matching_semantics"]
+                if envelope.get("regex"):
+                    response["regex"] = True
+                if envelope.get("pattern") is not None:
+                    response["pattern"] = envelope["pattern"]
                 response["query_time_ms"] = round(duration_ms, 1)
                 if envelope.get("model_status") is not None:
                     response["model_status"] = envelope["model_status"]
@@ -1042,6 +1077,7 @@ class MCPServer:
                     comps["edge_store"],
                     comps["search"],
                     settings,
+                    reranker=comps.get("reranker"),
                 )
 
             def _edge_types(value: str) -> set[str]:
@@ -1055,6 +1091,7 @@ class MCPServer:
                 max_nodes: int = 120,
                 token_budget: int = 1500,
                 edge_types: str = "CALLS,INHERITS",
+                include_external: bool = False,
             ) -> str:
                 """Answer a multi-hop question by traversing the code graph.
 
@@ -1068,6 +1105,9 @@ class MCPServer:
                     max_nodes: Maximum returned nodes (clipped to 200).
                     token_budget: Soft output token budget.
                     edge_types: Comma-separated edge types to traverse.
+                    include_external: Include unresolved/external callee leaves;
+                        false (default) collapses them so the answer is a clean
+                        in-corpus neighbourhood.
 
                 Returns:
                     A JSON payload with seeds, nodes, edges, truncation, stats,
@@ -1080,6 +1120,7 @@ class MCPServer:
                     max_nodes=max_nodes,
                     edge_types=_edge_types(edge_types),
                     token_budget=token_budget,
+                    include_external=include_external,
                 )
                 payload = answer.as_dict()
                 duration_ms = int((time.monotonic() - start) * 1000)
@@ -1229,6 +1270,13 @@ class MCPServer:
                 payload = _find_related_payload(comps, file_path, line_number, limit)
                 data = json.loads(payload)
                 results = data.get("results") or []
+                from code_search.engine.response_service import relativize_results
+
+                result_root = comps["metadata"].get("index_root") or str(
+                    Path(comps["context_dir"]).parent
+                )
+                results = relativize_results(results, result_root)
+                data["results"] = results
                 total_redacted = sum(r.get("redacted_count", 0) for r in results)
                 duration_ms = int((time.monotonic() - start) * 1000)
                 audit_db.write_entry(
@@ -1242,7 +1290,7 @@ class MCPServer:
                     mc.record_query(duration_ms)
                     if total_redacted > 0:
                         mc.record_redaction(total_redacted)
-                return payload
+                return json.dumps(data, default=str)
 
             return mcp
         except ImportError:

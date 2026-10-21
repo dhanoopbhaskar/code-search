@@ -1070,3 +1070,36 @@ def test_typescript_interface_and_type_alias_classification(
     assert all(c.get("is_definition") for c in interface_chunks)
     merged = "\n".join(c.get("content", "") for c in chunks)
     assert "type UserID = string;" in merged
+
+
+def test_typescript_components_default_export_and_thunks(
+    extractor: SymbolExtractor, tmp_path: Path
+) -> None:
+    """Exported const arrows, default exports, and thunks become symbols."""
+    source_file = tmp_path / "articlesSlice.tsx"
+    source_file.write_text(
+        "import { createAsyncThunk } from '@reduxjs/toolkit';\n"
+        "export const ArticlesViewer = () => <main>articles</main>;\n"
+        "export const fetchArticles = createAsyncThunk('articles/fetch', async () => []);\n"
+        "export default () => <ArticlesViewer />;\n"
+    )
+    symbols = extractor.extract_symbols(source_file, source_file.read_bytes())
+    names = {s["name"] for s in symbols}
+
+    assert {"ArticlesViewer", "fetchArticles", source_file.stem}.issubset(names)
+    assert {s["kind"] for s in symbols} <= {"function", "variable"}
+    assert all(s["fqn"].startswith(f"{source_file}::") for s in symbols)
+
+
+def test_typescript_duplicate_fqns_are_qualified(
+    extractor: SymbolExtractor, tmp_path: Path
+) -> None:
+    """Same-name declarations in one file keep distinct FQNs."""
+    source_file = tmp_path / "dupes.ts"
+    source_file.write_text(
+        "export function buildGenericFormField() { return 1; }\n"
+        "export function buildGenericFormField() { return 2; }\n"
+    )
+    symbols = extractor.extract_symbols(source_file, source_file.read_bytes())
+    fqns = [s["fqn"] for s in symbols]
+    assert len(fqns) == len(set(fqns)), f"FQNs must be unique: {fqns}"

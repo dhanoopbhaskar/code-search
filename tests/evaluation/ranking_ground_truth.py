@@ -116,6 +116,48 @@ SPRING_BOOT_MAIN_CASES: tuple[RankingCase, ...] = (
 )
 
 
+#: Labelled cases over the TypeScript/React fixture (``tests/fixtures/tsreact``).
+#: Exercises TSX parsing, barrel exports, and tsconfig path aliases.
+TSREACT_CASES: tuple[RankingCase, ...] = (
+    RankingCase("ArticlesViewer.tsx", "src/ArticlesViewer.tsx", category="filename", top_k=1),
+    RankingCase(
+        "ArticlesViewer",
+        "src/ArticlesViewer.tsx",
+        expected_fqn="ArticlesViewer",
+        category="symbol",
+        top_k=1,
+    ),
+    RankingCase(
+        "ArticleList",
+        "src/features/ArticleList.tsx",
+        expected_fqn="ArticleList",
+        category="symbol",
+        top_k=1,
+    ),
+    RankingCase(
+        "loadArticles",
+        "src/store/articlesSlice.ts",
+        expected_fqn="loadArticles",
+        category="symbol",
+        top_k=1,
+    ),
+    RankingCase(
+        "Button",
+        "src/components/Button.tsx",
+        expected_fqn="Button",
+        category="symbol",
+        top_k=1,
+    ),
+    RankingCase(
+        "articles loaded rendered",
+        "src/ArticlesViewer.tsx",
+        expected_fqn="ArticlesViewer",
+        category="general",
+        top_k=3,
+    ),
+)
+
+
 @dataclass(frozen=True)
 class ResolutionCase:
     """One labelled partial-name resolution entry.

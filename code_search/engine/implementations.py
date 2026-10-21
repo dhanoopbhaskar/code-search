@@ -44,6 +44,54 @@ _INHERITANCE_LANGUAGES = {
     "ruby",
 }
 
+# Framework bases whose implementations are generated at runtime or at build
+# time rather than declared in the indexed source. A repository that extends
+# one of these has no static implementer even though calls resolve correctly.
+_SPRING_DATA_BASES = frozenset(
+    {
+        "JpaRepository",
+        "CrudRepository",
+        "PagingAndSortingRepository",
+        "MongoRepository",
+        "ReactiveCrudRepository",
+        "ReactiveMongoRepository",
+        "ReactiveSortingRepository",
+        "ReactivePagingAndSortingRepository",
+        "ElasticsearchRepository",
+        "ReactiveElasticsearchRepository",
+        "CassandraRepository",
+        "CouchbaseRepository",
+        "Neo4jRepository",
+        "R2dbcRepository",
+        "SolrCrudRepository",
+        "KeyValueRepository",
+        "JpaSpecificationExecutor",
+        "QueryByExampleExecutor",
+        "ReactiveQueryByExampleExecutor",
+    }
+)
+
+# Annotation markers (matched on the lowercased ``declared_rules`` text) for
+# interfaces whose proxy/generated implementation comes from another
+# framework. Each entry yields the display name and the explanatory note.
+_FRAMEWORK_ANNOTATIONS: tuple[tuple[str, str, str], ...] = (
+    (
+        "@feignclient",
+        "Feign",
+        "Feign generates an HTTP client at runtime from the @FeignClient interface",
+    ),
+    (
+        "@mapper",
+        "MapStruct/MyBatis",
+        "the @Mapper annotation has a generated implementation or runtime proxy",
+    ),
+    (
+        "@repositoryrestresource",
+        "Spring Data REST",
+        "Spring Data REST exposes the repository as a generated REST resource",
+    ),
+)
+
 
 def find_implementations(
     symbol_store: SymbolStore,
@@ -99,11 +147,13 @@ def find_implementations(
             declaring=declaring,
             implementations=implementations,
         )
+    framework = _framework_generated(declaring, edge_store)
     return _envelope(
         OUTCOME_NO_STATIC,
         symbol=_symbol_summary(symbol),
         declaring=declaring,
-        explanation=_no_static_explanation(declaring, language),
+        framework=framework,
+        explanation=_no_static_explanation(declaring, language, framework),
     )
 
 
@@ -246,6 +296,57 @@ def _type_summary(row: dict[str, Any]) -> dict[str, Any]:
         "file_path": row.get("file_path"),
         "line_start": row.get("line_start"),
         "line_end": row.get("line_end"),
+        "declared_rules": row.get("declared_rules"),
+    }
+
+
+def _framework_generated(declaring: dict[str, Any], edge_store: EdgeStore) -> dict[str, Any] | None:
+    """Return the framework that generates *declaring*'s implementation.
+
+    Detection is deliberately evidence-based: a known framework annotation in
+    the declaring type's ``declared_rules``, or a declared base interface from
+    a known generated-implementation family (Spring Data repositories and
+    query executors). No implementation site is fabricated — the returned
+    object explains what the framework supplies and how the convention works.
+
+    Args:
+        declaring: The declaring type summary (including ``declared_rules``).
+        edge_store: The edge store used to read the declared base types.
+
+    Returns:
+        A framework descriptor with ``name``, ``generated``, ``bases``, and
+        ``note``; ``None`` when no framework signal is present.
+    """
+    rules = (declaring.get("declared_rules") or "").lower()
+    for marker, name, note in _FRAMEWORK_ANNOTATIONS:
+        if marker in rules:
+            return {
+                "name": name,
+                "generated": True,
+                "bases": [],
+                "note": f"{note} for {declaring.get('fqn')}.",
+            }
+
+    symbol_id = declaring.get("id")
+    if symbol_id is None:
+        return None
+    try:
+        targets = edge_store.get_inheritance_targets(int(symbol_id))
+    except Exception:
+        return None
+    bases = sorted({target["name"] for target in targets if target.get("name")})
+    matched = sorted(name for name in bases if name in _SPRING_DATA_BASES)
+    if not matched:
+        return None
+    return {
+        "name": "Spring Data",
+        "generated": True,
+        "bases": matched,
+        "note": (
+            f"Spring Data generates the implementation of {declaring.get('fqn')} at "
+            f"runtime from its {', '.join(matched)} base interface (query methods "
+            "are derived from method names)."
+        ),
     }
 
 
@@ -299,16 +400,25 @@ def _implementation_sort_key(implementation: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def _no_static_explanation(declaring: dict[str, Any], language: str) -> str:
+def _no_static_explanation(
+    declaring: dict[str, Any],
+    language: str,
+    framework: dict[str, Any] | None = None,
+) -> str:
     """Return the honest no-static explanation for *declaring*.
 
     A proxy-capable declaring type (``kind == "interface"``) states that a
     runtime-generated implementation may exist; any other kind states that no
-    statically-known implementing type was found. When the declaring language's
-    inheritance clauses are not captured, the explanation notes the
-    relationships may be uncaptured rather than asserting none exist.
+    statically-known implementing type was found. When a framework signal is
+    present the explanation names the framework and its convention instead of
+    leaving the caller to infer why no static implementer exists. When the
+    declaring language's inheritance clauses are not captured, the explanation
+    notes the relationships may be uncaptured rather than asserting none
+    exist.
     """
-    if declaring.get("kind") == "interface":
+    if framework is not None:
+        explanation = f"No static implementation found; {framework['note']}"
+    elif declaring.get("kind") == "interface":
         explanation = "No static implementation found; a runtime-generated implementation may exist"
     else:
         explanation = "No statically-known implementing type found"
@@ -324,6 +434,7 @@ def _envelope(
     declaring: dict[str, Any] | None = None,
     implementations: list[dict[str, Any]] | None = None,
     candidates: list[dict[str, Any]] | None = None,
+    framework: dict[str, Any] | None = None,
     explanation: str | None = None,
 ) -> dict[str, Any]:
     """Shape the shared implementation envelope."""
@@ -333,5 +444,6 @@ def _envelope(
         "declaring_type": declaring,
         "implementations": implementations or [],
         "candidates": candidates or [],
+        "framework": framework,
         "explanation": explanation,
     }

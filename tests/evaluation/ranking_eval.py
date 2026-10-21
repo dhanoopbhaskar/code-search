@@ -47,6 +47,12 @@ FLOORS: dict[str, float] = {
     "exact_symbol_top1": 0.90,
     "exact_symbol_top3": 1.00,
     "definition_above_reference": 1.00,
+    "recall_at_10": 0.95,
+}
+
+#: Upper bounds (lower is better) for contamination-style metrics.
+MAX_FLOORS: dict[str, float] = {
+    "non_source_contamination": 0.15,
 }
 
 #: CI floors for the partial-name resolution metrics.
@@ -78,6 +84,8 @@ class RankingMetrics:
     definition_above_reference: float = 1.0
     precision_at_5: float = 0.0
     mrr_at_10: float = 0.0
+    recall_at_10: float = 0.0
+    non_source_contamination: float = 0.0
 
     def as_dict(self) -> dict[str, float]:
         """Return the metrics as a JSON-serializable mapping."""
@@ -89,6 +97,8 @@ class RankingMetrics:
             "definition_above_reference": self.definition_above_reference,
             "precision_at_5": self.precision_at_5,
             "mrr_at_10": self.mrr_at_10,
+            "recall_at_10": self.recall_at_10,
+            "non_source_contamination": self.non_source_contamination,
         }
 
 
@@ -98,6 +108,46 @@ def _short_symbol_name(fqn: str) -> str:
     if "::" in normalized:
         normalized = normalized.rsplit("::", 1)[-1]
     return normalized.rsplit(".", 1)[-1]
+
+
+_SOURCE_SUFFIXES = (
+    ".py",
+    ".pyi",
+    ".java",
+    ".kt",
+    ".kts",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".go",
+    ".rs",
+    ".rb",
+    ".swift",
+    ".php",
+    ".cs",
+    ".cpp",
+    ".cc",
+    ".c",
+    ".h",
+    ".hpp",
+)
+
+
+def _expects_source(case: RankingCase) -> bool:
+    """Return whether *case* asks for a source-file answer."""
+    return bool(case.expected_fqn) or case.expected_file.endswith(_SOURCE_SUFFIXES)
+
+
+def _is_non_source(result: dict[str, Any]) -> bool:
+    """Return whether *result* is infra/configuration/docs rather than source."""
+    if result.get("file_role") in {"infra", "config", "resource", "docs", "analysis"}:
+        return True
+    if result.get("content_type") in {"config", "docs"}:
+        return True
+    return not str(result.get("file_path", "")).endswith(_SOURCE_SUFFIXES)
 
 
 def _matches_expected(result: dict[str, Any], case: RankingCase) -> bool:
@@ -165,6 +215,9 @@ def _compute_metrics(
     definition_above_reference = True
     precision_sum = 0.0
     mrr_sum = 0.0
+    recall_hits = 0
+    contamination_sum = 0.0
+    contamination_cases = 0
     failures: list[dict[str, Any]] = []
 
     for case in cases:
@@ -176,6 +229,12 @@ def _compute_metrics(
         rank = _rank(results, case)
         precision_sum += _precision_at_5(results, case)
         mrr_sum += _reciprocal_rank(results, case)
+        if rank is not None and rank <= limit:
+            recall_hits += 1
+        if _expects_source(case):
+            contamination_cases += 1
+            contaminated = sum(1 for result in results[:limit] if _is_non_source(result))
+            contamination_sum += contaminated / limit
 
         if case.category == "symbol" and not _definition_outranks_reference(results):
             definition_above_reference = False
@@ -213,6 +272,10 @@ def _compute_metrics(
         definition_above_reference=definition_above_reference,
         precision_at_5=precision_sum / len(cases) if cases else 0.0,
         mrr_at_10=mrr_sum / len(cases) if cases else 0.0,
+        recall_at_10=recall_hits / len(cases) if cases else 0.0,
+        non_source_contamination=(
+            contamination_sum / contamination_cases if contamination_cases else 0.0
+        ),
     )
     return metrics, failures
 

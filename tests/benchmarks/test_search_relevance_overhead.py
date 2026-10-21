@@ -1,7 +1,7 @@
 """Benchmark: relevance additions stay constant-time on the ranked path.
 
 The ranked (default) search path gains only constant-time additions — the
-docs-exclusion WHERE clause (the code-focused default scope), the ranked
+content-type WHERE clause (the code-shaped default scope), the ranked
 relevance floor on the top fused score, the warm/cold model-status stamp, and
 the per-request literal matching selection. This suite pins those additions
 against the ranked baseline so the relevance feature cannot creep latency into
@@ -96,15 +96,15 @@ def test_ranked_baseline_latency(benchmark: Any, relevance_search_index: dict[st
 
 @pytest.mark.benchmark
 @pytest.mark.slow
-def test_ranked_code_focused_default_latency(
+def test_ranked_code_shaped_default_latency(
     benchmark: Any, relevance_search_index: dict[str, Any]
 ) -> None:
-    """Code-focused default scope — the docs-exclusion WHERE clause is a
+    """Code-shaped default scope — the content-type WHERE clause is a
     constant-time predicate over the existing content_type column."""
     search: HybridSearch = relevance_search_index["search"]
     envelope = benchmark(search.search, "def func", 10)
-    assert envelope["content"] == "code_focused"
-    assert all(r["content_type"] != "docs" for r in envelope["results"])
+    assert envelope["content"] == "code"
+    assert all(r["content_type"] == "code" for r in envelope["results"])
 
 
 @pytest.mark.benchmark

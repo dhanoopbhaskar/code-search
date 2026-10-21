@@ -27,6 +27,7 @@ class ContentIntent(StrEnum):
 
     DOCS = "docs"
     CONFIG = "config"
+    CODE = "code"
     NEUTRAL = "neutral"
 
 
@@ -75,6 +76,93 @@ _DOCS_PHRASES: tuple[str, ...] = (
     "release notes",
 )
 
+# Code-shaped vocabulary. These tokens describe source-level constructs rather
+# than prose or configuration, so a query containing one is asking about code
+# even when it also reads like a natural-language phrase.
+_CODE_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "annotation",
+        "argument",
+        "async",
+        "await",
+        "callback",
+        "callee",
+        "caller",
+        "class",
+        "code",
+        "compile",
+        "constructor",
+        "controller",
+        "decorator",
+        "def",
+        "endpoint",
+        "enum",
+        "exception",
+        "extends",
+        "fn",
+        "func",
+        "function",
+        "implements",
+        "import",
+        "interface",
+        "method",
+        "module",
+        "parameter",
+        "return",
+        "returns",
+        "runtime",
+        "source",
+        "struct",
+        "syntax",
+        "throw",
+        "variable",
+    }
+)
+
+# Nouns that name a source-level construct rather than a prose topic. A
+# multi-word query using one of these ("login handler", "user login handler")
+# is asking about code even when the other words are ordinary terms.
+_CODE_CONSTRUCT_NOUNS: frozenset[str] = frozenset(
+    {
+        "adapter",
+        "adapters",
+        "bean",
+        "beans",
+        "component",
+        "components",
+        "dao",
+        "dto",
+        "entity",
+        "entities",
+        "factory",
+        "gateway",
+        "handler",
+        "handlers",
+        "interceptor",
+        "listener",
+        "mapper",
+        "mappers",
+        "middleware",
+        "repository",
+        "repositories",
+        "resolver",
+        "scheduler",
+        "serializer",
+        "service",
+        "services",
+        "validator",
+        "worker",
+    }
+)
+
+# Source-file extensions and identifier shapes that mark a query as
+# code-shaped (``ArticleService.save``, ``login_handler``, ``User``).
+_SOURCE_EXTENSION_RE = re.compile(
+    r"\.(?:py|pyi|java|kt|kts|ts|tsx|js|jsx|mjs|cjs|go|rs|rb|swift|php|cs|cpp|cc|c|h|hpp)$",
+    re.IGNORECASE,
+)
+_DOTTED_NAME_RE = re.compile(r"\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+\b")
+
 _TOKEN_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_]*")
 
 # The scope that forces inclusion of each intent's content type.
@@ -85,12 +173,14 @@ _OVERRIDE_BY_INTENT: dict[ContentIntent, str] = {
 
 
 def classify_content_intent(query: str) -> ContentIntent:
-    """Classify *query* into documentation, configuration, or neutral intent.
+    """Classify *query* into documentation, configuration, code, or neutral intent.
 
-    Precedence is documentation, then configuration, then neutral, so a query
-    that mixes signals resolves to a single predictable intent. Configuration
-    intent delegates to the shared :func:`detect_config_ddl_scent` detector so
-    the config/DDL vocabulary keeps one source of truth.
+    Precedence is documentation, then configuration, then code, then neutral,
+    so a query that mixes signals resolves to a single predictable intent.
+    Configuration intent delegates to the shared
+    :func:`detect_config_ddl_scent` detector so the config/DDL vocabulary keeps
+    one source of truth. Code intent is lexical: code vocabulary, an
+    identifier-shaped token, or a single significant token.
 
     Args:
         query: The user query text.
@@ -99,12 +189,57 @@ def classify_content_intent(query: str) -> ContentIntent:
         The classified :class:`ContentIntent`.
     """
     lowered = (query or "").lower()
-    tokens = {m.group(0).lower() for m in _TOKEN_RE.finditer(lowered)}
+    raw_tokens = [m.group(0) for m in _TOKEN_RE.finditer(query or "")]
+    tokens = {token.lower() for token in raw_tokens}
     if tokens & _DOCS_KEYWORDS or any(phrase in lowered for phrase in _DOCS_PHRASES):
         return ContentIntent.DOCS
     if detect_config_ddl_scent(lowered)["has_scent"]:
         return ContentIntent.CONFIG
+    if _is_code_shaped(raw_tokens, query):
+        return ContentIntent.CODE
     return ContentIntent.NEUTRAL
+
+
+def _is_code_shaped(raw_tokens: list[str], query: str) -> bool:
+    """Return whether *query* is a fuzzy source-level search.
+
+    A single lowercase token (``login``), code vocabulary (``function``,
+    ``controller``), a code construct noun (``login handler``), a snake_case
+    identifier (``login_handler``), or a source-file extension marks the query
+    as code-shaped. Exact symbol-shaped
+    queries (``AuthService``, ``ArticleService.save``) are excluded: their
+    exact-match boost already outranks configuration, and keeping them on the
+    broader default preserves symbol-query behaviour. Documentation and
+    configuration signals are classified before this helper runs, so their
+    vocabulary never reaches it.
+    """
+    if not raw_tokens:
+        return False
+    if _is_exact_symbol_query(query):
+        return False
+    if len(raw_tokens) == 1:
+        return True
+    lowered = {token.lower() for token in raw_tokens}
+    if lowered & (_CODE_KEYWORDS | _CODE_CONSTRUCT_NOUNS):
+        return True
+    if _SOURCE_EXTENSION_RE.search(query):
+        return True
+    return any("_" in token or "$" in token for token in raw_tokens)
+
+
+def _is_exact_symbol_query(query: str) -> bool:
+    """Return whether *query* is a bare symbol-shaped identifier.
+
+    A dotted/qualified name or a single token with internal capitals names a
+    declaration rather than describing one, so it is not a fuzzy code-shaped
+    search.
+    """
+    stripped = query.strip().strip("`'\"")
+    if _DOTTED_NAME_RE.fullmatch(stripped):
+        return True
+    if re.fullmatch(r"[A-Za-z_]\w*", stripped):
+        return any(char.isupper() for char in stripped[1:])
+    return False
 
 
 def scope_override(intent: ContentIntent, effective: str) -> str:
@@ -144,7 +279,7 @@ def build_scope_signal(
     Returns:
         The actionable message, or ``None`` when no message is due.
     """
-    if intent is ContentIntent.NEUTRAL:
+    if intent in (ContentIntent.CODE, ContentIntent.NEUTRAL):
         return None
 
     if intent is ContentIntent.DOCS:

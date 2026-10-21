@@ -22,7 +22,7 @@ MIXED_QUERY = "article documentation"
 EMPTY_INFERRED_QUERY = "definitely-no-match-xyzzy documentation"
 
 DOCS_INTENT_SET = ["readme documentation", "how to deploy", "operations guide"]
-NEUTRAL_QUERY_SET = ["user login handler", "parse config file"]
+NEUTRAL_QUERY_SET = ["sum two numbers", "parse config file"]
 
 
 def _names(results: list[dict[str, Any]]) -> set[str]:
@@ -59,19 +59,18 @@ class TestDocsIntentReachability:
         assert envelope["content"] == "all"
         assert any(r.get("content_type") == "code" for r in envelope["results"])
 
-    def test_non_empty_default_pass_returned_unchanged_with_suggestion(
+    def test_docs_intent_widens_scope_even_when_code_matches(
         self, indexed_transparency: dict[str, Any]
     ) -> None:
-        """A non-empty default pass is returned unchanged with
-        a strong suggestion; the scope is not switched."""
+        """A strong docs intent widens to ``all`` immediately, so prose is
+        not outranked by code before the scope switch."""
         search = indexed_transparency["search"]
         explicit_default = search.search(MIXED_QUERY, limit=10, content="code_focused")
         envelope = search.search(MIXED_QUERY, limit=10)
-        assert envelope["content"] == "code_focused"
-        assert envelope["scope"]["origin"] == "default"
-        assert envelope["scope"]["suggested"] == "all"
+        assert envelope["content"] == "all"
+        assert envelope["scope"]["origin"] == "inferred"
         assert envelope["scope"]["signal"] is not None
-        assert _names(envelope["results"]) == _names(explicit_default["results"])
+        assert _names(explicit_default["results"]) <= _names(envelope["results"])
 
     def test_mixed_code_and_docs_tokens_do_not_hide_code(
         self, indexed_transparency: dict[str, Any]
@@ -145,6 +144,38 @@ class TestNonRankedModes:
         assert envelope["scope"]["suggested"] is None
 
 
+class TestCodeIntentScope:
+    def test_code_shaped_query_defaults_to_strict_code_scope(
+        self, indexed_transparency: dict[str, Any]
+    ) -> None:
+        """A fuzzy code-shaped query searches source only, so configuration
+        cannot outrank it on shared vocabulary."""
+        envelope = indexed_transparency["search"].search("save", limit=10)
+        assert envelope["content"] == "code"
+        assert envelope["scope"]["intent"] == "code"
+        assert envelope["scope"]["origin"] == "default"
+        assert envelope["scope"]["signal"] is None
+        assert envelope["results"]
+        assert all(r.get("content_type") == "code" for r in envelope["results"])
+
+    def test_exact_symbol_query_keeps_the_broader_default(
+        self, indexed_transparency: dict[str, Any]
+    ) -> None:
+        """Exact symbol names already outrank configuration, so they keep the
+        config-inclusive default."""
+        envelope = indexed_transparency["search"].search("ArticleService.save", limit=10)
+        assert envelope["content"] == "code_focused"
+        assert envelope["scope"]["intent"] == "neutral"
+
+    def test_config_shaped_query_keeps_config_in_scope(
+        self, indexed_transparency: dict[str, Any]
+    ) -> None:
+        """Configuration-shaped queries still use the config-inclusive default."""
+        envelope = indexed_transparency["search"].search("database configuration", limit=10)
+        assert envelope["content"] == "code_focused"
+        assert envelope["scope"]["intent"] == "config"
+
+
 class TestConfigIntentAccuracy:
     def test_default_scope_keeps_config_reachable_without_signal(
         self, indexed_transparency: dict[str, Any]
@@ -170,6 +201,17 @@ class TestConfigIntentAccuracy:
         signal = envelope["scope"]["signal"]
         assert signal is not None
         assert "content scope config" in signal
+
+    def test_multi_word_code_query_defaults_to_strict_code_scope(
+        self, indexed_transparency: dict[str, Any]
+    ) -> None:
+        """A construct-noun query keeps configuration out of the pool, even
+        when it is not a single token or snake_case identifier."""
+        envelope = indexed_transparency["search"].search("login handler", limit=10)
+        assert envelope["content"] == "code"
+        assert envelope["scope"]["intent"] == "code"
+        assert envelope["scope"]["origin"] == "default"
+        assert all(r.get("content_type") == "code" for r in envelope["results"])
 
     def test_config_named_token_does_not_change_scope(
         self, indexed_transparency: dict[str, Any]

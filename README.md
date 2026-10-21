@@ -68,18 +68,31 @@ code-search search "public Comment save" --mode exhaustive --matching literal --
 ```
 
 `--content {code,config,docs,all,code_focused}` scopes a search to one content
-axis. Omitting `--content` means **no scope preference**: the effective default
-is **code-focused** — prose/docs chunks (markdown/`.rst`/`.txt`) are excluded
-from ranked results, so docs never pollute code answers, while configuration is
-included. On top of that default, **intent inference** runs on the ranked path:
-a documentation-shaped query (for example "readme documentation", "how to
-deploy") whose default search finds nothing is automatically re-run with content
-scope `all`, and a non-empty default result is returned unchanged with a strong
-suggestion instead of a silent empty answer. A configuration-shaped query never
-changes the effective scope (configuration is already included), and its
-guidance is **accurate**: a scope that includes configuration never claims
-configuration is excluded. An explicit `--content` value always overrides
-inference.
+axis. Omitting `--content` means **no scope preference** and lets **query-intent
+inference** choose on the ranked path. A fuzzy code-shaped query (a short
+word such as "login", a snake_case identifier, code vocabulary such as
+"function" or "controller", or a code construct noun such as "handler" or
+"repository") searches `code` only, so configuration and build
+files cannot outrank source on shared vocabulary. Exact symbol-shaped queries
+(`AuthService`, `ArticleService.save`) keep the broader default because their
+exact-match boost already outranks configuration. A documentation-shaped query
+(for example "readme documentation", "how to deploy") widens the scope to
+`all` immediately and lifts prose chunks, so a code result that merely mentions
+the words does not automatically outrank the prose answer. Other queries use
+`code_focused` (code + config, **docs excluded**); a configuration-shaped query
+keeps configuration reachable and its guidance is **accurate** — a scope that
+includes configuration never claims configuration is excluded. An explicit
+`--content` value always overrides inference.
+
+Test files are excluded from ranked search by default; add `--include-tests`
+(or `include_test_files: true` on MCP) when the test itself is the answer.
+Ranked envelopes always split the match count into `production_matches` and
+`test_matches`, so hidden tests never silently change the total.
+Machine-readable search output is compact by default: identifiers, locations,
+signatures, and a short content snippet, with `--no-compact` returning the full
+blocks and `score_sources`. Each ranked envelope carries `token_savings`
+(returned tokens vs reading the whole files) so an agent can see the budget it
+saved.
 
 The applied scope is echoed as `content` and in the additive scope object
 (`{effective, origin, intent, suggested, signal, override}`), where `origin` is
@@ -102,6 +115,15 @@ semantics per request (default `all_tokens`): `literal` treats the whole
 query as one verbatim substring, `any_token` keeps OR semantics. Every
 exhaustive result set labels its `matching_semantics` so a count is never
 presented as an exact-phrase count.
+
+`--regex` compiles the query as a regular expression and scans line by line;
+it requires `--mode exhaustive` and labels the result set
+`matching_semantics: "regex"`. An invalid pattern is reported as an
+`invalid_regex` explanation rather than silently returning nothing.
+
+For repeated CLI use, run `code-search daemon start` once so a resident
+process owns the model load. `--no-startup-check` skips the transparent
+daemon auto-start for a single invocation and serves it locally.
 
 Every ranked response also reports `query_time_ms`, the measured
 `model_status` (`warm`/`cold`/`disabled`), the additive `ranked_path`
@@ -161,7 +183,9 @@ inventing a proxy.
 
 `code-search query` seeds a bounded graph traversal from the hybrid search
 ranker and returns a compact neighbourhood with a confidence label on every
-edge (`EXTRACTED`, `INFERRED`, `AMBIGUOUS`, or `UNRESOLVED`).
+edge (`EXTRACTED`, `INFERRED`, `AMBIGUOUS`, or `UNRESOLVED`). Seeds are taken
+from the same reranked hits the search surface returns, and each seed reports
+why it was chosen (hybrid rank/score, term coverage, or an explicit reference).
 
 ```bash
 code-search query "how does favoriting an article flow from controller to repository"
@@ -247,6 +271,15 @@ path (lexical-only fusion, no model load):
 
 ```bash
 code-search search "pagination" --no-model
+```
+
+Scores are ordered, not probabilities: weak matches are demoted, but a strong
+match can exceed `1.0` rather than saturating at `1.00`. To audit why a result
+ranked where it did, `--explain-ranking` adds `score_sources` and prints the
+per-result multipliers and boosts:
+
+```bash
+code-search search "ArticleList loadArticles" --explain-ranking
 ```
 
 ### View operational metrics

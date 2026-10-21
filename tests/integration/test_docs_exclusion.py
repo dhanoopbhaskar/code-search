@@ -89,3 +89,11 @@ class TestDocsExclusion:
         envelope = indexed_relevance["search"].search(CODE_QUERY, limit=10)
         for r in envelope["results"]:
             assert r["content_type"] != "docs"
+
+    def test_docs_results_are_heading_sections(self, indexed_relevance: dict[str, Any]) -> None:
+        """A prose result covers its answering heading section, not the whole
+        file."""
+        envelope = indexed_relevance["search"].search(PROSE_QUERY, limit=10, content="docs")
+        readme = next(r for r in envelope["results"] if Path(r["file_path"]).name == GT_DOC.name)
+        assert "How comments get created" in readme["content"]
+        assert readme["line_end"] - readme["line_start"] < 20

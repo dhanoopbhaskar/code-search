@@ -18,11 +18,12 @@ Design constraints:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ from code_search.engine.graph import (
     RationaleStore,
     read_source_slice,
 )
+from code_search.engine.query_terms import morphological_variants
 from code_search.engine.symbols import SymbolStore
 
 #: Resolution tier → graphify-style confidence label.
@@ -56,6 +58,7 @@ CONFIDENCE_ORDER: dict[str, int] = {
 
 VALID_EDGE_TYPES = {"CALLS", "INHERITS", "REFERENCES", "IMPORTS"}
 DEFAULT_EDGE_TYPES = frozenset({"CALLS", "INHERITS"})
+_TYPE_KINDS = frozenset({"class", "interface", "enum"})
 
 _MAX_DEPTH = 4
 _MAX_NODES = 200
@@ -63,6 +66,45 @@ _MAX_FANOUT = 50
 _DEFAULT_TOKEN_BUDGET = 1500
 _MAX_PATH_HOPS = 6
 _MAX_PATH_NODES = 1000
+
+
+def display_symbol(fqn: str) -> str:
+    """Return *fqn* with its filesystem path prefix removed for human display.
+
+    Stored FQNs are ``<absolute file path>::<declaration>``. The path prefix is
+    noise in text output, so it is dropped while logical module prefixes (for
+    example ``pkg.module::Thing``) are preserved.
+    """
+    if fqn.startswith("file:"):
+        return fqn[5:]
+    if "::" in fqn:
+        prefix, declaration = fqn.rsplit("::", 1)
+        if "/" in prefix or "\\" in prefix:
+            return declaration
+    return fqn
+
+
+def relative_display(file_path: str | None, root: str | Path | None) -> str:
+    """Return *file_path* relative to *root* in POSIX form for display."""
+    if not file_path:
+        return "?"
+    if root:
+        try:
+            return Path(file_path).resolve().relative_to(Path(root).resolve()).as_posix()
+        except (ValueError, OSError):
+            pass
+    return Path(file_path).as_posix()
+
+
+def _render_edge(edge: GraphEdge) -> str:
+    """Render *edge* with human-friendly endpoints."""
+    source = display_symbol(edge.source)
+    target = display_symbol(edge.target)
+    if edge.direction == "reverse":
+        if edge.relation == "CONTAINS":
+            return f"{target} --member of--> {source}"
+        return f"{target} <--{edge.relation}/{edge.confidence}-- {source}"
+    return f"{source} --{edge.relation}/{edge.confidence}--> {target}"
 
 
 def resolve_confidence(resolution_tier: str | None, resolved: bool = True) -> str:
@@ -120,15 +162,79 @@ def _candidate_identifiers(text: str) -> list[str]:
     return ordered
 
 
+# Question words and glue that must not drive per-term seed coverage: a
+# parameter type named ``NewCommentParam`` is not evidence that a comment
+# method answers a question about a "new article".
+_QUERY_STOPWORDS = frozenset(
+    {
+        "about",
+        "after",
+        "and",
+        "are",
+        "before",
+        "been",
+        "being",
+        "between",
+        "does",
+        "for",
+        "from",
+        "has",
+        "have",
+        "how",
+        "into",
+        "its",
+        "over",
+        "that",
+        "the",
+        "this",
+        "through",
+        "under",
+        "was",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "why",
+        "with",
+    }
+)
+
+
 def _terms(text: str) -> set[str]:
     """Return lowercased identifier/word terms from *text*."""
     parts = re.split(r"[^A-Za-z0-9_]+|(?<=[a-z0-9])(?=[A-Z])|_", text)
     return {p.lower() for p in parts if len(p) >= 3}
 
 
+def _query_terms(text: str) -> set[str]:
+    """Return significant query terms and their morphological variants.
+
+    A question says ``saving`` where the indexed declaration says ``save``, so
+    the variants are what make per-term seed coverage work on natural-language
+    questions instead of only on identifier-shaped ones.
+    """
+    terms = _terms(text) - _QUERY_STOPWORDS
+    expanded: set[str] = set(terms)
+    for term in terms:
+        expanded.update(morphological_variants(term))
+    return expanded - _QUERY_STOPWORDS
+
+
+def _symbol_terms(fqn: str, name: str) -> set[str]:
+    """Return the declaration terms of a symbol, excluding parameter types."""
+    declaration = fqn.split("(", 1)[0]
+    return _terms(declaration + " " + name)
+
+
 @dataclass(frozen=True)
 class GraphNode:
-    """A node in a graph answer (symbol, file, or unresolved external leaf)."""
+    """A node in a graph answer (symbol, file, or unresolved external leaf).
+
+    ``reason`` is populated on seed nodes to explain why the seed was chosen;
+    it is ``None`` for nodes reached by traversal.
+    """
 
     key: str
     fqn: str
@@ -141,6 +247,7 @@ class GraphNode:
     distance: int = 0
     signature: str | None = None
     docstring: str | None = None
+    reason: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable node payload."""
@@ -156,6 +263,7 @@ class GraphNode:
             "distance": self.distance,
             "signature": self.signature,
             "docstring": self.docstring,
+            "reason": self.reason,
         }
 
 
@@ -285,6 +393,8 @@ class ImpactAnswer:
     symbols: list[GraphNode] = field(default_factory=list)
     impacted: list[GraphNode] = field(default_factory=list)
     files: list[str] = field(default_factory=list)
+    production_files: list[str] = field(default_factory=list)
+    test_files: list[str] = field(default_factory=list)
     summary: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -294,6 +404,8 @@ class ImpactAnswer:
             "symbols": [n.as_dict() for n in self.symbols],
             "impacted": [n.as_dict() for n in self.impacted],
             "files": self.files,
+            "production_files": self.production_files,
+            "test_files": self.test_files,
             "summary": self.summary,
         }
 
@@ -336,6 +448,7 @@ class GraphQueryService:
         module_store: ModuleEdgeStore | None = None,
         rationale_store: RationaleStore | None = None,
         doc_link_store: DocLinkStore | None = None,
+        reranker: Any | None = None,
     ) -> None:
         """Wire the service to the existing engine components.
 
@@ -349,11 +462,15 @@ class GraphQueryService:
             module_store: Optional module-edge store.
             rationale_store: Optional rationale store.
             doc_link_store: Optional documentation-link store.
+            reranker: Optional result reranker. When supplied, seeds are chosen
+                from the same reranked hits the search surface returns instead
+                of the raw fusion order.
         """
         self._db = db
         self._symbols = symbol_store
         self._edges = edge_store
         self._search = search
+        self._reranker = reranker
         self._settings = settings or Settings.from_env()
         self._modules = module_store or ModuleEdgeStore(db)
         self._rationale = rationale_store or RationaleStore(db)
@@ -385,6 +502,7 @@ class GraphQueryService:
         edge_types: set[str] | None = None,
         token_budget: int = _DEFAULT_TOKEN_BUDGET,
         seeds: list[str] | None = None,
+        include_external: bool = False,
     ) -> GraphAnswer:
         """Traverse the graph from hybrid-search seeds and answer *question*.
 
@@ -396,6 +514,10 @@ class GraphQueryService:
             token_budget: Soft output budget used when trimming the answer.
             seeds: Optional explicit seed symbol references; when omitted seeds
                 are derived from hybrid search.
+            include_external: When false (the default), unresolved/external
+                callee leaves are collapsed out of the neighbourhood so the
+                answer is a clean in-corpus graph. The collapsed count is
+                reported in ``stats["collapsed_externals"]``.
 
         Returns:
             A :class:`GraphAnswer`; ``outcome`` is ``no_seed`` when nothing
@@ -418,6 +540,7 @@ class GraphQueryService:
         seen_edges: set[tuple[str, str, str, str]] = set()
         queue: deque[tuple[GraphNode, int]] = deque((n, 0) for n in seed_nodes)
         truncated = False
+        collapsed_externals = 0
 
         while queue:
             node, node_depth = queue.popleft()
@@ -428,6 +551,9 @@ class GraphQueryService:
                 break
             outgoing = self._fetch_outgoing(node, active_types)
             for edge, target in outgoing:
+                if target.source == "external" and not include_external:
+                    collapsed_externals += 1
+                    continue
                 if len(nodes) >= max_nodes:
                     truncated = True
                     break
@@ -483,6 +609,7 @@ class GraphQueryService:
                 "edge_types": sorted(active_types),
                 "visited": len(nodes),
                 "returned": len(ordered_nodes),
+                "collapsed_externals": collapsed_externals,
                 "elapsed_ms": 0.0,
             },
         )
@@ -491,15 +618,29 @@ class GraphQueryService:
         return answer
 
     def _select_seeds(self, question: str, explicit: list[str] | None) -> list[GraphNode]:
-        """Resolve *explicit* seeds or derive up to three from hybrid search."""
+        """Resolve *explicit* seeds or derive up to three from hybrid search.
+
+        Seeds always come from the search hits first: the top hit seeds the
+        traversal, per-term coverage adds a hit for each uncovered query term,
+        and the remaining top hits fill the seed set. When a reranker is wired
+        in, the hits are reranked first so the seeds match the ranking the
+        search surface shows. Every seed carries a ``reason`` describing why it
+        was chosen.
+        """
         if explicit:
             resolved: list[GraphNode] = []
             for reference in explicit:
                 node = self._resolve_seed_node(reference)
                 if node is not None:
-                    resolved.append(node)
+                    resolved.append(
+                        replace(
+                            node,
+                            reason=(f"explicit seed {reference!r} resolved from the symbol index"),
+                        )
+                    )
             return resolved[:3]
 
+        self._ensure_search_is_warm()
         try:
             envelope = self._search.search(
                 question,
@@ -510,11 +651,14 @@ class GraphQueryService:
         except Exception:
             return []
         results = envelope.get("results") or []
-        mapped: list[tuple[dict[str, Any], GraphNode]] = []
-        for result in results:
+        if self._reranker is not None and results:
+            with contextlib.suppress(Exception):
+                results = self._reranker.rerank(results, query=question)
+        mapped: list[tuple[int, dict[str, Any], GraphNode]] = []
+        for rank, result in enumerate(results, start=1):
             node = self._map_chunk_to_symbol(result)
             if node is not None:
-                mapped.append((result, node))
+                mapped.append((rank, result, node))
         if not mapped:
             # Lexical fallback: when the ranker finds nothing (a short
             # imperative question on a tiny index), resolve the identifiers
@@ -525,45 +669,83 @@ class GraphQueryService:
                 symbol = envelope.get("symbol")
                 if symbol is None:
                     continue
-                node = self._node_from_symbol(symbol)
+                node = replace(
+                    self._node_from_symbol(symbol),
+                    reason=(
+                        f"identifier {identifier!r} named in the query "
+                        "resolved from the symbol index"
+                    ),
+                )
                 if all(node.key != existing.key for existing in fallback_seeds):
                     fallback_seeds.append(node)
                 if len(fallback_seeds) >= 3:
                     break
             return fallback_seeds
 
-        min_score = float(mapped[0][0].get("score") or 0.0) * 0.25
-        chosen: list[GraphNode] = [mapped[0][1]]
+        first_rank, first_result, first_node = mapped[0]
+        min_score = float(first_result.get("score") or 0.0) * 0.25
+        chosen: list[GraphNode] = [
+            replace(first_node, reason=self._seed_reason(first_rank, first_result))
+        ]
         chosen_ids = {chosen[0].key}
 
         # Per-term guarantee: make sure one common identifier cannot starve
         # the other query terms by adding a seed covering each uncovered term.
-        query_terms = _terms(question)
-        covered = _terms(mapped[0][1].fqn + " " + mapped[0][1].name)
+        query_terms = _query_terms(question)
+        covered = _symbol_terms(first_node.fqn, first_node.name)
         for term in sorted(query_terms - covered):
-            for result, node in mapped:
+            for rank, result, node in mapped:
                 if node.key in chosen_ids:
                     continue
                 if float(result.get("score") or 0.0) < min_score:
                     continue
-                if term in _terms(node.fqn + " " + node.name):
-                    chosen.append(node)
+                node_terms = _symbol_terms(node.fqn, node.name)
+                if term in node_terms:
+                    reason = f"hybrid search hit #{rank} covers query term {term!r}"
+                    chosen.append(replace(node, reason=reason))
                     chosen_ids.add(node.key)
-                    covered |= _terms(node.fqn + " " + node.name)
+                    covered |= node_terms
                     break
             if len(chosen) >= 3:
                 break
 
-        for result, node in mapped:
+        for rank, result, node in mapped:
             if len(chosen) >= 3:
                 break
             if node.key in chosen_ids:
                 continue
             if float(result.get("score") or 0.0) < min_score:
                 continue
-            chosen.append(node)
+            chosen.append(replace(node, reason=self._seed_reason(rank, result)))
             chosen_ids.add(node.key)
         return chosen
+
+    @staticmethod
+    def _seed_reason(rank: int, result: dict[str, Any]) -> str:
+        """Return the human-readable provenance for a hybrid-search seed."""
+        score = float(result.get("score") or 0.0)
+        return f"hybrid search hit #{rank} (score {score:.3f})"
+
+    def _ensure_search_is_warm(self) -> None:
+        """Wait a bounded interval for the embedding model before seeding.
+
+        A cold model silently drops the vector arm, so the same question would
+        seed from a lexical-only ranking and could bury the symbol it names.
+        The daemon and MCP apply the same bounded wait before ranking; doing it
+        here keeps every surface seeding from the same fused order. A warm
+        model returns immediately.
+        """
+        generator = getattr(self._search, "_embedding_generator", None)
+        wait_warm = getattr(generator, "wait_warm", None)
+        begin_warmup = getattr(generator, "begin_warmup", None)
+        if not callable(wait_warm) or not callable(begin_warmup):
+            return
+        timeout = float(getattr(self._settings, "warmup_wait_s", 0.0) or 0.0)
+        if timeout <= 0:
+            return
+        with contextlib.suppress(Exception):
+            begin_warmup()
+            wait_warm(timeout)
 
     def _resolve_seed_node(self, reference: str) -> GraphNode | None:
         """Resolve an explicit seed reference to a graph node."""
@@ -810,6 +992,27 @@ class GraphQueryService:
     # ------------------------------------------------------------------
     # Shortest path
     # ------------------------------------------------------------------
+    def _resolve_path_endpoint(self, reference: str) -> dict[str, Any]:
+        """Resolve a path endpoint, preferring a unique type declaration.
+
+        A bare class name can collide with its constructor (both are stored
+        under the class name). Callers asking for a path between classes mean
+        the type, so when the only ambiguity is constructor-vs-type pick the
+        type rather than refusing the traversal.
+        """
+        envelope = self._symbols.resolve_name(reference)
+        if envelope.get("kind") != "ambiguous":
+            return envelope
+        type_candidates = [
+            candidate
+            for candidate in envelope.get("candidates") or []
+            if candidate.get("kind") in _TYPE_KINDS
+        ]
+        if len(type_candidates) != 1:
+            return envelope
+        resolved = self._symbols.resolve_name(str(type_candidates[0]["fqn"]))
+        return resolved if resolved.get("symbol") is not None else envelope
+
     def shortest_path(
         self,
         source: str,
@@ -827,8 +1030,8 @@ class GraphQueryService:
         *max_hops* and a global node cap.
         """
         start = time.monotonic()
-        source_env = self._symbols.resolve_name(source)
-        target_env = self._symbols.resolve_name(target)
+        source_env = self._resolve_path_endpoint(source)
+        target_env = self._resolve_path_endpoint(target)
         for env, label in ((source_env, "source"), (target_env, "target")):
             if env.get("kind") == "ambiguous":
                 return PathAnswer(
@@ -884,7 +1087,9 @@ class GraphQueryService:
                 queue.append(neighbor)
         if not found:
             explanation = f"no path within {max_hops} hops; " + (
-                "retry with undirected=True" if not undirected else "graph is disconnected"
+                "retry with --undirected to traverse callers as well"
+                if not undirected
+                else "no connecting edges in either direction (unresolved references may hide it)"
             )
             return PathAnswer(
                 source=source_node,
@@ -950,6 +1155,13 @@ class GraphQueryService:
         with self._db.connect() as conn:
             while frontier and len(visited) < _MAX_PATH_NODES:
                 current = frontier.popleft()
+                current_row = conn.execute(
+                    "SELECT fqn FROM symbols WHERE id = ?;", (current,)
+                ).fetchone()
+                if current_row is not None:
+                    self._append_containment(
+                        adjacency, frontier, visited, conn, current, str(current_row["fqn"])
+                    )
                 rows = conn.execute(
                     "SELECT e.source_symbol_id, e.target_symbol_id, e.edge_type, "
                     "e.resolution_tier, e.resolved, e.target_raw, "
@@ -1012,6 +1224,67 @@ class GraphQueryService:
                 )
             )
         return adjacency
+
+    def _append_containment(
+        self,
+        adjacency: dict[int, list[tuple[int, GraphEdge]]],
+        frontier: deque[int],
+        visited: set[int],
+        conn: Any,
+        symbol_id: int,
+        symbol_fqn: str,
+    ) -> None:
+        """Add structural declaration containment to the path adjacency.
+
+        Class nodes own their methods and fields through containment rather
+        than call edges, so a class-to-class path has to descend into members
+        and ascend back out. Both directions are structural and therefore
+        available regardless of the requested edge types.
+        """
+        children = conn.execute(
+            "SELECT id, fqn FROM symbols WHERE parent_symbol_id = ? "
+            "ORDER BY line_start, id LIMIT ?;",
+            (symbol_id, _MAX_FANOUT),
+        ).fetchall()
+        for child in children:
+            child_id = int(child["id"])
+            adjacency.setdefault(symbol_id, []).append(
+                (
+                    child_id,
+                    GraphEdge(
+                        source=symbol_fqn,
+                        target=str(child["fqn"]),
+                        relation="CONTAINS",
+                        confidence="EXTRACTED",
+                        direction="forward",
+                    ),
+                )
+            )
+            if child_id not in visited:
+                visited.add(child_id)
+                frontier.append(child_id)
+        parent = conn.execute(
+            "SELECT p.id, p.fqn FROM symbols p JOIN symbols s ON s.parent_symbol_id = p.id "
+            "WHERE s.id = ?;",
+            (symbol_id,),
+        ).fetchone()
+        if parent is not None:
+            parent_id = int(parent["id"])
+            adjacency.setdefault(symbol_id, []).append(
+                (
+                    parent_id,
+                    GraphEdge(
+                        source=str(parent["fqn"]),
+                        target=symbol_fqn,
+                        relation="CONTAINS",
+                        confidence="EXTRACTED",
+                        direction="reverse",
+                    ),
+                )
+            )
+            if parent_id not in visited:
+                visited.add(parent_id)
+                frontier.append(parent_id)
 
     # ------------------------------------------------------------------
     # Explain
@@ -1293,16 +1566,36 @@ class GraphQueryService:
         ordered = self._order_nodes(impacted.values(), seed_keys=set(seed_nodes))
         file_nodes = {n.fqn for n in ordered if n.source == "file"}
         symbol_nodes = [n for n in ordered if n.source == "symbol"]
-        files = sorted({n.file_path for n in symbol_nodes if n.file_path} | file_nodes)
+        # Symbol paths are stored absolute while module-edge paths are
+        # relative; normalise both spellings so each file appears once.
+        distance_by_file: dict[str, int] = {}
+        for node in ordered:
+            if node.source == "file":
+                path = node.fqn
+            elif node.file_path:
+                path = self._relative_path(node.file_path)
+            else:
+                continue
+            distance_by_file[path] = min(distance_by_file.get(path, node.distance), node.distance)
+        files = sorted(
+            {self._relative_path(n.file_path) for n in symbol_nodes if n.file_path} | file_nodes,
+            key=lambda path: (distance_by_file.get(path, _MAX_DEPTH), path),
+        )
+        test_files = [path for path in files if _is_test_file(path)]
+        production_files = [path for path in files if not _is_test_file(path)]
         tests = [n for n in symbol_nodes if n.file_path and _is_test_file(n.file_path)]
         return ImpactAnswer(
             changed_paths=changed_stored,
             symbols=list(seed_nodes.values()),
             impacted=symbol_nodes,
             files=files,
+            production_files=production_files,
+            test_files=test_files,
             summary={
                 "symbols": len(symbol_nodes),
                 "files": len(files),
+                "production_files": len(production_files),
+                "test_files": len(test_files),
                 "tests": len(tests),
                 "changed_files": len(changed_stored),
             },
@@ -1370,6 +1663,7 @@ class GraphQueryService:
                 "ORDER BY source_symbol_id, target_symbol_id LIMIT ?;",
                 (max_edges,),
             ).fetchall()
+            total_symbols = int(conn.execute("SELECT COUNT(*) AS n FROM symbols;").fetchone()["n"])
 
         entity_ids: set[int] = set()
         god_nodes: list[dict[str, Any]] = []
@@ -1385,7 +1679,7 @@ class GraphQueryService:
                     {
                         "fqn": row["fqn"],
                         "kind": row["kind"],
-                        "file_path": row["file_path"],
+                        "file_path": self._relative_path(str(row["file_path"] or "")),
                         "degree": node_degree,
                     }
                 )
@@ -1417,8 +1711,15 @@ class GraphQueryService:
 
         cycles = self._import_cycles()
         edge_stats = edge_resolution_stats(self._db)
+        total_edges = sum(int(stat["total"]) for stat in edge_stats.values())
+        resolved_edges = sum(int(stat["resolved"]) for stat in edge_stats.values())
+        resolved_symbols = len(entity_ids)
         isolated = [
-            {"fqn": row["fqn"], "kind": row["kind"], "file_path": row["file_path"]}
+            {
+                "fqn": row["fqn"],
+                "kind": row["kind"],
+                "file_path": self._relative_path(str(row["file_path"] or "")),
+            }
             for row in rows
             if int(row["id"]) in entity_ids and degree_map.get(int(row["id"]), 0) == 0
         ][:top_n]
@@ -1430,8 +1731,15 @@ class GraphQueryService:
             edge_stats=edge_stats,
             suggested_questions=self._suggest_questions(god_nodes, cycles, isolated),
             stats={
-                "symbols": len(entity_ids),
+                "symbols": resolved_symbols,
+                "symbols_extracted": total_symbols,
+                "symbol_coverage": (
+                    round(resolved_symbols / total_symbols, 3) if total_symbols else 0.0
+                ),
                 "edges": len(edge_rows),
+                "edges_total": total_edges,
+                "edges_resolved": resolved_edges,
+                "edge_coverage": round(resolved_edges / total_edges, 3) if total_edges else 0.0,
                 "elapsed_ms": round((time.monotonic() - start) * 1000, 1),
             },
         )
@@ -1516,11 +1824,11 @@ class GraphQueryService:
         """Derive deterministic follow-up questions from the report."""
         questions: list[str] = []
         for node in god_nodes[:5]:
-            questions.append(f"How does {node['fqn']} connect to its callers?")
+            questions.append(f"How does {display_symbol(str(node['fqn']))} connect to its callers?")
         for cycle in cycles[:3]:
             questions.append(f"Why does the import cycle {' -> '.join(cycle)} exist?")
         for node in isolated[:3]:
-            questions.append(f"Is {node['fqn']} still used anywhere?")
+            questions.append(f"Is {display_symbol(str(node['fqn']))} still used anywhere?")
         return questions[:10]
 
     # ------------------------------------------------------------------
@@ -1578,29 +1886,32 @@ class GraphQueryService:
         return max(1, len("\n".join(lines)) // 4)
 
 
-def render_query_text(answer: GraphAnswer) -> str:
+def render_query_text(answer: GraphAnswer, *, root: str | Path | None = None) -> str:
     """Render a :class:`GraphAnswer` as compact, agent-friendly text."""
     if answer.outcome == "no_seed":
         return "graph query: no graph seed resolved; retry with an explicit symbol name"
+    seed_keys = {n.key for n in answer.seeds}
     header = (
         f'graph query: "{answer.question}" | seeds: '
-        f"{', '.join(n.fqn for n in answer.seeds)} | "
+        f"{', '.join(display_symbol(n.fqn) for n in answer.seeds)} | "
         f"nodes={len(answer.nodes)} edges={len(answer.edges)}"
         f"{' truncated' if answer.truncated else ''}"
     )
     lines = [header]
     grouped: dict[str, list[GraphNode]] = {}
     for node in answer.nodes:
-        grouped.setdefault(node.file_path or "external", []).append(node)
+        grouped.setdefault(relative_display(node.file_path, root) or "external", []).append(node)
     for file_path in sorted(grouped):
         lines.append(file_path)
         for node in grouped[file_path]:
-            marker = "*" if node.key in {n.key for n in answer.seeds} else " "
+            marker = "*" if node.key in seed_keys else " "
             location = f":{node.line_start}" if node.line_start is not None else ""
-            lines.append(f"  {marker} {node.fqn} ({node.kind}){location}")
-    if answer.edges:
+            reason = f" — {node.reason}" if node.key in seed_keys and node.reason else ""
+            lines.append(f"  {marker} {display_symbol(node.fqn)} ({node.kind}){location}{reason}")
+    relations = [edge for edge in answer.edges if edge.relation != "CONTAINS"]
+    if relations:
         lines.append("relations:")
-        lines.extend(f"  {edge.render()}" for edge in answer.edges)
+        lines.extend(f"  {_render_edge(edge)}" for edge in relations)
     return "\n".join(lines)
 
 
@@ -1609,63 +1920,117 @@ def render_path_text(answer: PathAnswer) -> str:
     if answer.outcome != "resolved":
         suffix = ""
         if answer.candidates:
-            names = ", ".join(str(c.get("fqn", "")) for c in answer.candidates[:3])
+            names = ", ".join(display_symbol(str(c.get("fqn", ""))) for c in answer.candidates[:3])
             suffix = f" ({names})"
         return f"path: {answer.outcome}: {answer.explanation or ''}{suffix}".strip()
+    source = display_symbol(answer.source.fqn) if answer.source else "?"
+    target = display_symbol(answer.target.fqn) if answer.target else "?"
     lines = [
-        f"path: {answer.source.fqn if answer.source else '?'} -> "
-        f"{answer.target.fqn if answer.target else '?'} "
+        f"path: {source} -> {target} "
         f"({len(answer.hops)} hops, {'undirected' if answer.undirected else 'directed'})"
     ]
-    current = answer.source.fqn if answer.source else "?"
-    for hop in answer.hops:
-        if hop.direction == "reverse":
-            lines.append(f"  {current} <--{hop.relation}/{hop.confidence}-- {hop.target}")
-            current = hop.target
-        else:
-            lines.append(f"  {current} --{hop.relation}/{hop.confidence}--> {hop.target}")
-            current = hop.target
+    lines.extend(f"  {_render_edge(hop)}" for hop in answer.hops)
     return "\n".join(lines)
 
 
-def render_explain_text(answer: ExplainAnswer) -> str:
-    """Render an :class:`ExplainAnswer` with metadata, relations, and rationale."""
+def render_explain_text(answer: ExplainAnswer, *, root: str | Path | None = None) -> str:
+    """Render an :class:`ExplainAnswer` with metadata, relations, and rationale.
+
+    Containment is reported as a compact member list instead of a relation
+    edge per member, and remaining relations are grouped by direction.
+    """
     if answer.outcome != "resolved" or answer.symbol is None:
         suffix = f": {answer.outcome}"
         if answer.candidates:
-            suffix += " (" + ", ".join(str(c.get("fqn", "")) for c in answer.candidates[:5]) + ")"
+            suffix += (
+                " ("
+                + ", ".join(display_symbol(str(c.get("fqn", ""))) for c in answer.candidates[:5])
+                + ")"
+            )
         return f"explain{suffix}"
     symbol = answer.symbol
+    node_by_key = {node.key: node for node in answer.nodes}
+    members = [
+        node_by_key[edge.target]
+        for edge in answer.edges
+        if edge.relation == "CONTAINS"
+        and edge.direction == "forward"
+        and edge.source == symbol.key
+        and edge.target in node_by_key
+    ]
+    relations = [edge for edge in answer.edges if edge.relation != "CONTAINS"]
+    outgoing = [edge for edge in relations if edge.direction == "forward"]
+    incoming = [edge for edge in relations if edge.direction == "reverse"]
+    location = relative_display(symbol.file_path, root)
     lines = [
-        f"explain: {symbol.fqn}",
+        f"explain: {display_symbol(symbol.fqn)}",
         f"  kind: {symbol.kind}",
-        f"  location: {symbol.file_path}:{symbol.line_start}",
+        f"  location: {location}:{symbol.line_start}",
+        f"  summary: {len(members)} members | {len(outgoing)} outgoing | {len(incoming)} incoming",
     ]
     if symbol.signature:
         lines.append(f"  signature: {symbol.signature}")
     if symbol.docstring:
         lines.append(f"  docstring: {symbol.docstring[:200]}")
-    outgoing = [e for e in answer.edges if e.direction == "forward"]
-    incoming = [e for e in answer.edges if e.direction == "reverse"]
-    if outgoing:
-        lines.append("  outgoing:")
-        lines.extend(f"    {e.render()}" for e in outgoing)
-    if incoming:
-        lines.append("  incoming:")
-        lines.extend(f"    {e.render()}" for e in incoming)
+    if members:
+        lines.append(f"  members ({len(members)}):")
+        for member in members:
+            lines.append(f"    {display_symbol(member.fqn)} ({member.kind})")
+    for label, edges in (("outgoing", outgoing), ("incoming", incoming)):
+        if not edges:
+            continue
+        grouped_relations: dict[str, list[GraphEdge]] = {}
+        for edge in edges:
+            grouped_relations.setdefault(edge.relation, []).append(edge)
+        lines.append(f"  {label}:")
+        for relation in sorted(grouped_relations):
+            lines.append(f"    {relation}:")
+            lines.extend(f"      {_render_edge(edge)}" for edge in grouped_relations[relation])
     if answer.rationale:
         lines.append("  rationale:")
         for item in answer.rationale:
+            item_path = relative_display(str(item["file_path"]), root)
             lines.append(
-                f"    {item['kind']} {item['file_path']}:{item['line_start']} {item['text'][:160]}"
+                f"    {item['kind']} {item_path}:{item['line_start']} {item['text'][:160]}"
             )
     if answer.doc_links:
         lines.append("  linked docs:")
         for link in answer.doc_links:
+            doc_path = relative_display(str(link["doc_file_path"]), root)
             lines.append(
-                f"    {link['doc_file_path']}:{link['doc_line_start']} "
-                f"({link['method']}, {link['score']:.2f})"
+                f"    {doc_path}:{link['doc_line_start']} ({link['method']}, {link['score']:.2f})"
             )
+    return "\n".join(lines)
+
+
+def render_impact_text(answer: ImpactAnswer, *, root: str | Path | None = None) -> str:
+    """Render an :class:`ImpactAnswer` with production and test buckets."""
+    summary = answer.summary
+    lines = [
+        f"impact: {summary.get('symbols', 0)} symbols in "
+        f"{summary.get('files', 0)} files "
+        f"({summary.get('tests', 0)} tests) from "
+        f"{summary.get('changed_files', 0)} changed files"
+    ]
+    grouped: dict[str, list[GraphNode]] = {}
+    for node in answer.impacted:
+        grouped.setdefault(relative_display(node.file_path, root), []).append(node)
+    for path in answer.files:
+        grouped.setdefault(path, [])
+    ordered_paths = [path for path in answer.files if path in grouped]
+    known_paths = set(ordered_paths)
+    ordered_paths.extend(path for path in grouped if path not in known_paths)
+    production = [path for path in ordered_paths if not _is_test_file(path)]
+    tests = [path for path in ordered_paths if _is_test_file(path)]
+    for label, paths in (("production", production), ("tests", tests)):
+        if not paths:
+            continue
+        lines.append(f"{label} ({len(paths)} files):")
+        for path in paths:
+            lines.append(f"  {path}")
+            for node in grouped[path]:
+                location = f":{node.line_start}" if node.line_start is not None else ""
+                lines.append(f"    {display_symbol(node.fqn)} ({node.kind}){location}")
     return "\n".join(lines)
 
 
@@ -1676,6 +2041,15 @@ def render_architecture_markdown(report: ArchitectureReport) -> str:
         f"Symbols: {report.stats.get('symbols', 0)} | "
         f"Resolved edges: {report.stats.get('edges', 0)}"
     )
+    if "symbols_extracted" in report.stats:
+        lines.append(
+            f"Symbol coverage: {report.stats.get('symbol_coverage', 0.0):.1%} "
+            f"({report.stats.get('symbols', 0)} connected / "
+            f"{report.stats.get('symbols_extracted', 0)} extracted) | "
+            f"Edge coverage: {report.stats.get('edge_coverage', 0.0):.1%} "
+            f"({report.stats.get('edges_resolved', 0)} / "
+            f"{report.stats.get('edges_total', 0)})"
+        )
     lines.append("")
     lines.append("## God nodes")
     if report.god_nodes:
@@ -1684,7 +2058,8 @@ def render_architecture_markdown(report: ArchitectureReport) -> str:
         lines.append("|---|---|---:|---|")
         for node in report.god_nodes:
             lines.append(
-                f"| `{node['fqn']}` | {node['kind']} | {node['degree']} | {node['file_path']} |"
+                f"| `{display_symbol(str(node['fqn']))}` | {node['kind']} "
+                f"| {node['degree']} | {node['file_path']} |"
             )
     else:
         lines.append("")
@@ -1694,10 +2069,12 @@ def render_architecture_markdown(report: ArchitectureReport) -> str:
     lines.append("## Communities")
     if report.communities:
         for community in report.communities:
-            names = ", ".join(f"`{member['fqn']}`" for member in community["members"][:8])
+            names = ", ".join(
+                f"`{display_symbol(str(member['fqn']))}`" for member in community["members"][:8]
+            )
+            label = community["label_fqn"] or community["label"]
             lines.append(
-                f"- **{community['label_fqn'] or community['label']}** "
-                f"({community['size']} members): {names}"
+                f"- **{display_symbol(str(label))}** ({community['size']} members): {names}"
             )
     else:
         lines.append("_No multi-node communities._")

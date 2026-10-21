@@ -43,6 +43,35 @@ def test_multihop_chain_recall_floor(indexed_multihop: dict[str, Any]) -> None:
 
 
 @pytest.mark.integration
+def test_query_seeds_carry_hybrid_provenance(indexed_multihop: dict[str, Any]) -> None:
+    """Every derived seed records that it came from a hybrid search hit."""
+    answer = _service(indexed_multihop).query(
+        "how does favoriting an article flow from the controller to the repository"
+    )
+    assert answer.outcome == "resolved"
+    assert answer.seeds
+    for seed in answer.seeds:
+        assert seed.reason is not None
+        assert seed.reason.startswith("hybrid search hit #")
+    payload = answer.as_dict()
+    assert all(seed["reason"] for seed in payload["seeds"])
+
+
+@pytest.mark.integration
+def test_cold_model_is_warmed_before_seeding(indexed_multihop: dict[str, Any]) -> None:
+    """A cold model must not seed the traversal from a lexical-only ranking."""
+    service = _service(indexed_multihop)
+    generator = indexed_multihop["embedding_gen"]
+    generator.reset_model()
+
+    answer = service.query("which implementation saves a favorite article")
+
+    assert answer.outcome == "resolved"
+    assert generator.is_warm()
+    assert any(seed.name == "save" for seed in answer.seeds)
+
+
+@pytest.mark.integration
 def test_module_imports_are_resolved(indexed_multihop: dict[str, Any]) -> None:
     """Java imports produce resolved module edges and retain their raw target."""
     from code_search.engine.graph import ModuleEdgeStore
@@ -106,6 +135,34 @@ def test_shortest_path_is_correct_and_deterministic(indexed_multihop: dict[str, 
     assert first.found
     assert [hop.relation for hop in first.hops] == ["CALLS", "CALLS"]
     assert _stable(first.as_dict()) == _stable(second.as_dict())
+
+
+@pytest.mark.integration
+def test_class_level_path_traverses_containment(indexed_multihop: dict[str, Any]) -> None:
+    """Class endpoints resolve to their type and connect through members."""
+    service = _service(indexed_multihop)
+    answer = service.shortest_path("ArticleController", "ArticleRepository")
+    assert answer.found
+    relations = [hop.relation for hop in answer.hops]
+    assert relations[0] == "CONTAINS"
+    assert relations[-1] == "CONTAINS"
+    assert "CALLS" in relations
+    from code_search.engine.graph_query import render_path_text
+
+    rendered = render_path_text(answer)
+    assert "member of" in rendered
+
+
+@pytest.mark.integration
+def test_impact_files_are_deduped_and_relative(indexed_multihop: dict[str, Any]) -> None:
+    """Impact files use one relative spelling and are bucketed by role."""
+    repo = Path(indexed_multihop["metadata"].get("index_root"))
+    changed = repo / "src/main/java/com/example/core/ArticleRepository.java"
+    answer = _service(indexed_multihop).impact([str(changed)], depth=3)
+    assert len(answer.files) == len(set(answer.files))
+    assert all(not Path(path).is_absolute() for path in answer.files)
+    assert answer.production_files == answer.files
+    assert answer.test_files == []
 
 
 @pytest.mark.integration

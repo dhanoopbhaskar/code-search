@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any, cast
@@ -200,6 +201,34 @@ class SymbolExtractor:
         self._walk_node(
             root_node, source_bytes, file_path, symbols, parent_fqn=None, package_name=package_name
         )
+        return self._deduplicate_fqns(symbols)
+
+    @staticmethod
+    def _deduplicate_fqns(symbols: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Make symbol FQNs unique within a file.
+
+        Two declarations with the same name and parent (re-declared helpers,
+        same-named nested callbacks) would otherwise produce one FQN and the
+        second insert would be rejected, silently dropping a symbol. Colliding
+        FQNs are qualified with the declaration's line and column so every
+        extracted symbol remains addressable.
+
+        Args:
+            symbols: Symbols extracted from one file, in source order.
+
+        Returns:
+            The same list, with colliding FQNs qualified.
+        """
+        seen: set[str] = set()
+        for symbol in symbols:
+            fqn = str(symbol.get("fqn") or "")
+            if not fqn:
+                continue
+            if fqn in seen:
+                qualified = f"{fqn}@{symbol.get('line_start', 0)}:{symbol.get('column_start', 0)}"
+                symbol["fqn"] = qualified
+                fqn = qualified
+            seen.add(fqn)
         return symbols
 
     def _walk_node(
@@ -249,6 +278,46 @@ class SymbolExtractor:
                     pass
                 return
 
+        if node_type == "lexical_declaration":
+            self._walk_lexical_declaration(
+                node,
+                source_bytes,
+                file_path,
+                symbols,
+                parent_fqn,
+                package_name=package_name,
+            )
+            return
+
+        if node_type == "export_statement":
+            default_child = self._anonymous_default_export(node, source_bytes)
+            if default_child is not None:
+                sym = self._extract_symbol(
+                    default_child,
+                    source_bytes,
+                    file_path,
+                    default_child.type,
+                    parent_fqn,
+                    package_name=package_name,
+                    name_override=file_path.stem,
+                    kind_override=self._exported_kind(default_child.type),
+                )
+                if sym is not None:
+                    symbols.append(sym)
+                    try:
+                        for child in default_child.children:
+                            self._walk_node(
+                                child,
+                                source_bytes,
+                                file_path,
+                                symbols,
+                                sym["fqn"],
+                                package_name=package_name,
+                            )
+                    except Exception:
+                        pass
+                return
+
         if node_type == "decorated_definition":
             rules = self._parser._decorator_rules(node, source_bytes)
             try:
@@ -292,6 +361,175 @@ class SymbolExtractor:
         except Exception:
             pass
 
+    _FUNCTION_VALUE_NODES = frozenset(
+        {"arrow_function", "function_expression", "function", "call_expression"}
+    )
+
+    def _walk_lexical_declaration(
+        self,
+        node: Any,
+        source_bytes: bytes,
+        file_path: Path,
+        symbols: list[dict[str, Any]],
+        parent_fqn: str | None,
+        package_name: str | None = None,
+    ) -> None:
+        """Extract symbols for ``const``/``let`` bindings holding functions.
+
+        JavaScript/TypeScript components, thunks, and slice actions are
+        declared as ``const Name = () => ...`` or
+        ``const Name = createAsyncThunk(...)``. Plain data constants are not
+        symbols; only declarations whose value is callable are extracted so
+        the symbol graph is not flooded with every module-level literal.
+
+        Args:
+            node: A tree-sitter ``lexical_declaration`` node.
+            source_bytes: Raw source bytes for node text extraction.
+            file_path: The file containing the declaration.
+            symbols: Output list the extracted symbols are appended to.
+            parent_fqn: Enclosing symbol FQN, when nested.
+            package_name: Java package name (unused for JS/TS).
+        """
+        try:
+            declarators = [c for c in node.children if c.type == "variable_declarator"]
+        except Exception:
+            return
+        for declarator in declarators:
+            value = declarator.child_by_field_name("value")
+            if value is None:
+                continue
+            is_function_value = value.type in self._FUNCTION_VALUE_NODES
+            if value.type == "call_expression" and not self._is_exported_declaration(declarator):
+                # A local ``const x = load()`` is data, not a callable
+                # declaration. Call-expression declarations are only symbols
+                # when exported (slice thunks such as ``createAsyncThunk``).
+                is_function_value = False
+            if not is_function_value:
+                try:
+                    for child in declarator.children:
+                        self._walk_node(
+                            child,
+                            source_bytes,
+                            file_path,
+                            symbols,
+                            parent_fqn,
+                            package_name=package_name,
+                        )
+                except Exception:
+                    pass
+                continue
+            kind = "variable" if value.type == "call_expression" else "function"
+            sym = self._extract_symbol(
+                declarator,
+                source_bytes,
+                file_path,
+                "variable_declarator",
+                parent_fqn,
+                package_name=package_name,
+                kind_override=kind,
+            )
+            if sym is None:
+                continue
+            symbols.append(sym)
+            try:
+                for child in value.children:
+                    self._walk_node(
+                        child,
+                        source_bytes,
+                        file_path,
+                        symbols,
+                        sym["fqn"],
+                        package_name=package_name,
+                    )
+            except Exception:
+                pass
+
+    @staticmethod
+    def _lexical_has_function_value(node: Any) -> bool:
+        """Return whether a ``lexical_declaration`` binds a callable value."""
+        try:
+            for child in node.children:
+                if child.type != "variable_declarator":
+                    continue
+                value = child.child_by_field_name("value")
+                if value is not None and value.type in SymbolExtractor._FUNCTION_VALUE_NODES:
+                    if value.type == "call_expression":
+                        return SymbolExtractor._is_exported_declaration(child)
+                    return True
+        except Exception:
+            return False
+        return False
+
+    @staticmethod
+    def _is_exported_declaration(node: Any) -> bool:
+        """Return whether *node* sits inside an exported declaration.
+
+        Args:
+            node: A tree-sitter node (typically a ``variable_declarator``).
+
+        Returns:
+            ``True`` when the containing ``lexical_declaration`` is a direct
+            child of an ``export_statement``.
+        """
+        try:
+            parent = node.parent
+            while parent is not None and parent.type != "lexical_declaration":
+                parent = parent.parent
+            if parent is None:
+                return False
+            enclosing = parent.parent
+            return enclosing is not None and enclosing.type == "export_statement"
+        except Exception:
+            return False
+
+    @staticmethod
+    def _anonymous_default_export(node: Any, source_bytes: bytes) -> Any | None:
+        """Return the anonymous value declaration of an ``export default``.
+
+        A default export may be an unnamed arrow function, function
+        declaration, class declaration/expression, or call expression
+        (``export default connect(...)(Component)``). Named declarations are
+        already handled by the normal definition walker, so only anonymous
+        children are returned.
+
+        Args:
+            node: A tree-sitter ``export_statement`` node.
+            source_bytes: Raw source bytes for node text extraction.
+
+        Returns:
+            The anonymous default-exported declaration node, or ``None``.
+        """
+        try:
+            text = ASTParser.get_node_text(node, source_bytes)
+        except Exception:
+            return None
+        if not text.lstrip().startswith("export default"):
+            return None
+        exportable = {
+            "arrow_function",
+            "function_expression",
+            "function_declaration",
+            "function",
+            "class_declaration",
+            "class",
+        }
+        try:
+            for child in node.children:
+                if child.type in exportable and SymbolExtractor._find_name_node(child) is None:
+                    return child
+        except Exception:
+            return None
+        return None
+
+    @staticmethod
+    def _exported_kind(node_type: str) -> str:
+        """Return the symbol kind for an anonymous default-exported declaration."""
+        if node_type in ("class_declaration", "class"):
+            return "class"
+        if node_type in ("function_declaration", "function", "function_expression"):
+            return "function"
+        return "function"
+
     def extract_edges(
         self,
         file_path: Path,
@@ -315,8 +553,18 @@ class SymbolExtractor:
         import_fqns: set[str] = set()
         self._walk_imports(root_node, source_bytes, file_path, import_edges, import_fqns)
 
-        # Build import map: simple_name -> FQN
+        # Build import maps: local binding -> imported name/module.
         import_map = self._build_import_map(import_edges)
+        namespace_map = self._build_namespace_map(import_edges)
+
+        # Module-level JS/TS declarations carry types that nested functions
+        # reference (``const service: ArticleService = ...``); seed the scope
+        # with them so a call inside a nested arrow resolves its receiver.
+        module_types = (
+            self._collect_ts_local_types(root_node, source_bytes)
+            if self._is_javascript_like(str(file_path))
+            else None
+        )
 
         # Pass 2: collect CALLS and INHERITS edges with import context
         edges: list[dict[str, Any]] = []
@@ -326,7 +574,9 @@ class SymbolExtractor:
             file_path,
             edges,
             import_map=import_map,
+            namespace_map=namespace_map,
             symbol_catalog=symbol_catalog,
+            field_types=module_types,
         )
 
         return import_edges + edges
@@ -396,18 +646,49 @@ class SymbolExtractor:
     def _build_import_map(import_edges: list[dict[str, Any]]) -> dict[str, str]:
         """Build an import map from IMPORTS edges: unqualified name -> FQN.
 
-        From an edge targeting ``foo.bar`` produces ``{"bar": "foo.bar"}``.
+        ES-module edges carry an explicit ``import_name`` (the local binding),
+        so aliased and default imports resolve by their local name. Other
+        edges take the last dotted segment of the target. From an edge
+        targeting ``foo.bar`` produces ``{"bar": "foo.bar"}``.
         """
         imp_map: dict[str, str] = {}
         for edge in import_edges:
             tgt = edge.get("target_fqn", "")
             if not tgt:
                 continue
+            import_name = edge.get("import_name")
+            if isinstance(import_name, str) and import_name:
+                imported = edge.get("imported_name")
+                if isinstance(imported, str) and imported and imported not in ("*", "default"):
+                    imp_map.setdefault(import_name, imported)
+                else:
+                    imp_map.setdefault(import_name, import_name)
+                continue
             parts = tgt.rsplit(".", 1)
             simple_name = parts[-1]
             if simple_name and simple_name not in imp_map:
                 imp_map[simple_name] = tgt
         return imp_map
+
+    @staticmethod
+    def _build_namespace_map(import_edges: list[dict[str, Any]]) -> dict[str, str]:
+        """Build a namespace import map: local alias -> module specifier.
+
+        ``import * as articles from './articlesSlice'`` binds ``articles`` to
+        the module, so ``articles.loadArticles()`` can resolve to the member
+        name instead of the unresolved ``articles.loadArticles`` receiver
+        expression. Relative module specifiers are kept verbatim; the
+        cross-file resolver matches the member by name.
+        """
+        namespace_map: dict[str, str] = {}
+        for edge in import_edges:
+            if edge.get("imported_name") != "*":
+                continue
+            local = edge.get("import_name")
+            module = edge.get("module")
+            if isinstance(local, str) and local and isinstance(module, str) and module:
+                namespace_map.setdefault(local, module)
+        return namespace_map
 
     def _walk_imports(
         self,
@@ -433,55 +714,102 @@ class SymbolExtractor:
         if node_type == "import_declaration":
             self._extract_import_edges(node, source_bytes, edges, current_fqn=str(file_path))
             return
+        if node_type == "export_statement":
+            text = self._parser.get_node_text(node, source_bytes) or ""
+            if " from " in text:
+                self._extract_import_edges(node, source_bytes, edges, current_fqn=str(file_path))
+            return
         try:
             for child in node.children:
                 self._walk_imports(child, source_bytes, file_path, edges, import_fqns)
         except Exception:
             pass
 
+    _FIELD_NODE_TYPES = frozenset(
+        {
+            "field_declaration",
+            "public_field_definition",
+            "field_definition",
+            "property_signature",
+            "abstract_property_signature",
+        }
+    )
+
     def _collect_field_types(self, node: Any, source_bytes: bytes) -> dict[str, str]:
         """Collect ``{field_name: type_simple_name}`` from a class declaration node.
 
-        Scans ``field_declaration`` children for a ``type_identifier`` (the
-        declared type) and ``variable_declarator`` names (the field names).
+        Handles Java ``field_declaration`` and TypeScript/JavaScript
+        ``public_field_definition`` (and property signatures), where the type
+        sits inside a ``type_annotation`` instead of directly on the field.
         """
         field_types: dict[str, str] = {}
         try:
             for child in node.children:
                 if child.type == "class_body":
                     for field in child.named_children:
-                        if field.type == "field_declaration":
+                        if field.type in self._FIELD_NODE_TYPES:
                             self._collect_field_decl(field, source_bytes, field_types)
-                elif child.type == "field_declaration":
+                elif child.type in self._FIELD_NODE_TYPES:
                     self._collect_field_decl(child, source_bytes, field_types)
         except Exception:
             pass
         return field_types
 
     @staticmethod
-    def _collect_field_decl(field: Any, source_bytes: bytes, field_types: dict[str, str]) -> None:
-        """Extract type + variable names from a single field_declaration node."""
+    def _declared_type_name(node: Any, source_bytes: bytes) -> str | None:
+        """Return the declared type text from a field/parameter node, if any.
+
+        Looks at direct type nodes first (Java), then drills into a
+        ``type_annotation`` wrapper (TypeScript) and reduces the text to its
+        simple leaf name (``Map<String, Foo>`` -> ``Map``).
+        """
         try:
-            type_name: str | None = None
+            direct = (
+                "type_identifier",
+                "scoped_type_identifier",
+                "generic_type",
+                "array_type",
+                "integral_type",
+                "floating_point_type",
+                "boolean_type",
+            )
+            for sub in node.children:
+                if sub.type in direct:
+                    return SymbolExtractor._base_leaf_name(
+                        ASTParser.get_node_text(sub, source_bytes)
+                    )
+                if sub.type == "type_annotation":
+                    for inner in sub.children:
+                        if inner.type in direct:
+                            return SymbolExtractor._base_leaf_name(
+                                ASTParser.get_node_text(inner, source_bytes)
+                            )
+                    text = ASTParser.get_node_text(sub, source_bytes)
+                    if text:
+                        return SymbolExtractor._base_leaf_name(text.lstrip(":").strip())
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _collect_field_decl(field: Any, source_bytes: bytes, field_types: dict[str, str]) -> None:
+        """Extract type + variable names from a single field-declaration node."""
+        type_name = SymbolExtractor._declared_type_name(field, source_bytes)
+        if not type_name:
+            return
+        try:
+            names: list[str] = []
             for sub in field.children:
-                if sub.type in (
-                    "type_identifier",
-                    "scoped_type_identifier",
-                    "generic_type",
-                    "array_type",
-                ):
-                    type_name = ASTParser.get_node_text(sub, source_bytes)
-                    break
-            if not type_name:
-                return
-            for sub in field.children:
-                if sub.type != "variable_declarator":
+                if sub.type == "variable_declarator":
+                    name_node = sub.child_by_field_name("name")
+                    if name_node is not None:
+                        names.append(ASTParser.get_node_text(name_node, source_bytes))
                     continue
-                for name_node in sub.children:
-                    if name_node.type == "identifier":
-                        field_name = ASTParser.get_node_text(name_node, source_bytes)
-                        if field_name:
-                            field_types[field_name] = type_name
+                if sub.type in ("identifier", "property_identifier"):
+                    names.append(ASTParser.get_node_text(sub, source_bytes))
+            for field_name in names:
+                if field_name:
+                    field_types[field_name] = type_name
         except Exception:
             pass
 
@@ -543,6 +871,87 @@ class SymbolExtractor:
         visit(node)
         return local_types
 
+    @staticmethod
+    def _collect_ts_local_types(node: Any, source_bytes: bytes) -> dict[str, str]:
+        """Collect ``{local_name: type_simple_name}`` for JS/TypeScript scopes.
+
+        Covers typed declarations (``const service: ArticleService``), inferred
+        constructor types (``const service = new ArticleService()``), and
+        typed function/constructor parameters (``function f(loader: Loader)``).
+        The declared type lets receiver-qualified calls such as
+        ``service.load()`` resolve to ``ArticleService.load`` instead of being
+        reported as unresolved external calls.
+
+        Args:
+            node: The method/function/constructor node whose subtree is scanned.
+            source_bytes: Raw source bytes for text extraction.
+
+        Returns:
+            Mapping of local binding name -> declared type simple name.
+        """
+        local_types: dict[str, str] = {}
+
+        def _name_of(declarator: Any) -> str | None:
+            for field in ("name", "pattern"):
+                try:
+                    name_node = declarator.child_by_field_name(field)
+                    if name_node is not None:
+                        return ASTParser.get_node_text(name_node, source_bytes)
+                except Exception:
+                    pass
+            try:
+                for child in declarator.children:
+                    if child.type in ("identifier", "property_identifier"):
+                        return ASTParser.get_node_text(child, source_bytes)
+            except Exception:
+                pass
+            return None
+
+        def _constructor_type(declarator: Any) -> str | None:
+            try:
+                value = declarator.child_by_field_name("value")
+                if value is None or value.type != "new_expression":
+                    return None
+                constructor = value.child_by_field_name("constructor")
+                if constructor is not None:
+                    return SymbolExtractor._base_leaf_name(
+                        ASTParser.get_node_text(constructor, source_bytes)
+                    )
+                for sub in value.children:
+                    if sub.type in ("identifier", "type_identifier", "member_expression"):
+                        return SymbolExtractor._base_leaf_name(
+                            ASTParser.get_node_text(sub, source_bytes)
+                        )
+            except Exception:
+                pass
+            return None
+
+        def visit(n: Any) -> None:
+            try:
+                if n.type in ("variable_declarator", "required_parameter", "optional_parameter"):
+                    name = _name_of(n)
+                    if name:
+                        type_name = SymbolExtractor._declared_type_name(n, source_bytes)
+                        if not type_name:
+                            type_name = _constructor_type(n)
+                        if type_name:
+                            local_types[name] = type_name
+                elif n.type in SymbolExtractor._FIELD_NODE_TYPES:
+                    type_name = SymbolExtractor._declared_type_name(n, source_bytes)
+                    name = _name_of(n)
+                    if name and type_name:
+                        local_types[name] = type_name
+            except Exception:
+                pass
+            try:
+                for child in n.children:
+                    visit(child)
+            except Exception:
+                pass
+
+        visit(node)
+        return local_types
+
     def _walk_calls_and_inherits(
         self,
         node: Any,
@@ -551,16 +960,34 @@ class SymbolExtractor:
         edges: list[dict[str, Any]],
         current_fqn: str | None = None,
         import_map: dict[str, str] | None = None,
+        namespace_map: dict[str, str] | None = None,
         symbol_catalog: dict[str, int] | None = None,
         field_types: dict[str, str] | None = None,
     ) -> None:
-        """Walk AST collecting CALLS and INHERITS edges with import-map and catalog resolution."""
+        """Walk the AST collecting CALLS and INHERITS edges.
+
+        Args:
+            node: The current AST node.
+            source_bytes: Raw source bytes for text extraction.
+            file_path: The file being walked.
+            edges: Output list the new edges are appended to.
+            current_fqn: Enclosing symbol FQN, or ``None`` at file scope.
+            import_map: Local binding -> imported symbol name.
+            namespace_map: Local binding -> module specifier for
+                ``import * as ns``.
+            symbol_catalog: Optional known FQN -> id catalog.
+            field_types: Receiver name -> declared type simple name, seeded
+                from class fields/module bindings and extended per scope.
+        """
         try:
             node_type = node.type
         except Exception:
             return
 
-        if node_type in _DEFINITION_NODES:
+        if node_type == "lexical_declaration" and not self._lexical_has_function_value(node):
+            node_type = "__non_definition_lexical__"
+
+        if node_type == "lexical_declaration" or node_type in _DEFINITION_NODES:
             name_node = self._find_name_node(node)
             if name_node is not None:
                 name = self._parser.get_node_text(name_node, source_bytes)
@@ -602,8 +1029,13 @@ class SymbolExtractor:
                         "method_definition",
                         "constructor_declaration",
                         "function_definition",
+                        "function_declaration",
+                        "arrow_function",
+                        "lexical_declaration",
                     ):
                         local_types = self._collect_local_var_types(node, source_bytes)
+                        if self._is_javascript_like(str(file_path)):
+                            local_types.update(self._collect_ts_local_types(node, source_bytes))
                         if local_types:
                             scoped = dict(class_field_types or {})
                             scoped.update(local_types)
@@ -617,6 +1049,7 @@ class SymbolExtractor:
                                 edges,
                                 current_fqn=new_fqn,
                                 import_map=import_map,
+                                namespace_map=namespace_map,
                                 symbol_catalog=symbol_catalog,
                                 field_types=class_field_types,
                             )
@@ -650,13 +1083,20 @@ class SymbolExtractor:
                 "call_expression",
                 "method_invocation",
                 "object_creation_expression",
+                "new_expression",
             )
             and current_fqn
         ):
             rng = self._parser.get_node_range(node)
             source_range = json.dumps([rng[0], rng[1], rng[2], rng[3]])
             target_name = self._resolve_call_target(
-                node, source_bytes, import_map, symbol_catalog, field_types=field_types
+                node,
+                source_bytes,
+                import_map,
+                symbol_catalog,
+                field_types=field_types,
+                namespace_map=namespace_map,
+                current_fqn=current_fqn,
             )
             if target_name and target_name != current_fqn:
                 edges.append(
@@ -678,6 +1118,7 @@ class SymbolExtractor:
                     edges,
                     current_fqn=anon_fqn or current_fqn,
                     import_map=import_map,
+                    namespace_map=namespace_map,
                     symbol_catalog=symbol_catalog,
                     field_types=field_types,
                 )
@@ -707,13 +1148,17 @@ class SymbolExtractor:
         import_map: dict[str, str] | None = None,
         symbol_catalog: dict[str, int] | None = None,
         field_types: dict[str, str] | None = None,
+        namespace_map: dict[str, str] | None = None,
+        current_fqn: str | None = None,
     ) -> str | None:
         """Resolve the name of the callee from a call/call_expression node.
 
         Uses *import_map* to resolve unqualified names and attribute prefixes
         to their fully-qualified form for cross-file call graph resolution.
-        Additionally consults *symbol_catalog* for cross-file targets and
-        *field_types* (field name → declared type) for field-qualified calls.
+        Additionally consults *symbol_catalog* for cross-file targets,
+        *field_types* (receiver name -> declared type) for field/local-qualified
+        calls, *namespace_map* for ``import * as ns`` receivers, and
+        *current_fqn* to resolve ``this.method`` to the enclosing type.
         """
         try:
             node_type = node.type
@@ -724,7 +1169,7 @@ class SymbolExtractor:
             return self._resolve_method_invocation(
                 node, source_bytes, import_map, symbol_catalog, field_types=field_types
             )
-        if node_type == "object_creation_expression":
+        if node_type in ("object_creation_expression", "new_expression"):
             return self._resolve_object_creation(node, source_bytes, import_map)
 
         try:
@@ -738,33 +1183,70 @@ class SymbolExtractor:
                         if symbol_catalog and text in symbol_catalog:
                             return text
                     return text
-                if child_type == "attribute":
+                if child_type in ("attribute", "member_expression"):
                     text = self._parser.get_node_text(child, source_bytes)
-                    if text:
-                        if import_map:
-                            base = text.split(".")[0]
-                            if base in import_map:
-                                resolved_base = import_map[base]
-                                rest = text[len(base) :]
-                                return resolved_base + rest
-                        if symbol_catalog and text in symbol_catalog:
-                            return text
-                    return text
-                if child_type == "member_expression":
-                    text = self._parser.get_node_text(child, source_bytes)
-                    if text:
-                        if import_map:
-                            base = text.split(".")[0]
-                            if base in import_map:
-                                resolved_base = import_map[base]
-                                rest = text[len(base) :]
-                                return resolved_base + rest
-                        if symbol_catalog and text in symbol_catalog:
-                            return text
-                    return text
+                    return self._resolve_member_target(
+                        text,
+                        import_map=import_map,
+                        namespace_map=namespace_map,
+                        field_types=field_types,
+                        current_fqn=current_fqn,
+                        symbol_catalog=symbol_catalog,
+                    )
             return None
         except Exception:
             return None
+
+    def _resolve_member_target(
+        self,
+        text: str | None,
+        *,
+        import_map: dict[str, str] | None,
+        namespace_map: dict[str, str] | None,
+        field_types: dict[str, str] | None,
+        current_fqn: str | None,
+        symbol_catalog: dict[str, int] | None,
+    ) -> str | None:
+        """Resolve a dotted member call such as ``this.loader.fetch``.
+
+        Applies receiver rules in order: ``this.member`` resolves inside the
+        enclosing type, ``this.field.member`` and ``local.member`` use the
+        declared field/local type, ``ns.member`` unwraps a namespace import,
+        and an imported/direct receiver falls back to the import map.
+        """
+        if not text:
+            return text
+        parts = text.split(".")
+        base = parts[0]
+        rest = parts[1:]
+
+        if base == "this":
+            if len(parts) >= 3:
+                declared = (field_types or {}).get(parts[1])
+                if declared:
+                    resolved_type = (import_map or {}).get(declared, declared)
+                    return ".".join([resolved_type, *parts[2:]])
+            if len(parts) == 2 and current_fqn and "::" in current_fqn:
+                path, scope = current_fqn.split("::", 1)
+                if "." in scope:
+                    parent = scope.rsplit(".", 1)[0]
+                    return f"{path}::{parent}.{parts[1]}"
+            return text
+
+        if base in (namespace_map or {}):
+            return ".".join(rest) if rest else text
+
+        declared = (field_types or {}).get(base)
+        if declared:
+            resolved_type = (import_map or {}).get(declared, declared)
+            return ".".join([resolved_type, *rest])
+
+        if import_map and base in import_map:
+            return ".".join([import_map[base], *rest])
+
+        if symbol_catalog and text in symbol_catalog:
+            return text
+        return text
 
     def _resolve_method_invocation(
         self,
@@ -863,6 +1345,9 @@ class SymbolExtractor:
             rng = self._parser.get_node_range(node)
             source_range = json.dumps([rng[0], rng[1], rng[2], rng[3]])
             text = self._parser.get_node_text(node, source_bytes)
+            if self._is_javascript_like(current_fqn):
+                self._extract_js_import_edges(text, current_fqn, source_range, edges)
+                return
             if is_from:
                 parts = text.replace("from ", "").split(" import ")
                 if len(parts) == 2:
@@ -896,6 +1381,127 @@ class SymbolExtractor:
                         )
         except Exception:
             pass
+
+    @staticmethod
+    def _is_javascript_like(source_fqn: str | None) -> bool:
+        """Return whether *source_fqn* names a JavaScript/TypeScript file."""
+        if not source_fqn:
+            return False
+        suffix = Path(source_fqn.split("::", 1)[0]).suffix.lower()
+        return suffix in {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"}
+
+    def _extract_js_import_edges(
+        self,
+        text: str,
+        current_fqn: str | None,
+        source_range: str,
+        edges: list[dict[str, Any]],
+    ) -> None:
+        """Append ``IMPORTS`` edges for an ES-module import or re-export.
+
+        Handles default, named, namespace, side-effect imports and
+        ``export ... from`` re-exports. Each edge records the raw module
+        specifier in ``module`` and the local binding in ``import_name`` so the
+        module resolver can follow relative paths, barrel ``index`` files, and
+        ``tsconfig`` path aliases instead of treating the specifier as an
+        external symbol name.
+
+        Args:
+            text: The import/export statement text.
+            current_fqn: The importing file's FQN (its path).
+            source_range: JSON-encoded source range of the statement.
+            edges: Output list the new ``IMPORTS`` edges are appended to.
+        """
+        if not current_fqn:
+            return
+        statement = text.strip().rstrip(";").strip()
+        pattern = re.compile(
+            r"^(?:import|export)\s+(?:type\s+)?(?P<clause>.+?)\s+from\s+['\"](?P<module>[^'\"]+)['\"]",
+            re.DOTALL,
+        )
+        match = pattern.match(statement)
+        if match is None:
+            side_effect = re.match(
+                r"^import\s+(?:type\s+)?['\"](?P<module>[^'\"]+)['\"]",
+                statement,
+            )
+            if side_effect is None:
+                return
+            module = side_effect.group("module")
+            edges.append(
+                {
+                    "source_fqn": current_fqn,
+                    "target_fqn": module,
+                    "module": module,
+                    "target_raw": statement,
+                    "edge_type": "IMPORTS",
+                    "source_range": source_range,
+                }
+            )
+            return
+
+        module = match.group("module")
+        clause = match.group("clause").strip()
+        bindings = self._import_bindings(clause)
+        if not bindings:
+            # ``export * from './module'`` re-exports the whole barrel; it has
+            # no local binding but still contributes a module dependency.
+            edges.append(
+                {
+                    "source_fqn": current_fqn,
+                    "target_fqn": module,
+                    "module": module,
+                    "target_raw": statement,
+                    "edge_type": "IMPORTS",
+                    "source_range": source_range,
+                }
+            )
+            return
+        for local, imported in bindings:
+            edges.append(
+                {
+                    "source_fqn": current_fqn,
+                    "target_fqn": f"{module}#{local}",
+                    "module": module,
+                    "import_name": local,
+                    "imported_name": imported,
+                    "target_raw": statement,
+                    "edge_type": "IMPORTS",
+                    "source_range": source_range,
+                }
+            )
+
+    @staticmethod
+    def _import_bindings(clause: str) -> list[tuple[str, str]]:
+        """Return ``(local_name, imported_name)`` bindings from an import clause.
+
+        ``React, { useState as state }`` yields ``[("React", "default"),
+        ("state", "useState")]``; ``* as ns`` yields ``[("ns", "*")]``. A bare
+        expression re-export (``{ X }``) keeps ``local == imported``.
+        """
+        bindings: list[tuple[str, str]] = []
+        default_part, brace, rest = clause.partition("{")
+        default_name = default_part.strip().rstrip(",").strip()
+        if default_name and not default_name.startswith("*"):
+            bindings.append((default_name, "default"))
+        if brace:
+            named = rest.rpartition("}")[0]
+            for raw in named.split(","):
+                part = raw.strip()
+                if not part:
+                    continue
+                if part.startswith("type "):
+                    part = part[len("type ") :].strip()
+                alias = part.split(" as ")
+                imported = alias[0].strip()
+                local = alias[1].strip() if len(alias) > 1 else imported
+                if imported and local:
+                    bindings.append((local, imported))
+        elif clause.strip().startswith("*"):
+            namespace = clause.split(" as ")
+            if len(namespace) > 1:
+                bindings.append((namespace[1].strip(), "*"))
+        return bindings
 
     def _extract_inheritance_edges(
         self,
@@ -1136,24 +1742,30 @@ class SymbolExtractor:
         parent_fqn: str | None = None,
         package_name: str | None = None,
         declared_rules: str = "",
+        name_override: str | None = None,
+        kind_override: str | None = None,
     ) -> dict[str, Any] | None:
         """Build a symbol dict from an AST definition node.
 
         *declared_rules* is carried from a Python ``decorated_definition``;
         when empty, Java annotations are extracted from the node itself.
+        *name_override* supplies the name for anonymous declarations (a
+        default-exported arrow function or class expression); *kind_override*
+        refines the mapped kind when the declaration's value determines it
+        (a ``const`` bound to a function is a function, not a variable).
         """
         try:
             name_node = self._find_name_node(node)
-            if name_node is None:
+            if name_node is None and name_override is None:
                 return None
-            name = self._parser.get_node_text(name_node, source_bytes)
+            name = name_override or self._parser.get_node_text(name_node, source_bytes)
             if not name:
                 return None
             line_start, col_start, line_end, col_end = self._parser.get_node_range(node)
             lang_suffix = file_path.suffix.lower()
             lang = LANGUAGE_MAP.get(lang_suffix, "unknown")
             docstring = self._extract_docstring(node, source_bytes, lang)
-            kind = self._map_kind(node_type)
+            kind = kind_override or self._map_kind(node_type)
             if kind == "function" and parent_fqn is not None:
                 kind = "method"
 

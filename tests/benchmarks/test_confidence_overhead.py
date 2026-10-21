@@ -13,6 +13,7 @@ Marked ``benchmark``/``slow`` so the fast CI gate excludes it; run locally with
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -74,40 +75,63 @@ def ranked_search_index(tmp_path: Any) -> dict[str, Any]:
     return {"search": search, "db": db, "settings": settings}
 
 
-def _median_ms(search: HybridSearch, rounds: int = 25) -> float:
-    """Return the median ranked-query latency in milliseconds."""
+def _interleaved_min_ms(
+    search: HybridSearch, use_baseline: Any, rounds: int = 25
+) -> tuple[float, float]:
+    """Return best-case latency for each blend, in milliseconds.
+
+    The two configurations are warmed once, then measured alternately within
+    the same round so scheduler/GC drift affects both equally. The minimum of
+    each is the most stable estimate of the work calibration actually adds;
+    timing them in separate windows lets drift land entirely on one side and
+    produced spurious overhead readings.
+
+    Args:
+        search: The ranked search under test.
+        use_baseline: Mutable flag; set to ``True`` to select the base blend.
+        rounds: Number of paired measurement rounds.
+
+    Returns:
+        ``(calibrated_ms, baseline_ms)`` best-case latencies.
+    """
     search.search("def func", 10)
-    latencies: list[float] = []
+    calibrated_min = math.inf
+    baseline_min = math.inf
     for _ in range(rounds):
+        use_baseline[0] = True
         start = time.monotonic()
         search.search("def func", 10)
-        latencies.append((time.monotonic() - start) * 1000.0)
-    latencies.sort()
-    return latencies[len(latencies) // 2]
+        baseline_min = min(baseline_min, (time.monotonic() - start) * 1000.0)
+
+        use_baseline[0] = False
+        start = time.monotonic()
+        search.search("def func", 10)
+        calibrated_min = min(calibrated_min, (time.monotonic() - start) * 1000.0)
+    return calibrated_min, baseline_min
 
 
 @pytest.mark.benchmark
 @pytest.mark.slow
 def test_confidence_overhead_within_budget(
-    benchmark: Any, ranked_search_index: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ranked_search_index: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Calibration adds at most 5% over the base-blend ranked path."""
     import code_search.engine.confidence as confidence_module
     import code_search.engine.search as search_module
 
     search: HybridSearch = ranked_search_index["search"]
+    use_baseline = [False]
 
-    def _base_blend(evidence: Any, context: Any) -> float:
-        return confidence_module.confidence_score(
-            evidence.query_subwords, evidence.chunk_subwords, evidence.vector_score
-        )
+    def _blend(evidence: Any, context: Any) -> float:
+        if use_baseline[0]:
+            return confidence_module.confidence_score(
+                evidence.query_subwords, evidence.chunk_subwords, evidence.vector_score
+            )
+        return confidence_module.calibrated_confidence(evidence, context)
 
-    monkeypatch.setattr(search_module, "calibrated_confidence", _base_blend)
-    baseline_ms = _median_ms(search)
-    monkeypatch.undo()
+    monkeypatch.setattr(search_module, "calibrated_confidence", _blend)
 
-    benchmark.pedantic(lambda: search.search("def func", 10), rounds=25, iterations=1)
-    calibrated_ms = float(benchmark.stats["median"]) * 1000.0
+    calibrated_ms, baseline_ms = _interleaved_min_ms(search, use_baseline)
 
     overhead = (calibrated_ms - baseline_ms) / baseline_ms if baseline_ms else 0.0
     assert overhead <= 0.05, (

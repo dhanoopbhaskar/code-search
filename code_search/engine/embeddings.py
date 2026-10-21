@@ -688,7 +688,10 @@ class EmbeddingGenerator:
     def wait_warm(self, timeout: float | None = None) -> bool:
         """Wait up to *timeout* seconds for warmup to finish.
 
-        Intended for readiness probes only, never the query path.
+        Used by readiness probes and by the daemon/MCP cold-start gate, which
+        waits a bounded interval for the first query so it is not silently
+        served from the reduced lexical path. Steady-state queries never call
+        it once the model is warm.
 
         Args:
             timeout: Maximum seconds to wait; ``None`` waits indefinitely.

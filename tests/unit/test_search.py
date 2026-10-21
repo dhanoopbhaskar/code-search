@@ -2,7 +2,19 @@ from pathlib import Path
 
 import pytest
 
-from code_search.engine.search import rrf_fusion, tokenize
+from code_search.engine.search import _bounded_score, rrf_fusion, tokenize
+
+
+def test_bounded_score_is_monotonic_and_below_one() -> None:
+    """The additive normalized score preserves order while staying in [0, 1)."""
+    scores = [0.0, 0.5, 1.95, 10.46]
+    normalized = [_bounded_score(score) for score in scores]
+
+    assert normalized[0] == 0.0
+    assert all(0.0 <= value < 1.0 for value in normalized)
+    assert normalized == sorted(normalized)
+    assert _bounded_score(1.0) == 0.5
+    assert _bounded_score(-3.0) == 0.0
 
 
 class _MockBM25Search:
@@ -12,7 +24,7 @@ class _MockBM25Search:
     def search(self, _query: str = "", **_kwargs: object) -> list[tuple[int, float]]:
         return self._results
 
-    def count(self, _query: str = "") -> int:
+    def count(self, _query: str = "", **_kwargs: object) -> int:
         return len(self._results)
 
 
@@ -2470,6 +2482,29 @@ def test_leader_matches_concept_when_best_candidate_states_it(tmp_path: Path) ->
     assert hs._leader_matches_concept({1: 5.0, 2: 3.0}, ["tok"]) is True
     # Chunk 6 is ``mod.pag``; it does not carry ``pageable``.
     assert hs._leader_matches_concept({6: 9.0, 1: 5.0}, ["pageable"]) is False
+
+
+def test_leader_matches_concept_requires_every_decisive_term(tmp_path: Path) -> None:
+    """A leader matching only the generic term does not suppress the pass.
+
+    ``mod.tok_a`` carries ``token`` but not ``generate``, so the answer may
+    still be a sibling method such as ``generateToken``; the concept pass must
+    run instead of treating the generic match as the concept.
+    """
+    from code_search.engine.config import Settings
+    from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
+    from code_search.engine.search import HybridSearch
+
+    settings = Settings(context_dir=tmp_path)
+    db = _build_gate_db(tmp_path)
+    hs = HybridSearch(
+        db,
+        VectorIndex(tmp_path / "concept.bin", tmp_path / "concept.meta.json"),
+        EmbeddingGenerator(settings),
+        settings,
+    )
+
+    assert hs._leader_matches_concept({1: 5.0, 2: 3.0}, ["tok", "generate"]) is False
 
 
 def _build_pass_db(tmp_path: Path) -> tuple[object, dict[str, int]]:

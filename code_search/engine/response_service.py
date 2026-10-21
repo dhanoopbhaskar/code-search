@@ -8,11 +8,116 @@ engine's own scope signal.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from code_search.engine.index_service import IndexChangeDetector, index_mtime
 from code_search.engine.scent_detection import detect_config_ddl_scent
 from code_search.engine.search import DEFAULT_CONTENT_SCOPE
+
+# Fields an agent needs to locate and judge a hit. Compact mode drops the
+# explanatory score breakdown and per-arm scores, which dominate the JSON
+# envelope without changing the answer.
+_COMPACT_RESULT_FIELDS: tuple[str, ...] = (
+    "chunk_id",
+    "file_path",
+    "line_start",
+    "line_end",
+    "fqn",
+    "language",
+    "score",
+    "score_normalized",
+    "is_definition",
+    "is_test_file",
+    "content_type",
+    "file_role",
+    "confidence",
+    "confidence_band",
+    "below_threshold",
+    "borderline",
+    "redacted_count",
+)
+
+_SIGNATURE_MAX_CHARS = 200
+
+
+def compact_result(
+    result: dict[str, Any],
+    max_snippet_lines: int = 20,
+) -> dict[str, Any]:
+    """Return a trimmed, agent-sized version of a search result.
+
+    Rebuilds the result from :data:`_COMPACT_RESULT_FIELDS`, so the score
+    breakdown and per-arm scores are dropped. Keeps the identifiers and
+    location, at most *max_snippet_lines* of content, and the first non-empty
+    line as ``signature``. The original line range is preserved so the caller
+    can read the full block if needed.
+
+    Args:
+        result: A ranked search result.
+        max_snippet_lines: Maximum content lines to keep; values below 1 keep
+            one line.
+
+    Returns:
+        A new result dict with the compact fields plus ``content``,
+        ``signature``, and ``content_truncated``.
+    """
+    lines = (result.get("content") or "").splitlines()
+    limit = max(1, max_snippet_lines)
+    snippet = "\n".join(lines[:limit])
+    signature = ""
+    for line in lines:
+        if line.strip():
+            signature = line.strip()
+            break
+    compact = {key: result.get(key) for key in _COMPACT_RESULT_FIELDS if key in result}
+    compact["content"] = snippet
+    compact["signature"] = signature[:_SIGNATURE_MAX_CHARS]
+    compact["content_truncated"] = len(lines) > limit
+    return compact
+
+
+def compact_results(
+    results: list[dict[str, Any]],
+    max_snippet_lines: int = 20,
+) -> list[dict[str, Any]]:
+    """Apply :func:`compact_result` to every result in *results*."""
+    return [compact_result(result, max_snippet_lines) for result in results]
+
+
+def relativize_results(
+    results: list[dict[str, Any]],
+    root: str | Path | None,
+) -> list[dict[str, Any]]:
+    """Return results with ``file_path``/``fqn`` relative to the index root.
+
+    Text output has always rendered relative paths; machine-readable output
+    should not expose the filesystem layout or differ from it. The stored
+    ``fqn`` carries an absolute path prefix, so it is stripped too.
+
+    Args:
+        results: Search results (not mutated).
+        root: The indexed repository root; ``None`` leaves paths unchanged.
+
+    Returns:
+        Copies of the results with portable path spellings.
+    """
+    if not root:
+        return results
+    from code_search.engine.graph_query import relative_display
+
+    prefix = str(Path(root).resolve())
+    out: list[dict[str, Any]] = []
+    for result in results:
+        copy = dict(result)
+        file_path = copy.get("file_path")
+        if file_path:
+            copy["file_path"] = relative_display(str(file_path), root)
+        fqn = copy.get("fqn")
+        if isinstance(fqn, str) and fqn.startswith(prefix):
+            copy["fqn"] = fqn[len(prefix) :].lstrip("/\\")
+        out.append(copy)
+    return out
 
 
 def build_response(

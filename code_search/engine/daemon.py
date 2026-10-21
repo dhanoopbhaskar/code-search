@@ -3,17 +3,20 @@
 Holds the vector model + SQLite connections warm so repeated CLI invocations
 pay socket round-trip latency instead of a per-invocation model load (roughly
 0.5-2 s on CPU, depending on the model and disk). Requests and responses are
-newline-delimited JSON over a unix socket under ``.context/`` — no network,
+newline-delimited JSON over a local unix socket under ``.context/`` (or a short
+runtime path when that location exceeds the ``AF_UNIX`` limit) — no network,
 air-gap preserved.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import socket
 import sys
+import tempfile
 import threading
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -57,17 +60,63 @@ def _daemon_freshness(comps: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# ``sockaddr_un`` caps the socket path at 108 bytes including the NUL
+# terminator, so only 107 bytes of path are usable.
+_MAX_UNIX_SOCKET_PATH = 107
+
+
+def _unix_socket_path_fits(path: Path) -> bool:
+    """Return whether *path* fits the ``AF_UNIX`` address limit.
+
+    The limit applies to the encoded path, not to the number of ``str``
+    characters, so non-ASCII repository names are measured after filesystem
+    encoding.
+
+    Args:
+        path: The socket path to measure.
+
+    Returns:
+        ``True`` when the encoded path is short enough to bind.
+    """
+
+    return len(os.fsencode(path)) <= _MAX_UNIX_SOCKET_PATH
+
+
 def default_socket_path(context_dir: Path) -> Path:
     """Return the unix-socket path the daemon binds for *context_dir*.
+
+    Prefers the conventional ``context_dir / "code-search.sock"``. When that
+    path exceeds the ``AF_UNIX`` limit (107 bytes on Linux), falls back to a
+    deterministic hashed name under ``$XDG_RUNTIME_DIR`` (or the system temp
+    directory) so a deep checkout path cannot stop the daemon from binding.
 
     Args:
         context_dir: The daemon's context directory (``.context/``).
 
     Returns:
-        The convention ``context_dir / "code-search.sock"`` path.
+        The socket path to bind; identical for every process resolving the
+        same *context_dir*.
     """
 
-    return context_dir / "code-search.sock"
+    conventional = context_dir / "code-search.sock"
+    if _unix_socket_path_fits(conventional):
+        return conventional
+
+    digest = hashlib.sha256(os.fsencode(str(context_dir.expanduser().resolve()))).hexdigest()[:16]
+    name = f"code-search-{os.getuid()}-{digest}.sock"
+    candidates: list[Path] = []
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime_dir:
+        runtime_path = Path(runtime_dir)
+        if runtime_path.is_dir() and os.access(runtime_path, os.W_OK):
+            candidates.append(runtime_path)
+    candidates.append(Path(tempfile.gettempdir()))
+    candidates.append(Path("/tmp"))
+    for base in candidates:
+        candidate = base / name
+        if _unix_socket_path_fits(candidate):
+            return candidate
+    return Path("/tmp") / name
 
 
 class QueryDaemon:
@@ -291,10 +340,12 @@ class QueryDaemon:
         Args:
             comps: The shared component registry (see ``_initialize_components``).
             params: Search parameters; ``query``, ``limit``, ``language``,
-                ``include_tests``, and ``mode`` are honoured.
+                ``include_tests``, ``mode``, ``content``, ``matching``, and
+                ``regex`` are honoured.
 
         Returns:
-            A success payload with ``results`` and ``freshness``.
+            A success payload with ``results`` and ``freshness``, or an error
+            response when the context directory has no ready index.
         """
         import time as _time
 
@@ -302,15 +353,36 @@ class QueryDaemon:
         from code_search.engine.response_service import build_response
         from code_search.engine.search import DEFAULT_CONTENT_SCOPE
 
+        metadata = comps.get("metadata")
+        if metadata is not None and metadata.get_index_status() != "ready":
+            # Forwarded searches must honour the same precondition as the
+            # in-process CLI path; otherwise an unindexed repository returns a
+            # successful empty result instead of the actionable error.
+            return {"ok": False, "error": "Index not initialized. Run 'code-search index' first."}
+
+        # Block briefly for the model instead of silently serving the reduced
+        # lexical path: a cold daemon serves a different (and worse) ranking,
+        # so the first forwarded query waits for warmup within a bounded
+        # budget. A failed/slow load still proceeds on the reduced path.
+        warm_gen = comps.get("embedding_gen")
+        wait_warm = getattr(warm_gen, "wait_warm", None)
+        if callable(wait_warm):
+            settings = comps.get("settings")
+            wait_s = float(getattr(settings, "warmup_wait_s", 0.0))
+            if wait_s > 0:
+                with suppress(Exception):
+                    wait_warm(wait_s)
+
         start = _time.monotonic()
         envelope = comps["search"].search(
             query=str(params.get("query", "")),
             limit=int(params.get("limit", 10)),
             language=params.get("language"),
-            include_tests=bool(params.get("include_tests", True)),
+            include_tests=bool(params.get("include_tests", False)),
             mode=str(params.get("mode", "ranked")),
             content=params.get("content"),
             matching=params.get("matching"),
+            regex=bool(params.get("regex", False)),
         )
         results = envelope["results"]
         reranked = comps["reranker"].rerank(
@@ -319,8 +391,27 @@ class QueryDaemon:
             query=params.get("query"),
         )
         redacted = comps["redactor"].redact_results(reranked)
+        # The forwarded CLI request carries the compact policy; applying it
+        # here keeps the daemon (the CLI default path) byte-identical to the
+        # in-process path, including relative paths.
+        if params.get("compact", True):
+            from code_search.engine.response_service import compact_results
+
+            redacted = compact_results(redacted, int(params.get("max_snippet_lines") or 20))
+        from code_search.engine.response_service import relativize_results
+
+        result_root = comps["metadata"].get("index_root") or str(Path(comps["context_dir"]).parent)
+        redacted = relativize_results(redacted, result_root)
         total_redacted = sum(r.get("redacted_count", 0) for r in redacted)
-        duration_ms = int((_time.monotonic() - start) * 1000)
+        # Match the CLI's audit semantics: record the engine's per-request
+        # timer carried on the envelope, so the served ``query_time_ms`` and
+        # the audit row agree after a daemon-forwarded request.
+        engine_duration = envelope.get("query_time_ms")
+        duration_ms = (
+            round(engine_duration)
+            if engine_duration is not None
+            else int((_time.monotonic() - start) * 1000)
+        )
         audit_db = comps.get("audit_db")
         if audit_db is not None:
             try:
@@ -392,8 +483,15 @@ class QueryDaemon:
             "explanation": envelope.get("explanation"),
             "freshness": _daemon_freshness(comps),
         }
+        if count_field != "total_matches":
+            payload["total_matches"] = total
+        if envelope.get("token_savings") is not None:
+            payload["token_savings"] = envelope["token_savings"]
         if envelope.get("content") is not None:
             payload["content"] = envelope["content"]
+        for count_key in ("production_matches", "test_matches"):
+            if envelope.get(count_key) is not None:
+                payload[count_key] = envelope[count_key]
         if envelope.get("scope") is not None:
             payload["scope"] = envelope["scope"]
         if envelope.get("matching_semantics") is not None:
@@ -706,6 +804,21 @@ class QueryDaemon:
             anchor_id = row["id"]
             chunk_content = row["content"] or ""
 
+        anchor_symbol_id = None
+        anchor_fqn = None
+        anchor_kind = None
+        with comps["db"].connect() as conn:
+            row = conn.execute(
+                "SELECT s.id, s.fqn, s.kind FROM code_chunks c "
+                "JOIN symbols s ON c.fqn = s.fqn "
+                "WHERE c.id = ? LIMIT 1;",
+                (anchor_id,),
+            ).fetchone()
+            if row:
+                anchor_symbol_id = row["id"]
+                anchor_fqn = row["fqn"]
+                anchor_kind = row["kind"]
+
         query_vec = embedding_gen.encode(chunk_content)
         if query_vec is None:
             return {
@@ -761,11 +874,37 @@ class QueryDaemon:
         exclude_file = bool(settings.find_related_exclude_file)
         # Fetch limit + 1 candidates before filtering (the limit-1 fix): an anchor
         # that is its own cosine top-1 must still yield a full limit of neighbours.
+        # A wider pool when semantic reranking is enabled leaves room for
+        # structurally-close neighbours sitting just outside the vector top-k.
+        candidate_k = limit + 1
+        if settings.find_related_semantic_blend > 0:
+            candidate_k = max(candidate_k, limit + 50)
         search_results = vector_index.search(
             query_vec,
-            top_k=limit + 1,
+            top_k=candidate_k,
             exclude_file_paths={stored_path} if exclude_file else None,
         )
+
+        # Blend embeddings with structural proximity (package, type, call graph)
+        # exactly as the MCP surface does, so daemon replies agree with MCP.
+        if settings.find_related_semantic_blend > 0 and anchor_symbol_id:
+            from code_search.engine.semantic_signals import rerank_with_semantic
+
+            anchor_info = {
+                "chunk_id": anchor_id,
+                "fqn": anchor_fqn,
+                "file_path": stored_path,
+                "symbol_id": anchor_symbol_id,
+                "kind": anchor_kind,
+            }
+            semantic_reranked = rerank_with_semantic(
+                search_results,
+                anchor_info,
+                comps["db"],
+                settings,
+                limit + 1,
+            )
+            search_results = [(r["chunk_id"], r["final_score"]) for r in semantic_reranked]
 
         def _build_results(
             scored: list[tuple[int, float]], same_file_flag: bool

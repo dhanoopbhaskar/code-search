@@ -25,6 +25,9 @@ EXPECTED_SEARCH_INPUT = {
         "content": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None},
         "no_model": {"type": "boolean", "default": False},
         "matching": {"type": "string", "default": "all_tokens"},
+        "regex": {"type": "boolean", "default": False},
+        "compact": {"type": "boolean", "default": True},
+        "max_snippet_lines": {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None},
     },
     "required": ["query"],
 }
@@ -180,6 +183,9 @@ def mcp_server() -> FastMCP:
         content: str | None = None,
         no_model: bool = False,
         matching: str = "all_tokens",
+        regex: bool = False,
+        compact: bool = True,
+        max_snippet_lines: int | None = None,
     ) -> str:
         return json.dumps([])
 

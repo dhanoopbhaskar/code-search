@@ -43,6 +43,26 @@ def _rg_member_set(files: list[Path], term: str) -> set[tuple[str, int]]:
     return hits
 
 
+def _rg_regex_member_set(files: list[Path], pattern: str) -> set[tuple[str, int]]:
+    """Ground-truth regex oracle: (resolved_path, line_number) pairs.
+
+    ``rg -n`` without ``-F`` treats *pattern* as a regular expression, matching
+    the contract of ``search(..., mode="exhaustive", regex=True)``.
+    """
+    proc = subprocess.run(
+        ["rg", "-n", "--", pattern, *[str(p) for p in files]],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode not in (0, 1):
+        raise RuntimeError(f"rg failed for {pattern!r}: {proc.stderr}")
+    hits: set[tuple[str, int]] = set()
+    for line in proc.stdout.splitlines():
+        path, lineno, _rest = line.split(":", 2)
+        hits.add((str(Path(path).resolve()), int(lineno)))
+    return hits
+
+
 def _indexed_files(fixture: dict[str, Any]) -> list[Path]:
     """Resolve the index-tracked file set to disk (the exhaustive scan surface)."""
     with fixture["db"].connect() as conn:
@@ -264,3 +284,29 @@ def test_matching_ignored_outside_exhaustive(indexed_transparency: dict[str, Any
     )
     assert envelope["mode"] == "ranked"
     assert envelope["matching_semantics"] == "all_tokens"
+
+
+def test_regex_mode_matches_rg_regex_oracle(indexed_transparency: dict[str, Any]) -> None:
+    """Regex mode compiles the query and matches the rg regex oracle."""
+    files = _indexed_files(indexed_transparency)
+    search: HybridSearch = indexed_transparency["search"]
+    pattern = r"spring\.datasource\.\w+"
+    envelope = search.search(pattern, limit=200, mode="exhaustive", content="all", regex=True)
+    assert envelope["mode"] == "exhaustive"
+    assert envelope["matching_semantics"] == "regex"
+    assert envelope["regex"] is True
+    assert envelope["pattern"] == pattern
+    assert envelope["total_count"] == len(_rg_regex_member_set(files, pattern))
+    assert _envelope_member_set(envelope, indexed_transparency) == _rg_regex_member_set(
+        files, pattern
+    )
+
+
+def test_invalid_regex_returns_explanation(indexed_transparency: dict[str, Any]) -> None:
+    """An uncompilable pattern is reported honestly instead of crashing."""
+    search: HybridSearch = indexed_transparency["search"]
+    envelope = search.search("(unclosed", limit=10, mode="exhaustive", regex=True, content="all")
+    assert envelope["results"] == []
+    assert envelope["matching_semantics"] == "regex"
+    assert envelope["regex"] is True
+    assert envelope["explanation"]["reason"] == "invalid_regex"

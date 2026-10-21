@@ -209,3 +209,89 @@ def test_no_static_notes_uncaptured_language(tmp_path: Path) -> None:
     assert result["outcome"] == "no_static_implementation"
     assert "runtime-generated implementation may exist" in (result["explanation"] or "")
     assert "may be uncaptured" in (result["explanation"] or "")
+
+
+def _framework_store(
+    tmp_path: Path,
+    *,
+    declared_rules: str = "",
+    base: str | None = None,
+) -> tuple[SymbolStore, EdgeStore]:
+    """Create a store with one interface, its member, and an optional base."""
+    settings = Settings(context_dir=tmp_path)
+    db = GraphDatabase(tmp_path / "framework.db", settings)
+    db.initialize()
+    symbol_store = SymbolStore(db, settings)
+    edge_store = EdgeStore(db, settings)
+    rows = [
+        {
+            "fqn": "src/r.py::R",
+            "name": "R",
+            "kind": "interface",
+            "file_path": "src/r.py",
+            "line_start": 1,
+            "line_end": 4,
+            "column_start": 0,
+            "column_end": 10,
+            "language": "java",
+            "parent_fqn": None,
+            "declared_rules": declared_rules or None,
+        },
+        {
+            "fqn": "src/r.py::R.find",
+            "name": "find",
+            "kind": "method",
+            "file_path": "src/r.py",
+            "line_start": 2,
+            "line_end": 3,
+            "column_start": 2,
+            "column_end": 10,
+            "language": "java",
+            "parent_fqn": "src/r.py::R",
+        },
+    ]
+    ids = symbol_store.insert_symbols_batch(rows)
+    if base is not None:
+        edge_store.insert_edges_batch(
+            [
+                {
+                    "source_symbol_id": ids["src/r.py::R"],
+                    "target_symbol_id": None,
+                    "edge_type": "INHERITS",
+                    "resolved": 0,
+                    "target_raw": base,
+                }
+            ]
+        )
+    return symbol_store, edge_store
+
+
+def test_spring_data_base_explains_generated_implementation(tmp_path: Path) -> None:
+    """A Spring Data repository reports the generated implementation source."""
+    symbol_store, edge_store = _framework_store(tmp_path, base="JpaRepository")
+    result = find_implementations(symbol_store, edge_store, "src/r.py::R.find")
+    assert result["outcome"] == "no_static_implementation"
+    assert result["implementations"] == []
+    assert result["framework"]["name"] == "Spring Data"
+    assert result["framework"]["bases"] == ["JpaRepository"]
+    assert "Spring Data generates the implementation" in result["explanation"]
+
+
+def test_feign_annotation_explains_generated_client(tmp_path: Path) -> None:
+    """A ``@FeignClient`` interface reports the runtime-generated client."""
+    symbol_store, edge_store = _framework_store(
+        tmp_path, declared_rules='@FeignClient(name = "users")'
+    )
+    result = find_implementations(symbol_store, edge_store, "src/r.py::R.find")
+    assert result["outcome"] == "no_static_implementation"
+    assert result["framework"]["name"] == "Feign"
+    assert "Feign generates an HTTP client" in result["explanation"]
+
+
+def test_mapstruct_annotation_explains_generated_mapper(tmp_path: Path) -> None:
+    """A MapStruct/MyBatis ``@Mapper`` interface reports its generated proxy."""
+    symbol_store, edge_store = _framework_store(tmp_path, declared_rules="@Mapper")
+    result = find_implementations(symbol_store, edge_store, "src/r.py::R.find")
+    assert result["outcome"] == "no_static_implementation"
+    assert result["framework"]["name"] == "MapStruct/MyBatis"
+    assert "@Mapper" in result["explanation"]

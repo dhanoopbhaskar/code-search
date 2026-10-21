@@ -61,11 +61,12 @@ from code_search.engine.scent_detection import (
 
 logger = logging.getLogger(__name__)
 
-# The content-scope vocabulary: the four explicit
-# axes plus the code-focused default. ``code_focused`` resolves to the pool
-# ``content_type != 'docs'`` (code + config); prose is returned only under an
-# explicit ``docs``/``all`` scope. This is the default ranked scope on both
-# surfaces and in the engine.
+# The content-scope vocabulary: the four explicit axes plus the code-focused
+# scope. ``code_focused`` resolves to the pool ``content_type != 'docs'``
+# (code + config); prose is returned only under an explicit ``docs``/``all``
+# scope. It is the default for configuration-shaped and neutral queries; a
+# code-shaped query defaults to the stricter ``code`` scope so configuration
+# files cannot outrank source.
 DEFAULT_CONTENT_SCOPE = "code_focused"
 VALID_CONTENT_SCOPES = ("code", "config", "docs", "all", DEFAULT_CONTENT_SCOPE)
 
@@ -732,24 +733,36 @@ class BM25Search:
         result = self._search_topk(query, top_k, count_only=False, content=content)
         return result if isinstance(result, list) else []
 
-    def count(self, query: str) -> int:
+    def count(self, query: str, content: str = "all", file_paths: list[str] | None = None) -> int:
         """Return the number of FTS5-matching chunks for *query* (uncapped).
 
         The count reflects total distinct matches for the query tokens before
         the top-k pool slice, so a response can report ``total_matches`` and a
-        ``truncated`` flag. Returns ``0`` when the query
-        produces no MATCH expression or the search fails.
+        ``truncated`` flag. *content* applies the same axis filter as
+        :meth:`search`, so ``total_matches`` never advertises chunks the
+        response scope excluded. *file_paths* further restricts the count to
+        those stored paths (used to split production and test match counts).
+        Returns ``0`` when the query produces no MATCH expression or the
+        search fails.
         """
-        result = self._search_topk(query, None, count_only=True)
+        result = self._search_topk(
+            query, None, count_only=True, content=content, file_paths=file_paths
+        )
         return result if isinstance(result, int) else 0
 
     def _search_topk(
-        self, query: str, top_k: int | None, count_only: bool = False, content: str = "all"
+        self,
+        query: str,
+        top_k: int | None,
+        count_only: bool = False,
+        content: str = "all",
+        file_paths: list[str] | None = None,
     ) -> int | list[tuple[int, float]]:
         """Execute the FTS5 query for *query*.
 
         When *count_only* is set, returns the uncapped match count; otherwise
         returns up to *top_k* ``(chunk_rowid, score)`` pairs best-first.
+        *file_paths* optionally restricts the query to the given stored paths.
         """
         fts5_query = self._build_fts_query(query)
         if not fts5_query:
@@ -760,31 +773,44 @@ class BM25Search:
             fqn_w = self._settings.bm25_fqn_weight
             path_w = self._settings.bm25_path_weight
             rules_w = self._settings.bm25_rules_weight
+            content_clause = (
+                ""
+                if content == "all"
+                else (
+                    " AND c.content_type != 'docs'"
+                    if content == DEFAULT_CONTENT_SCOPE
+                    else " AND c.content_type = ?"
+                )
+            )
+            path_clause = ""
+            if file_paths is not None:
+                if not file_paths:
+                    return 0 if count_only else []
+                placeholders = ",".join("?" for _ in file_paths)
+                path_clause = f" AND c.file_path IN ({placeholders})"
+            params: list[Any] = [fts5_query]
+            if content not in ("all", DEFAULT_CONTENT_SCOPE):
+                params.append(content)
+            if file_paths is not None:
+                params.extend(file_paths)
             with self._db.connect() as conn:
                 if count_only:
                     row = conn.execute(
-                        "SELECT COUNT(*) AS n FROM chunks_fts WHERE chunks_fts MATCH ?;",
-                        (fts5_query,),
+                        "SELECT COUNT(*) AS n FROM chunks_fts AS f "
+                        "JOIN code_chunks AS c ON c.id = f.rowid "
+                        "WHERE chunks_fts MATCH ?" + content_clause + path_clause + ";",
+                        params,
                     ).fetchone()
                     return cast(int, row["n"]) if row is not None else 0
-                content_clause = (
-                    ""
-                    if content == "all"
-                    else (
-                        " AND c.content_type != 'docs'"
-                        if content == DEFAULT_CONTENT_SCOPE
-                        else " AND c.content_type = ?"
-                    )
-                )
-                params: list[Any] = [fts5_query]
-                if content not in ("all", DEFAULT_CONTENT_SCOPE):
-                    params.append(content)
                 params.append(top_k)
                 rows = conn.execute(
                     f"SELECT f.rowid, bm25(chunks_fts, {content_w}, {subwords_w}, {fqn_w}, "
                     f"{path_w}, {rules_w}) AS score "
                     "FROM chunks_fts AS f JOIN code_chunks AS c ON c.id = f.rowid "
-                    "WHERE chunks_fts MATCH ?" + content_clause + " ORDER BY score LIMIT ?;",
+                    "WHERE chunks_fts MATCH ?"
+                    + content_clause
+                    + path_clause
+                    + " ORDER BY score LIMIT ?;",
                     params,
                 ).fetchall()
             results: list[tuple[int, float]] = []
@@ -861,6 +887,23 @@ def _normalize_scores(scores: dict[int, float]) -> dict[int, float]:
             z = (scores[k] - mean) / stddev
             scores[k] = max(0.0, min(1.0, (z + 3.0) / 6.0))
     return scores
+
+
+def _bounded_score(score: float) -> float:
+    """Map an unbounded relevance score monotonically into ``[0, 1)``.
+
+    Ranking scores include multiplicative class/content weights and additive
+    boosts, so they are not comparable across queries. This squash keeps their
+    order while giving callers a stable, bounded value.
+
+    Args:
+        score: The raw ranked score.
+
+    Returns:
+        ``score / (1 + score)`` for non-negative input; ``0.0`` otherwise.
+    """
+    value = max(0.0, float(score))
+    return value / (1.0 + value)
 
 
 def rrf_fusion(
@@ -1012,6 +1055,7 @@ class HybridSearch:
         self._symbol_store: Any | None = None
         self._vocab_by_language: dict[str, set[str]] | None = None
         self._analysis: QueryAnalysis | None = None
+        self._test_paths_cache: list[str] | None = None
         if no_model:
             logger.debug("HybridSearch running in --no-model fast path")
 
@@ -1191,6 +1235,7 @@ class HybridSearch:
         mode: str = "ranked",
         content: str | None = None,
         matching: str | None = None,
+        regex: bool = False,
     ) -> dict[str, Any]:
         """Run the full hybrid search pipeline and stamp the per-request timer.
 
@@ -1212,11 +1257,15 @@ class HybridSearch:
             mode: One of ``"ranked"``, ``"exhaustive"``, or ``"enumerate"``.
             content: One of ``"code"``, ``"config"``, ``"docs"``, ``"all"``, or
                 ``"code_focused"``. ``None`` (or an unknown value) means no
-                scope preference: the effective scope is the code-focused
-                default, and a documentation-shaped ranked query that returns
-                nothing is automatically re-run under ``all``.
+                explicit scope preference: a documentation-shaped ranked query
+                is widened to ``all`` automatically, a code-shaped query is
+                narrowed to ``code``, and configuration-shaped/neutral queries
+                use the code-focused default (code + config).
             matching: Exhaustive-only matching semantics — ``literal``,
                 ``all_tokens``, or ``any_token`` — the three exhaustive semantics. Ignored outside
+                exhaustive mode.
+            regex: Exhaustive-only regular-expression mode; *query* is compiled
+                as a Python regex instead of being tokenized. Ignored outside
                 exhaustive mode.
 
         Returns:
@@ -1233,48 +1282,33 @@ class HybridSearch:
         intent = classify_content_intent(query) if inference_enabled else ContentIntent.NEUTRAL
         suggested: str | None = None
 
-        if mode == "ranked" and inference_enabled and not explicit and intent is ContentIntent.DOCS:
-            # Documentation intent with no explicit scope: run the default pass
-            # first. A non-empty result set is returned unchanged with a strong
-            # suggestion; an empty result set (the honest no_match outcome after
-            # the rescue ladder) re-runs the same fused pipeline under ``all``.
-            envelope = self._search_impl(
-                query,
-                limit=limit,
-                language=language,
-                include_tests=include_tests,
-                alpha=alpha,
-                mode=mode,
-                content=None,
-                matching=matching,
-            )
-            if envelope.get("results"):
-                origin = "default"
-                suggested = "all"
-            else:
-                envelope = self._search_impl(
-                    query,
-                    limit=limit,
-                    language=language,
-                    include_tests=include_tests,
-                    alpha=alpha,
-                    mode=mode,
-                    content="all",
-                    matching=matching,
-                )
+        effective_content = content
+        origin = "explicit" if explicit else "default"
+        if mode == "ranked" and inference_enabled and not explicit:
+            if intent is ContentIntent.DOCS:
+                # A strong documentation intent widens the scope directly
+                # instead of only hinting after code results already
+                # outranked the docs. The effective scope is reported as
+                # ``inferred`` so the response explains why prose was
+                # included.
+                effective_content = "all"
                 origin = "inferred"
-        else:
-            envelope = self._search_impl(
-                query,
-                limit=limit,
-                language=language,
-                include_tests=include_tests,
-                alpha=alpha,
-                mode=mode,
-                content=content,
-                matching=matching,
-            )
-            origin = "explicit" if explicit else "default"
+            elif intent is ContentIntent.CODE:
+                # A code-shaped query searches source only: configuration and
+                # build files must not outrank code on shared vocabulary.
+                effective_content = "code"
+
+        envelope = self._search_impl(
+            query,
+            limit=limit,
+            language=language,
+            include_tests=include_tests,
+            alpha=alpha,
+            mode=mode,
+            content=effective_content,
+            matching=matching,
+            regex=regex,
+        )
 
         effective = envelope.get("content") or DEFAULT_CONTENT_SCOPE
         envelope["content"] = effective
@@ -1304,6 +1338,56 @@ class HybridSearch:
         envelope["query_time_ms"] = round((time.monotonic() - start) * 1000, 3)
         self._stamp_model_status(envelope, was_warm)
         return envelope
+
+    def _token_savings(self, results: list[dict[str, Any]]) -> dict[str, Any]:
+        """Estimate tokens returned versus reading the whole files.
+
+        Uses the indexed file sizes (``file_checksums.size``) for the
+        whole-file baseline and a stable 4-characters-per-token approximation
+        for both sides. The baseline deduplicates files so several chunks from
+        one file are not counted twice.
+
+        Args:
+            results: The returned search results.
+
+        Returns:
+            ``{files, returned_tokens, full_file_tokens, saved_tokens,
+            saved_percent}``.
+        """
+        paths = sorted({str(r["file_path"]) for r in results if r.get("file_path")})
+        returned_chars = sum(len(r.get("content") or "") for r in results)
+        if not paths:
+            return {
+                "files": 0,
+                "returned_tokens": 0,
+                "full_file_tokens": 0,
+                "saved_tokens": 0,
+                "saved_percent": 0.0,
+            }
+        full_chars = 0
+        try:
+            placeholders = ",".join("?" for _ in paths)
+            with self._db.connect() as conn:
+                rows = conn.execute(
+                    f"SELECT file_path, size FROM file_checksums "
+                    f"WHERE file_path IN ({placeholders});",
+                    paths,
+                ).fetchall()
+            full_chars = sum(int(row["size"] or 0) for row in rows)
+        except Exception as exc:
+            logger.debug("Token-savings file-size lookup failed: %s", exc)
+        returned_tokens = returned_chars // 4
+        full_file_tokens = full_chars // 4
+        saved = max(0, full_file_tokens - returned_tokens)
+        return {
+            "files": len(paths),
+            "returned_tokens": returned_tokens,
+            "full_file_tokens": full_file_tokens,
+            "saved_tokens": saved,
+            "saved_percent": (
+                round(saved / full_file_tokens * 100, 1) if full_file_tokens else 0.0
+            ),
+        }
 
     def _stamp_model_status(self, envelope: dict[str, Any], was_warm: bool) -> None:
         """Stamp ``ranked_path``, ``warmup_state``, ``model_status`` on ranked envelopes.
@@ -1378,6 +1462,7 @@ class HybridSearch:
         mode: str = "ranked",
         content: str | None = None,
         matching: str | None = None,
+        regex: bool = False,
     ) -> dict[str, Any]:
         """Run the full hybrid search pipeline for *query*.
 
@@ -1425,6 +1510,8 @@ class HybridSearch:
             mode: One of ``"ranked"``, ``"exhaustive"``, or ``"enumerate"``.
             content: One of ``"code"``, ``"config"``, ``"docs"``, or
                 ``"all"`` (default). An unknown value falls back to ``all``.
+            regex: Exhaustive-only regular-expression mode; ignored for the
+                ranked and enumerate paths.
 
         Returns:
             The search envelope (see above); ``results`` is empty when the
@@ -1436,7 +1523,7 @@ class HybridSearch:
             vector_health = self._vector_layer_health()
             if mode == "exhaustive":
                 return self._search_exhaustive(
-                    query, limit, language, include_tests, vector_health, content, matching
+                    query, limit, language, include_tests, vector_health, content, matching, regex
                 )
             return self._search_enumerate(query, limit, vector_health)
         if mode == "ranked" and self._enumeration_intent(query):
@@ -1609,6 +1696,9 @@ class HybridSearch:
         endpoint_evidence: dict[int, dict[str, Any]] = {}
         if symbol_name is None and not defer_vector and self._settings.endpoint_intent_boost > 0.0:
             endpoint_evidence = self._endpoint_intent_pass(query, fused, content)
+        constant_evidence: dict[int, dict[str, Any]] = {}
+        if symbol_name is None and self._settings.constant_intent_boost > 0.0:
+            constant_evidence = self._constant_intent_pass(query, fused, content)
         # Ranked relevance floor: the top fused score must reach
         # ``ranked_score_floor`` or the no-match envelope (with the rescue
         # tiers tried) is returned instead of a fake top-10. A score exactly
@@ -1705,6 +1795,8 @@ class HybridSearch:
             return path_class_cache[file_path]
 
         code_context = self._code_language_context(language)
+        code_intent = self._code_intent(query, language)
+        code_scope = content in ("code", DEFAULT_CONTENT_SCOPE)
         infra_weight = (
             self._settings.infra_deboost if code_context else self._settings.infra_deboost_relaxed
         )
@@ -1727,6 +1819,19 @@ class HybridSearch:
             is_test = _is_test_file(chunk["file_path"])
             is_non_canonical = _is_non_canonical(chunk["file_path"])
             file_role_of = file_role(chunk["file_path"], analysis_paths=analysis_paths)
+            if (
+                code_intent
+                and code_scope
+                and file_role_of is FileRole.INFRA
+                and chunk_id not in exact_ids
+                and chunk_id not in rescue_evidence
+            ):
+                # A build/deployment/lockfile chunk is never an answer to a
+                # code-shaped query unless it carries the exact literal the
+                # query asked for. Multiplicative de-boosting still lets a
+                # keyword-dense lockfile win on score, so the suppression is a
+                # hard drop here.
+                continue
 
             score = float(fused[chunk_id])
             if threshold > 0.0 and score < threshold:
@@ -1789,19 +1894,26 @@ class HybridSearch:
                         1.0 + self._settings.config_inject_primary_extra
                     )
             weighted_score = score * weight * content_weight
+            noise_multiplier = 1.0
+            infra_multiplier = 1.0
+            exact_boost = 0.0
+            min_lift_applied = 0.0
             # Non-test queries should not have a keyword-dense test class
             # displace the production answer. The pre-fusion demotion is
             # intentionally mild (test files are still useful candidates);
             # this post-fusion pass applies the same penalty again, and the
             # factor is skipped when the query asks for tests.
             if is_test and not self._test_intent(query):
-                weighted_score = weighted_score * self._settings.noise_penalty
+                noise_multiplier = self._settings.noise_penalty
+                weighted_score = weighted_score * noise_multiplier
             if chunk_id in exact_ids:
-                weighted_score = weighted_score + self._settings.exact_match_boost
+                exact_boost = self._settings.exact_match_boost
+                weighted_score = weighted_score + exact_boost
             if fused_vector_score > 0.0 and rank_class == "code":
                 # min-vector-lift: a vectorized relevant chunk must not
                 # silently rank below a lexical-only (vector: 0.0) alternative.
-                weighted_score = weighted_score + self._settings.min_lift
+                min_lift_applied = self._settings.min_lift
+                weighted_score = weighted_score + min_lift_applied
 
             # Infra/resource/analysis demotion under a code-language context:
             # infra, resource, and report-artifact files sink below code
@@ -1815,7 +1927,8 @@ class HybridSearch:
                     or (resource_scent and chunk_content_type == "config")
                 )
                 if not reconciled:
-                    weighted_score = weighted_score * infra_weight
+                    infra_multiplier = infra_weight
+                    weighted_score = weighted_score * infra_multiplier
 
             concept_evidence_for_chunk = concept_evidence.get(chunk_id) or {}
             conf = calibrated_confidence(
@@ -1849,6 +1962,7 @@ class HybridSearch:
                 "fqn": chunk["fqn"],
                 "language": chunk["language"],
                 "score": weighted_score,
+                "score_normalized": round(_bounded_score(weighted_score), 3),
                 "bm25_score": bm25_score,
                 "vector_score": reported_vector_score,
                 "vector_retrieved": vector_retrieved,
@@ -1882,6 +1996,16 @@ class HybridSearch:
                         "boilerplate": class_weights["boilerplate"],
                         "resource": class_weights["resource"],
                     },
+                    "multipliers": {
+                        "rank_class": weight,
+                        "content": content_weight,
+                        "test_noise": noise_multiplier,
+                        "infra": infra_multiplier,
+                    },
+                    "additive": {
+                        "exact_match": exact_boost,
+                        "min_vector_lift": min_lift_applied,
+                    },
                     "rescue": rescue_evidence.get(chunk_id),
                     "path_boost": path_boost_evidence.get(chunk_id),
                     "embedded_symbol": embedded_evidence.get(chunk_id),
@@ -1889,6 +2013,7 @@ class HybridSearch:
                     "match_boost": match_boost_evidence.get(chunk_id),
                     "symbol_concept": concept_evidence.get(chunk_id),
                     "endpoint_intent": endpoint_evidence.get(chunk_id),
+                    "constant_intent": constant_evidence.get(chunk_id),
                     "path_class": path_class_of(chunk["file_path"]),
                     "reranked": False,
                 }
@@ -1905,12 +2030,19 @@ class HybridSearch:
         if results and all(r.get("vector_degraded") for r in results):
             logger.info("Vector search unavailable. Results based on BM25 only.")
 
-        total_matches = self._bm25.count(query)
+        lexical_matches = self._bm25.count(query, content=content)
+        test_matches = (
+            min(self._count_test_matches(query, content), lexical_matches) if lexical_matches else 0
+        )
+        production_matches = lexical_matches - test_matches
+        total_matches = max(lexical_matches, len(results))
         if exact_ids and total_matches == 0:
             total_matches = len(exact_ids)
         return {
             "results": results,
             "total_matches": total_matches,
+            "production_matches": production_matches,
+            "test_matches": test_matches,
             "truncated": total_matches > len(results),
             "vector_health": vector_health,
             "mode": "ranked",
@@ -1920,6 +2052,7 @@ class HybridSearch:
             "best_effort": True,
             "no_match": False,
             "content": content,
+            "token_savings": self._token_savings(results),
         }
 
     def _build_query_match_context(self, query: str) -> QueryMatchContext:
@@ -2506,23 +2639,109 @@ class HybridSearch:
             }
         return evidence
 
+    def _constant_intent_pass(
+        self, query: str, fused: dict[int, float], content: str
+    ) -> dict[int, dict[str, Any]]:
+        """Boost constant declarations for default/constant-shaped queries.
+
+        A query such as ``"default page size"`` names a configured constant,
+        but the fused ranking often prefers a similarly-named accessor method.
+        The pass finds definition chunks that declare a constant, requires the
+        query's intent word (``default``/``constant``/``final``) and every
+        remaining concept term to appear in the chunk, and adds a bounded
+        boost. Matching is content-based because small field declarations are
+        merged into their enclosing class chunk.
+
+        Args:
+            query: The raw user query.
+            fused: The fused score pool (mutated in place).
+            content: The active content scope.
+
+        Returns:
+            Per-chunk evidence for ``score_sources.constant_intent``.
+        """
+        intent_words = {word.lower() for word in self._settings.constant_intent_words}
+        tokens = {word.lower() for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", query)}
+        matched_intent = tokens & intent_words
+        if not matched_intent:
+            return {}
+        concept_terms = [
+            term
+            for term in collapse_terms(decompose_query(query, filter_stopwords=True))
+            if len(term) >= 3
+            and term not in STOPWORDS
+            and term not in NON_INFORMATIVE_CODE_TERMS
+            and term not in intent_words
+        ]
+        if not concept_terms:
+            return {}
+        pool_max = self._pool_max(fused)
+        if pool_max <= 0.0:
+            return {}
+        if content == "all":
+            content_clause = ""
+        elif content == DEFAULT_CONTENT_SCOPE:
+            content_clause = " AND content_type != 'docs'"
+        else:
+            content_clause = " AND content_type = ?"
+        params: list[Any] = []
+        if content not in ("all", DEFAULT_CONTENT_SCOPE):
+            params.append(content)
+        try:
+            with self._db.connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, fqn, file_path, subwords FROM code_chunks "
+                    "WHERE is_definition = 1 "
+                    "AND (content LIKE '%static final%' OR content LIKE '%const %')"
+                    + content_clause
+                    + " LIMIT 300;",
+                    params,
+                ).fetchall()
+        except Exception as exc:
+            logger.warning("Constant-intent lookup failed: %s", exc)
+            return {}
+        evidence: dict[int, dict[str, Any]] = {}
+        for row in rows:
+            subwords = set((row["subwords"] or "").split())
+            if not any(_concept_matches(word, subwords) for word in matched_intent):
+                continue
+            matched = [term for term in concept_terms if _concept_matches(term, subwords)]
+            if len(matched) != len(concept_terms):
+                continue
+            test_factor = 1.0
+            if _is_test_file(row["file_path"]):
+                test_factor = 1.0 if self._test_intent(query) else self._settings.noise_penalty
+            boost = min(
+                pool_max * self._settings.constant_intent_boost * test_factor,
+                self._settings.constant_intent_cap * pool_max,
+            )
+            chunk_id = int(row["id"])
+            fused[chunk_id] = fused.get(chunk_id, 0.0) + boost
+            evidence[chunk_id] = {
+                "terms": matched,
+                "intent": sorted(matched_intent),
+                "boost": boost,
+            }
+        return evidence
+
     def _leader_matches_concept(self, fused: dict[int, float], terms: list[str]) -> bool:
-        """Return whether the pool leader's name already carries a concept term.
+        """Return whether the pool leader's name carries the whole concept.
 
         The concept-symbol pass exists to rescue concepts the fused ranking
-        missed. When the current best candidate already states one of the
-        distinctive terms in its FQN, the concept has surfaced: applying the
-        boost would only displace other evidence (redacted config/test chunks,
-        for example) without improving the answer. Skipping in that case also
-        keeps the result set independent of whether the dense arm happened to
-        be warm when the query ran.
+        missed. When the current best candidate already states every
+        distinctive term of the concept in its FQN, the concept has surfaced:
+        applying the boost would only displace other evidence (redacted
+        config/test chunks, for example) without improving the answer.
+        Matching just one common term (``token`` in ``TokenService``) is not
+        sufficient — the answer may still be a sibling method such as
+        ``generateToken`` that names the *decisive* term (``generate``).
 
         Args:
             fused: The fused score pool.
             terms: The distinctive concept terms that matched some FQN.
 
         Returns:
-            ``True`` when the highest-scoring pooled chunk's FQN matches any
+            ``True`` when the highest-scoring pooled chunk's FQN matches all
             of *terms*.
         """
         if not fused or not terms:
@@ -2541,7 +2760,7 @@ class HybridSearch:
         leader_terms = set(
             decompose_query((row["fqn"] or "").rsplit("::", 1)[-1], expand_variants=False)
         )
-        return any(_concept_matches(term, leader_terms) for term in terms)
+        return all(_concept_matches(term, leader_terms) for term in terms)
 
     def _concept_match_terms(self, query: str) -> list[str]:
         """Return the query's distinctive concept terms for symbol matching.
@@ -3441,7 +3660,7 @@ class HybridSearch:
                 }
             )
         results = self._apply_file_coherence(results)
-        total_matches = bm25.count(query)
+        total_matches = max(bm25.count(query, content=content), len(results))
         return {
             "results": results[:limit],
             "total_matches": total_matches,
@@ -3773,6 +3992,42 @@ class HybridSearch:
             evidence[chunk_id] = boost
         return evidence
 
+    def _code_intent(self, query: str, explicit_language: str | None) -> bool:
+        """Return whether *query* is asking for source code rather than data.
+
+        A code language context (explicit or inferred) is authoritative. When
+        the language is ambiguous, code-shaped vocabulary — a resolved symbol,
+        a camelCase/snake_case identifier, a qualified name, a filename with a
+        source extension, or a code-language term — signals a code intent.
+        Prose questions and configuration vocabulary do not.
+
+        Args:
+            query: The user query text.
+            explicit_language: Language supplied on the request, if any.
+
+        Returns:
+            ``True`` when source code is the target of the query.
+        """
+        if self._code_language_context(explicit_language):
+            return True
+        if query_symbol_identifier(query) or qualified_query_name(query):
+            return True
+        if self._analysis is not None and self._analysis.definition_intent:
+            return True
+        tokens = re.findall(r"[A-Za-z_$][\w$.:/-]*", query)
+        source_extensions = re.compile(
+            r"\.(?:py|pyi|java|kt|kts|ts|tsx|js|jsx|mjs|cjs|go|rs|rb|swift|php|cs|cpp|cc|c|h|hpp)$",
+            re.IGNORECASE,
+        )
+        for token in tokens:
+            if token.lower() in {"code", "function", "method", "class", "interface", "module"}:
+                return True
+            if "_" in token or "::" in token or source_extensions.search(token):
+                return True
+            if any(char.isupper() for char in token[1:]):
+                return True
+        return False
+
     def _code_language_context(self, explicit_language: str | None) -> bool:
         """Return whether a code-language context is active for the query.
 
@@ -3806,6 +4061,34 @@ class HybridSearch:
             return []
         return [r["file_path"] for r in rows if _is_test_file(r["file_path"])]
 
+    def _cached_test_file_paths(self) -> list[str]:
+        """Return the test-file paths, caching them until the next reload."""
+        if self._test_paths_cache is None:
+            self._test_paths_cache = self._test_file_paths()
+        return self._test_paths_cache
+
+    def _count_test_matches(self, query: str, content: str) -> int:
+        """Count query-matching chunks that live in test files.
+
+        Batches the stored test paths so a large corpus never exceeds SQLite's
+        bound-variable limit. Used to report production and test match counts
+        separately, including when test results are hidden.
+
+        Args:
+            query: The user query text.
+            content: The content scope used for the search.
+
+        Returns:
+            The number of matching chunks in test files.
+        """
+        paths = self._cached_test_file_paths()
+        if not paths:
+            return 0
+        total = 0
+        for start in range(0, len(paths), 500):
+            total += self._bm25.count(query, content=content, file_paths=paths[start : start + 500])
+        return total
+
     def _fetch_chunks(self, chunk_ids: list[int]) -> list[dict[str, Any]]:
         """Fetch ``code_chunks`` rows for *chunk_ids* as dicts in id order."""
         if not chunk_ids:
@@ -3829,6 +4112,7 @@ class HybridSearch:
         vector_health: bool,
         content: str = "all",
         matching: str | None = None,
+        regex: bool = False,
     ) -> dict[str, Any]:
         """Line-oriented exhaustive scan over the indexed files.
 
@@ -3855,68 +4139,95 @@ class HybridSearch:
             matching: Optional exhaustive matching semantics override
                 (``literal``/``all_tokens``/``any_token``); defaults to
                 ``CODE_SEARCH_EXHAUSTIVE_MATCHING_MODE``.
+            regex: When true, compile *query* as a Python regular expression
+                and match each line instead of tokenizing the query.
 
         Returns:
             An ``exhaustive`` mode search envelope.
         """
         if not self._settings.exhaustive_enabled:
             return self._no_match_envelope(vector_health, [], query, content)
-        terms = [t for t in tokenize(query, self._settings.filter_stopwords) if len(t) >= 2]
-        quoted: list[str] = []
-        for m in _QUOTED_RE.finditer(query):
-            quoted.extend(g for g in m.groups() if g)
-        if not terms and not quoted:
-            return self._no_match_envelope(vector_health, [], query, content)
-        # The matching contract: the default ``all_tokens``
-        # mode requires every query token to be present in each matching line
-        # (AND), while a quoted phrase matches as one precise literal
-        # substring. ``any_token`` keeps the old OR semantics but is always
-        # labelled as such; ``literal`` matches the whole query verbatim.
-        # Unquoted tokens come from the query with quoted regions blanked so a
-        # quoted phrase's decomposed words never become separate requirements.
-        mode = matching or self._settings.exhaustive_matching_mode
-        if mode not in VALID_MATCHING_SEMANTICS:
-            mode = self._settings.exhaustive_matching_mode
-        unquoted_text = _QUOTED_RE.sub(" ", query)
-        if self._settings.exhaustive_case_sensitive:
-            unquoted_terms = list(
-                dict.fromkeys(
-                    t
-                    for t in re.findall(
-                        r"@[a-zA-Z_][a-zA-Z0-9_]*|[a-zA-Z_][a-zA-Z0-9_]*", unquoted_text
-                    )
-                    if len(t) >= 2
-                )
-            )
+        pattern: re.Pattern[str] | None = None
+        if regex:
+            # Regex mode matches the user's pattern directly against each line.
+            # The matching-semantics vocabulary is bypassed because the pattern
+            # itself defines what a match means.
+            flags = 0 if self._settings.exhaustive_case_sensitive else re.IGNORECASE
+            try:
+                pattern = re.compile(query, flags)
+            except re.error as exc:
+                envelope = self._no_match_envelope(vector_health, [], query, content)
+                envelope["mode"] = "exhaustive"
+                envelope["matching_semantics"] = "regex"
+                envelope["regex"] = True
+                envelope["explanation"] = {
+                    "reason": "invalid_regex",
+                    "message": str(exc),
+                    "rescued_tiers": [],
+                    "confidence": "none",
+                }
+                return envelope
+            search_terms = [query]
+            search_lower = [query.lower()]
+            require_all = False
+            matching_semantics = "regex"
         else:
-            unquoted_terms = list(
-                dict.fromkeys(
-                    t
-                    for t in tokenize(unquoted_text, self._settings.filter_stopwords)
-                    if len(t) >= 2
+            terms = [t for t in tokenize(query, self._settings.filter_stopwords) if len(t) >= 2]
+            quoted: list[str] = []
+            for m in _QUOTED_RE.finditer(query):
+                quoted.extend(g for g in m.groups() if g)
+            if not terms and not quoted:
+                return self._no_match_envelope(vector_health, [], query, content)
+            # The matching contract: the default ``all_tokens``
+            # mode requires every query token to be present in each matching line
+            # (AND), while a quoted phrase matches as one precise literal
+            # substring. ``any_token`` keeps the old OR semantics but is always
+            # labelled as such; ``literal`` matches the whole query verbatim.
+            # Unquoted tokens come from the query with quoted regions blanked so a
+            # quoted phrase's decomposed words never become separate requirements.
+            mode = matching or self._settings.exhaustive_matching_mode
+            if mode not in VALID_MATCHING_SEMANTICS:
+                mode = self._settings.exhaustive_matching_mode
+            unquoted_text = _QUOTED_RE.sub(" ", query)
+            if self._settings.exhaustive_case_sensitive:
+                unquoted_terms = list(
+                    dict.fromkeys(
+                        t
+                        for t in re.findall(
+                            r"@[a-zA-Z_][a-zA-Z0-9_]*|[a-zA-Z_][a-zA-Z0-9_]*", unquoted_text
+                        )
+                        if len(t) >= 2
+                    )
                 )
-            )
-        quoted_phrases = [g for g in quoted if g]
-        if mode == "literal":
-            literal_needle = query.replace('"', "").replace("'", "")
-            search_terms = [literal_needle] if literal_needle else []
-            require_all = False
-            matching_semantics = "literal"
-        elif mode == "any_token":
-            search_terms = list(dict.fromkeys(unquoted_terms + quoted_phrases))
-            require_all = False
-            matching_semantics = "any_token"
-        else:  # all_tokens (default)
-            search_terms = list(dict.fromkeys(unquoted_terms + quoted_phrases))
-            require_all = True
-            # A pure quoted phrase is a single literal substring, so label it
-            # ``literal`` rather than ``all_tokens``.
-            matching_semantics = (
-                "literal" if (quoted_phrases and not unquoted_terms) else "all_tokens"
-            )
-        if not search_terms:
-            return self._no_match_envelope(vector_health, [], query, content)
-        search_lower = [t.lower() for t in search_terms]
+            else:
+                unquoted_terms = list(
+                    dict.fromkeys(
+                        t
+                        for t in tokenize(unquoted_text, self._settings.filter_stopwords)
+                        if len(t) >= 2
+                    )
+                )
+            quoted_phrases = [g for g in quoted if g]
+            if mode == "literal":
+                literal_needle = query.replace('"', "").replace("'", "")
+                search_terms = [literal_needle] if literal_needle else []
+                require_all = False
+                matching_semantics = "literal"
+            elif mode == "any_token":
+                search_terms = list(dict.fromkeys(unquoted_terms + quoted_phrases))
+                require_all = False
+                matching_semantics = "any_token"
+            else:  # all_tokens (default)
+                search_terms = list(dict.fromkeys(unquoted_terms + quoted_phrases))
+                require_all = True
+                # A pure quoted phrase is a single literal substring, so label it
+                # ``literal`` rather than ``all_tokens``.
+                matching_semantics = (
+                    "literal" if (quoted_phrases and not unquoted_terms) else "all_tokens"
+                )
+            if not search_terms:
+                return self._no_match_envelope(vector_health, [], query, content)
+            search_lower = [t.lower() for t in search_terms]
         cap = max(limit, self._settings.exhaustive_max_lines)
 
         # The indexed file set is authoritative for the scan: every file the
@@ -4027,16 +4338,22 @@ class HybridSearch:
                     )
                 continue
             for line_no, line in enumerate(text.splitlines(), start=1):
-                if self._settings.exhaustive_case_sensitive:
-                    if require_all:
-                        matched = all(t in line for t in search_terms)
-                    else:
-                        matched = any(t in line for t in search_terms)
+                if pattern is not None:
+                    matches = pattern.findall(line)
+                    matched = bool(matches)
+                    occurrences = len(matches)
                 else:
-                    if require_all:
-                        matched = all(t in line.lower() for t in search_lower)
+                    occurrences = 1
+                    if self._settings.exhaustive_case_sensitive:
+                        if require_all:
+                            matched = all(t in line for t in search_terms)
+                        else:
+                            matched = any(t in line for t in search_terms)
                     else:
-                        matched = any(t in line.lower() for t in search_lower)
+                        if require_all:
+                            matched = all(t in line.lower() for t in search_lower)
+                        else:
+                            matched = any(t in line.lower() for t in search_lower)
                 if not matched:
                     continue
                 total += 1
@@ -4060,13 +4377,14 @@ class HybridSearch:
                         "redacted_count": 0,
                         "confidence": 1.0,
                         "confidence_band": "high",
-                        "occurrences": 1,
+                        "occurrences": occurrences,
                     }
                 )
         truncated = total > len(results)
         envelope = {
             "results": results,
             "total_count": total,
+            "total_matches": total,
             "truncated": truncated,
             "vector_health": vector_health,
             "mode": "exhaustive",
@@ -4075,12 +4393,16 @@ class HybridSearch:
             "explanation": None,
             "complete": not truncated,
             "content": content,
+            "token_savings": self._token_savings(results),
         }
         if count_occurrences and scan_needle is not None:
             envelope["occurrence_count"] = total
             envelope["literal"] = scan_needle
             envelope["occurrences_per_line"] = occurrences_per_line
             envelope["occurrence_line_numbers"] = occurrence_line_numbers
+        if regex:
+            envelope["regex"] = True
+            envelope["pattern"] = query
         return envelope
 
     def _search_enumerate(self, query: str, limit: int, vector_health: bool) -> dict[str, Any]:
@@ -4195,12 +4517,14 @@ class HybridSearch:
         envelope: dict[str, Any] = {
             "results": results,
             "total_count": total,
+            "total_matches": total,
             "truncated": truncated,
             "vector_health": vector_health,
             "mode": "enumerate",
             "confidence": "high" if results else "none",
             "explanation": None,
             "complete": (not truncated) and not excluded,
+            "token_savings": self._token_savings(results),
         }
         if excluded:
             envelope["excluded"] = excluded
@@ -4399,6 +4723,7 @@ class HybridSearch:
         self._symbol_store = None
         self._vocab_by_language = None
         self._analysis = None
+        self._test_paths_cache = None
         self._bm25.invalidate_corpus()
 
     def need_index(self) -> bool:

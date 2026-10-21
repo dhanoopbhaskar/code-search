@@ -8,6 +8,8 @@ hanging.
 
 from __future__ import annotations
 
+import os
+import socket
 import threading
 import time
 from pathlib import Path
@@ -169,6 +171,38 @@ def test_ensure_resident_service_removes_stale_socket(tmp_path: Path) -> None:
     assert not socket_path.exists()
 
 
+def test_ensure_resident_service_requires_a_live_daemon(monkeypatch: Any, tmp_path: Path) -> None:
+    """A spawn that never binds must not claim the model load.
+
+    The caller relies on this ``False`` to start its own warmup; returning
+    ``True`` for a dead daemon leaves every query on the lexical path.
+    """
+    import argparse
+
+    from code_search.cli import main as cli_main
+
+    monkeypatch.setattr("subprocess.Popen", lambda *_a, **_k: object())
+
+    args = argparse.Namespace(context_dir=str(tmp_path))
+
+    assert cli_main._ensure_resident_service(args) is False
+
+
+def test_long_context_path_uses_a_short_socket(tmp_path: Path) -> None:
+    """A deep checkout must still produce a bindable ``AF_UNIX`` path."""
+    context_dir = tmp_path / ("x" * 100) / ".context"
+    context_dir.mkdir(parents=True)
+
+    socket_path = default_socket_path(context_dir)
+
+    assert socket_path != context_dir / "code-search.sock"
+    assert len(os.fsencode(str(socket_path))) <= 107
+    assert socket_path == default_socket_path(context_dir), "path must be deterministic"
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.bind(str(socket_path))
+
+
 def test_daemon_forwarded_search_surfaces_scope_signal_and_override(
     monkeypatch: Any, tmp_path: Path, capsys: Any
 ) -> None:
@@ -220,3 +254,47 @@ def test_daemon_forwarded_search_surfaces_scope_signal_and_override(
     err = capsys.readouterr().err
     assert "configuration excluded" in err
     assert "Override with: --content config" in err
+
+
+def test_daemon_forwarded_search_reports_match_split(
+    monkeypatch: Any, tmp_path: Path, capsys: Any
+) -> None:
+    """The daemon-forwarded human path reports the same production/test split
+    as the local path instead of hiding the counts."""
+    import argparse
+
+    from code_search.cli import main as cli_main
+
+    payload = {
+        "results": [],
+        "total_matches": 11,
+        "production_matches": 8,
+        "test_matches": 3,
+        "query_time_ms": 12.0,
+        "freshness": {},
+    }
+    monkeypatch.setattr(cli_main, "_resolve_context_dir", lambda _args: tmp_path)
+    monkeypatch.setattr(DaemonClient, "is_running", staticmethod(lambda _sock: True))
+    monkeypatch.setattr(
+        DaemonClient,
+        "request",
+        lambda _self, _action, _params=None: {"ok": True, "payload": payload},
+    )
+
+    args = argparse.Namespace(
+        command="search",
+        query="login",
+        limit=10,
+        language=None,
+        include_tests=False,
+        mode="ranked",
+        content=None,
+        matching=None,
+        json=False,
+        no_model=True,
+        verbose=False,
+        context_dir=str(tmp_path),
+    )
+    assert cli_main._try_forward_to_daemon(args) == 0
+    out = capsys.readouterr().out
+    assert "Matches: 8 production + 3 test (hidden; use --include-tests)" in out
