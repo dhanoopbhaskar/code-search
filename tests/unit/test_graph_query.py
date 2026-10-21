@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -28,6 +29,7 @@ from code_search.engine.graph_query import (
     render_query_text,
     resolve_confidence,
 )
+from code_search.engine.symbols import SymbolStore
 
 
 @pytest.mark.parametrize(
@@ -120,6 +122,44 @@ def test_seed_terms_ignore_question_words_and_parameter_types() -> None:
     )
     assert "comment" in terms
     assert "new" not in terms
+
+
+def test_seed_terms_cover_inflected_forms() -> None:
+    """An inflected question word also covers the indexed stem."""
+    terms = _query_terms("how does saving a new article work")
+    assert "saving" in terms
+    assert "save" in terms
+    assert "how" not in terms
+
+
+def test_seed_selection_waits_for_model_before_searching(tmp_path: Path) -> None:
+    """Seeds come from the fused ranking, so a cold model is warmed first."""
+    order: list[str] = []
+
+    class _Generator:
+        def begin_warmup(self) -> None:
+            order.append("begin_warmup")
+
+        def wait_warm(self, timeout: float) -> bool:
+            order.append(f"wait_warm:{timeout}")
+            return True
+
+    class _Search:
+        def __init__(self) -> None:
+            self._embedding_generator = _Generator()
+
+        def search(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            order.append("search")
+            return {"results": []}
+
+    settings = Settings(context_dir=tmp_path)
+    db = GraphDatabase(tmp_path / "seed_warmup.db", settings)
+    db.initialize()
+    service = GraphQueryService(db, SymbolStore(db, settings), EdgeStore(db), _Search(), settings)
+
+    service._select_seeds("how does saving a new article work", None)
+
+    assert order == ["begin_warmup", f"wait_warm:{settings.warmup_wait_s}", "search"]
 
 
 def test_render_path_text_handles_no_path() -> None:

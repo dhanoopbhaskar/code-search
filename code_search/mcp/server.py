@@ -821,6 +821,9 @@ class MCPServer:
                     response["token_savings"] = envelope["token_savings"]
                 if envelope.get("content") is not None:
                     response["content"] = envelope["content"]
+                for count_key in ("production_matches", "test_matches"):
+                    if envelope.get(count_key) is not None:
+                        response[count_key] = envelope[count_key]
                 if envelope.get("scope") is not None:
                     response["scope"] = envelope["scope"]
                 if envelope.get("matching_semantics") is not None:

@@ -110,6 +110,15 @@ _RATIONALE_MARKERS = re.compile(r"\b(NOTE|WHY|HACK|TODO|FIXME|ADR|RFC)\b", re.IG
 #: Lines that look like comments (the marker must appear in comment text).
 _COMMENT_PREFIX = re.compile(r"^\s*(#|//|/\*|\*|--|<!--)")
 
+#: Prose formats whose structure is marked by headings instead of blank-line
+#: blocks. Splitting these by heading returns focused passages rather than one
+#: chunk spanning the whole file.
+_HEADING_PROSE_EXTENSIONS = frozenset({".md", ".markdown", ".rst", ".adoc"})
+_ATX_HEADING = re.compile(r"^#{1,6}\s+\S")
+_ADOC_HEADING = re.compile(r"^={1,6}\s+\S")
+_FENCE_OPEN = re.compile(r"^\s*(`{3,}|~{3,})")
+_SETEXT_UNDERLINE = re.compile(r"^\s*([=\-~^\"'])\1{2,}\s*$")
+
 
 def _extract_rationale(
     file_path: Path, source_bytes: bytes, symbols: list[dict[str, Any]]
@@ -180,11 +189,14 @@ def _process_file_worker(args: tuple[Path, bytes, str, tuple[str, ...] | None]) 
         chunks = parser.get_chunks_for_file(file_path, source_bytes)
     parse_failed = False
     if not chunks and not _is_lockfile_path(file_path):
-        if is_resource or language in {"unknown"}:
-            chunks = _fallback_chunk_file(file_path, source_bytes, language, 100)
-        else:
-            chunks = _module_fallback_chunk(file_path, source_bytes, language)
-            parse_failed = file_path.suffix.lower() not in (resource_extensions or ())
+        if file_path.suffix.lower() in _HEADING_PROSE_EXTENSIONS:
+            chunks = _prose_heading_chunks(file_path, source_bytes, language)
+        if not chunks:
+            if is_resource or language in {"unknown"}:
+                chunks = _fallback_chunk_file(file_path, source_bytes, language, 100)
+            else:
+                chunks = _module_fallback_chunk(file_path, source_bytes, language)
+                parse_failed = file_path.suffix.lower() not in (resource_extensions or ())
     for chunk in chunks:
         if is_resource:
             chunk["chunk_type"] = "resource"
@@ -384,6 +396,84 @@ def _module_fallback_chunk(
                 "chunk_node_type": "module",
             }
         )
+    return chunks
+
+
+def _prose_heading_chunks(
+    file_path: Path, source_bytes: bytes, language: str = "unknown", max_chunk_lines: int = 100
+) -> list[dict[str, Any]]:
+    """Split heading-structured prose into one chunk per section.
+
+    Markdown ATX/setext headings, AsciiDoc headings, and reStructuredText
+    underlines start a new section; headings inside fenced code blocks are
+    ignored. Each section keeps its exact line span so a prose query returns
+    the passage that answers it instead of the whole document. Sections longer
+    than *max_chunk_lines* are split into line blocks to stay within the
+    embedding budget. Files with no headings return an empty list so the
+    caller can fall back to whole-file chunking.
+
+    Args:
+        file_path: Path of the prose file being chunked.
+        source_bytes: Raw file bytes decoded as UTF-8 with replacement.
+        language: Language label stamped on each emitted chunk.
+        max_chunk_lines: Maximum lines per emitted chunk.
+
+    Returns:
+        Chunks with ``chunk_type``/``chunk_node_type`` ``raw_text``, or an
+        empty list when the document has no detectable heading.
+    """
+    lines = source_bytes.decode("utf-8", errors="replace").split("\n")
+    headings: list[int] = []
+    fence: str | None = None
+    for index, line in enumerate(lines):
+        fence_match = _FENCE_OPEN.match(line)
+        if fence is not None:
+            if fence_match and fence_match.group(1).startswith(fence):
+                fence = None
+            continue
+        if fence_match:
+            fence = fence_match.group(1)
+            continue
+        if (
+            _ATX_HEADING.match(line)
+            or _ADOC_HEADING.match(line)
+            or (
+                line.strip()
+                and index + 1 < len(lines)
+                and _SETEXT_UNDERLINE.match(lines[index + 1])
+            )
+        ):
+            headings.append(index)
+    if not headings:
+        return []
+
+    boundaries = sorted({0, *headings})
+    chunks: list[dict[str, Any]] = []
+    for position, start in enumerate(boundaries):
+        end = boundaries[position + 1] if position + 1 < len(boundaries) else len(lines)
+        section = lines[start:end]
+        while section and not section[-1].strip():
+            section.pop()
+        if not any(line.strip() for line in section):
+            continue
+        for offset in range(0, len(section), max_chunk_lines):
+            block = section[offset : offset + max_chunk_lines]
+            content = "\n".join(block)
+            if not content.strip():
+                continue
+            block_start = start + offset
+            chunks.append(
+                {
+                    "file_path": str(file_path),
+                    "line_start": block_start,
+                    "line_end": block_start + len(block) - 1,
+                    "content": content,
+                    "language": language,
+                    "is_definition": False,
+                    "chunk_type": "raw_text",
+                    "chunk_node_type": "raw_text",
+                }
+            )
     return chunks
 
 

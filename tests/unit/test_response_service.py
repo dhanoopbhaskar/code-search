@@ -19,6 +19,7 @@ def test_compact_result_keeps_location_signature_and_snippet() -> None:
         "fqn": "/repo/src/settings.ts::baseApiUrl",
         "language": "typescript",
         "score": 0.9,
+        "score_normalized": 0.474,
         "is_definition": True,
         "content": "\n".join(f"line {i}" for i in range(1, 31)),
         "score_sources": {"bm25": 1.0},
@@ -34,6 +35,7 @@ def test_compact_result_keeps_location_signature_and_snippet() -> None:
     assert compact["signature"] == "line 1"
     assert compact["content"] == "line 1\nline 2\nline 3"
     assert compact["content_truncated"] is True
+    assert compact["score_normalized"] == 0.474
     assert "score_sources" not in compact
     assert "bm25_score" not in compact
 

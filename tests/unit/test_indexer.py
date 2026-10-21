@@ -7,7 +7,11 @@ from unittest.mock import patch
 
 import numpy as np
 
-from code_search.engine.indexer import _fallback_chunk_file, _process_file_worker
+from code_search.engine.indexer import (
+    _fallback_chunk_file,
+    _process_file_worker,
+    _prose_heading_chunks,
+)
 
 
 def _build_components(repo: Path) -> dict[str, Any]:
@@ -163,6 +167,109 @@ def test_fallback_max_line_limit() -> None:
     for c in chunks:
         chunk_lines = c["line_end"] - c["line_start"] + 1
         assert chunk_lines <= 100
+
+
+def test_prose_heading_chunks_split_by_markdown_sections() -> None:
+    file_path = Path("docs/README.md")
+    source = (
+        b"# Articles API\n\n"
+        b"Intro prose.\n\n"
+        b"## How comments get created\n\n"
+        b"Comments are created by ArticleService.\n\n"
+        b"## How the schema is built\n\n"
+        b"The schema uses a Flyway migration.\n"
+    )
+    chunks = _prose_heading_chunks(file_path, source, "markdown")
+
+    assert len(chunks) == 3
+    assert chunks[0]["line_start"] == 0
+    assert "Articles API" in chunks[0]["content"]
+    assert "How comments get created" in chunks[1]["content"]
+    assert "ArticleService" in chunks[1]["content"]
+    assert "How the schema is built" in chunks[2]["content"]
+    assert all(chunk["chunk_type"] == "raw_text" for chunk in chunks)
+
+
+def test_prose_heading_chunks_ignore_fenced_markdown() -> None:
+    file_path = Path("docs/guide.md")
+    source = b"# Guide\n\n```markdown\n# Not a heading\n```\n\n## Real section\nBody.\n"
+    chunks = _prose_heading_chunks(file_path, source)
+
+    assert len(chunks) == 2
+    assert "Not a heading" in chunks[0]["content"]
+    assert chunks[1]["content"].startswith("## Real section")
+
+
+def test_prose_heading_chunks_without_headings_returns_empty() -> None:
+    assert _prose_heading_chunks(Path("notes.txt"), b"plain prose\nno headings\n") == []
+
+
+def test_prose_heading_chunks_split_rst_sections() -> None:
+    """reStructuredText underline headings start a new prose section."""
+    source = (
+        b"Articles API\n"
+        b"============\n\n"
+        b"Intro prose.\n\n"
+        b"How comments work\n"
+        b"-----------------\n\n"
+        b"Comments are created by ArticleService.\n"
+    )
+    chunks = _prose_heading_chunks(Path("docs/guide.rst"), source, "rst")
+
+    assert len(chunks) == 2
+    assert chunks[0]["content"].startswith("Articles API")
+    assert chunks[1]["content"].startswith("How comments work")
+    assert chunks[0]["line_end"] < chunks[1]["line_start"]
+
+
+def test_prose_heading_chunks_split_asciidoc_sections() -> None:
+    """AsciiDoc ``=`` headings start a new prose section."""
+    source = b"= Articles API\n:toc:\n\nIntro.\n\n== How comments work\n\nComments.\n"
+    chunks = _prose_heading_chunks(Path("docs/guide.adoc"), source, "asciidoc")
+
+    assert len(chunks) == 2
+    assert chunks[0]["content"].startswith("= Articles API")
+    assert chunks[1]["content"].startswith("== How comments work")
+
+
+def test_prose_heading_chunks_split_setext_markdown() -> None:
+    """Markdown setext headings (underlined titles) start a new section."""
+    source = (
+        b"Articles API\n"
+        b"============\n\n"
+        b"Intro.\n\n"
+        b"How comments work\n"
+        b"-----------------\n\n"
+        b"Comments.\n"
+    )
+    chunks = _prose_heading_chunks(Path("docs/guide.md"), source, "markdown")
+
+    assert len(chunks) == 2
+    assert chunks[1]["content"].startswith("How comments work")
+
+
+def test_worker_uses_heading_chunks_for_markdown(tmp_path: Path) -> None:
+    doc = tmp_path / "README.md"
+    doc.write_text("# Title\n\nIntro.\n\n## Section\n\nBody.\n")
+    result = _process_file_worker((doc, doc.read_bytes(), "unknown", None))
+
+    assert len(result["chunks"]) == 2
+    assert result["chunks"][1]["content"].startswith("## Section")
+
+
+def test_worker_uses_heading_chunks_for_rst_and_asciidoc(tmp_path: Path) -> None:
+    """The heading chunker is dispatched for RST and AsciiDoc files too."""
+    cases = {
+        "guide.rst": ("Title\n=====\n\nIntro.\n\nSection\n-------\n\nBody.\n", "Section"),
+        "guide.adoc": ("= Title\n\nIntro.\n\n== Section\n\nBody.\n", "== Section"),
+    }
+    for name, (text, expected_prefix) in cases.items():
+        doc = tmp_path / name
+        doc.write_text(text)
+        result = _process_file_worker((doc, doc.read_bytes(), "unknown", None))
+
+        assert len(result["chunks"]) == 2, name
+        assert result["chunks"][1]["content"].startswith(expected_prefix), name
 
 
 def test_chunk_type_metadata() -> None:

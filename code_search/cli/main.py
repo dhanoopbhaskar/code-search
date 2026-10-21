@@ -655,6 +655,9 @@ def cmd_search(args: argparse.Namespace) -> int:
         out["reload_required"] = bool(serving_envelope.get("reload_required"))
         if search_envelope.get("content") is not None:
             out["content"] = search_envelope["content"]
+        for count_key in ("production_matches", "test_matches"):
+            if search_envelope.get(count_key) is not None:
+                out[count_key] = search_envelope[count_key]
         if search_envelope.get("scope") is not None:
             out["scope"] = search_envelope["scope"]
         if search_envelope.get("matching_semantics") is not None:
@@ -713,6 +716,11 @@ def cmd_search(args: argparse.Namespace) -> int:
                 )
             else:
                 print("No results found.")
+            _print_match_breakdown(
+                search_envelope.get("production_matches"),
+                search_envelope.get("test_matches"),
+                args.include_tests,
+            )
             _emit_reduced_notice(search_envelope)
             if serving_envelope.get("envelope"):
                 print(serving_envelope["envelope"], file=sys.stderr)
@@ -756,6 +764,11 @@ def cmd_search(args: argparse.Namespace) -> int:
     else:
         index_root = comps["metadata"].get("index_root") or str(context_dir.parent)
         _print_search_results(redacted, settings, root=index_root)
+        _print_match_breakdown(
+            search_envelope.get("production_matches"),
+            search_envelope.get("test_matches"),
+            args.include_tests,
+        )
         if explain_ranking:
             _print_ranking_explanation(redacted, root=index_root)
         print(f"Query time: {duration_ms} ms")
@@ -1622,6 +1635,32 @@ def _print_search_results(
         )
 
 
+def _print_match_breakdown(
+    production_matches: int | None,
+    test_matches: int | None,
+    include_tests: bool,
+) -> None:
+    """Print the production/test match split when the envelope reports it.
+
+    Ranked envelopes carry both counts, so hidden test files never change the
+    total silently. The split is printed even when no test chunk matched, and
+    the ``--include-tests`` hint appears only when tests are actually hidden.
+    Both the local and daemon-forwarded human paths call this so they render
+    identically.
+
+    Args:
+        production_matches: Production chunk count, or ``None`` when unknown.
+        test_matches: Test chunk count, or ``None`` when unknown.
+        include_tests: Whether test chunks were requested.
+    """
+    if production_matches is None or test_matches is None:
+        return
+    if not production_matches and not test_matches:
+        return
+    hidden = "" if include_tests or not test_matches else " (hidden; use --include-tests)"
+    print(f"Matches: {production_matches} production + {test_matches} test{hidden}")
+
+
 def _print_ranking_explanation(
     results: list[dict[str, Any]],
     root: str | Path | None = None,
@@ -2153,6 +2192,11 @@ def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
         else:
             if command == "search":
                 _print_search_results(payload.get("results") or [], root=root)
+                _print_match_breakdown(
+                    payload.get("production_matches"),
+                    payload.get("test_matches"),
+                    args.include_tests,
+                )
                 if payload.get("query_time_ms") is not None:
                     print(f"Query time: {round(float(payload['query_time_ms']))} ms")
                 _emit_stale_notice(payload.get("freshness") or {})

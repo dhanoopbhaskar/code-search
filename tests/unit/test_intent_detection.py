@@ -17,8 +17,16 @@ from code_search.engine.intent_detection import (
 
 DOCS_QUERIES = ["readme documentation", "how to deploy", "operations guide", "tutorial"]
 CONFIG_QUERIES = ["database configuration", "connection pool settings", "yaml property timeout"]
-CODE_QUERIES = ["login_handler", "function", "login", "guide_factory"]
-NEUTRAL_QUERIES = ["user login handler", "sum two numbers", "ArticleService.save", "AuthService"]
+CODE_QUERIES = [
+    "login_handler",
+    "function",
+    "login",
+    "guide_factory",
+    "login handler",
+    "user login handler",
+    "article repository",
+]
+NEUTRAL_QUERIES = ["sum two numbers", "ArticleService.save", "AuthService"]
 
 
 class TestClassifyDocsIntent:

@@ -26,6 +26,7 @@ _COMPACT_RESULT_FIELDS: tuple[str, ...] = (
     "fqn",
     "language",
     "score",
+    "score_normalized",
     "is_definition",
     "is_test_file",
     "content_type",

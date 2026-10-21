@@ -36,6 +36,7 @@ from code_search.engine.graph import (
     RationaleStore,
     read_source_slice,
 )
+from code_search.engine.query_terms import morphological_variants
 from code_search.engine.symbols import SymbolStore
 
 #: Resolution tier → graphify-style confidence label.
@@ -208,8 +209,17 @@ def _terms(text: str) -> set[str]:
 
 
 def _query_terms(text: str) -> set[str]:
-    """Return significant query terms, excluding question-word glue."""
-    return _terms(text) - _QUERY_STOPWORDS
+    """Return significant query terms and their morphological variants.
+
+    A question says ``saving`` where the indexed declaration says ``save``, so
+    the variants are what make per-term seed coverage work on natural-language
+    questions instead of only on identifier-shaped ones.
+    """
+    terms = _terms(text) - _QUERY_STOPWORDS
+    expanded: set[str] = set(terms)
+    for term in terms:
+        expanded.update(morphological_variants(term))
+    return expanded - _QUERY_STOPWORDS
 
 
 def _symbol_terms(fqn: str, name: str) -> set[str]:
@@ -630,6 +640,7 @@ class GraphQueryService:
                     )
             return resolved[:3]
 
+        self._ensure_search_is_warm()
         try:
             envelope = self._search.search(
                 question,
@@ -714,6 +725,27 @@ class GraphQueryService:
         """Return the human-readable provenance for a hybrid-search seed."""
         score = float(result.get("score") or 0.0)
         return f"hybrid search hit #{rank} (score {score:.3f})"
+
+    def _ensure_search_is_warm(self) -> None:
+        """Wait a bounded interval for the embedding model before seeding.
+
+        A cold model silently drops the vector arm, so the same question would
+        seed from a lexical-only ranking and could bury the symbol it names.
+        The daemon and MCP apply the same bounded wait before ranking; doing it
+        here keeps every surface seeding from the same fused order. A warm
+        model returns immediately.
+        """
+        generator = getattr(self._search, "_embedding_generator", None)
+        wait_warm = getattr(generator, "wait_warm", None)
+        begin_warmup = getattr(generator, "begin_warmup", None)
+        if not callable(wait_warm) or not callable(begin_warmup):
+            return
+        timeout = float(getattr(self._settings, "warmup_wait_s", 0.0) or 0.0)
+        if timeout <= 0:
+            return
+        with contextlib.suppress(Exception):
+            begin_warmup()
+            wait_warm(timeout)
 
     def _resolve_seed_node(self, reference: str) -> GraphNode | None:
         """Resolve an explicit seed reference to a graph node."""

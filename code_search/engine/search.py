@@ -733,26 +733,36 @@ class BM25Search:
         result = self._search_topk(query, top_k, count_only=False, content=content)
         return result if isinstance(result, list) else []
 
-    def count(self, query: str, content: str = "all") -> int:
+    def count(self, query: str, content: str = "all", file_paths: list[str] | None = None) -> int:
         """Return the number of FTS5-matching chunks for *query* (uncapped).
 
         The count reflects total distinct matches for the query tokens before
         the top-k pool slice, so a response can report ``total_matches`` and a
         ``truncated`` flag. *content* applies the same axis filter as
         :meth:`search`, so ``total_matches`` never advertises chunks the
-        response scope excluded. Returns ``0`` when the query produces no
-        MATCH expression or the search fails.
+        response scope excluded. *file_paths* further restricts the count to
+        those stored paths (used to split production and test match counts).
+        Returns ``0`` when the query produces no MATCH expression or the
+        search fails.
         """
-        result = self._search_topk(query, None, count_only=True, content=content)
+        result = self._search_topk(
+            query, None, count_only=True, content=content, file_paths=file_paths
+        )
         return result if isinstance(result, int) else 0
 
     def _search_topk(
-        self, query: str, top_k: int | None, count_only: bool = False, content: str = "all"
+        self,
+        query: str,
+        top_k: int | None,
+        count_only: bool = False,
+        content: str = "all",
+        file_paths: list[str] | None = None,
     ) -> int | list[tuple[int, float]]:
         """Execute the FTS5 query for *query*.
 
         When *count_only* is set, returns the uncapped match count; otherwise
         returns up to *top_k* ``(chunk_rowid, score)`` pairs best-first.
+        *file_paths* optionally restricts the query to the given stored paths.
         """
         fts5_query = self._build_fts_query(query)
         if not fts5_query:
@@ -772,27 +782,35 @@ class BM25Search:
                     else " AND c.content_type = ?"
                 )
             )
+            path_clause = ""
+            if file_paths is not None:
+                if not file_paths:
+                    return 0 if count_only else []
+                placeholders = ",".join("?" for _ in file_paths)
+                path_clause = f" AND c.file_path IN ({placeholders})"
+            params: list[Any] = [fts5_query]
+            if content not in ("all", DEFAULT_CONTENT_SCOPE):
+                params.append(content)
+            if file_paths is not None:
+                params.extend(file_paths)
             with self._db.connect() as conn:
                 if count_only:
-                    params: list[Any] = [fts5_query]
-                    if content not in ("all", DEFAULT_CONTENT_SCOPE):
-                        params.append(content)
                     row = conn.execute(
                         "SELECT COUNT(*) AS n FROM chunks_fts AS f "
                         "JOIN code_chunks AS c ON c.id = f.rowid "
-                        "WHERE chunks_fts MATCH ?" + content_clause + ";",
+                        "WHERE chunks_fts MATCH ?" + content_clause + path_clause + ";",
                         params,
                     ).fetchone()
                     return cast(int, row["n"]) if row is not None else 0
-                params = [fts5_query]
-                if content not in ("all", DEFAULT_CONTENT_SCOPE):
-                    params.append(content)
                 params.append(top_k)
                 rows = conn.execute(
                     f"SELECT f.rowid, bm25(chunks_fts, {content_w}, {subwords_w}, {fqn_w}, "
                     f"{path_w}, {rules_w}) AS score "
                     "FROM chunks_fts AS f JOIN code_chunks AS c ON c.id = f.rowid "
-                    "WHERE chunks_fts MATCH ?" + content_clause + " ORDER BY score LIMIT ?;",
+                    "WHERE chunks_fts MATCH ?"
+                    + content_clause
+                    + path_clause
+                    + " ORDER BY score LIMIT ?;",
                     params,
                 ).fetchall()
             results: list[tuple[int, float]] = []
@@ -869,6 +887,23 @@ def _normalize_scores(scores: dict[int, float]) -> dict[int, float]:
             z = (scores[k] - mean) / stddev
             scores[k] = max(0.0, min(1.0, (z + 3.0) / 6.0))
     return scores
+
+
+def _bounded_score(score: float) -> float:
+    """Map an unbounded relevance score monotonically into ``[0, 1)``.
+
+    Ranking scores include multiplicative class/content weights and additive
+    boosts, so they are not comparable across queries. This squash keeps their
+    order while giving callers a stable, bounded value.
+
+    Args:
+        score: The raw ranked score.
+
+    Returns:
+        ``score / (1 + score)`` for non-negative input; ``0.0`` otherwise.
+    """
+    value = max(0.0, float(score))
+    return value / (1.0 + value)
 
 
 def rrf_fusion(
@@ -1020,6 +1055,7 @@ class HybridSearch:
         self._symbol_store: Any | None = None
         self._vocab_by_language: dict[str, set[str]] | None = None
         self._analysis: QueryAnalysis | None = None
+        self._test_paths_cache: list[str] | None = None
         if no_model:
             logger.debug("HybridSearch running in --no-model fast path")
 
@@ -1926,6 +1962,7 @@ class HybridSearch:
                 "fqn": chunk["fqn"],
                 "language": chunk["language"],
                 "score": weighted_score,
+                "score_normalized": round(_bounded_score(weighted_score), 3),
                 "bm25_score": bm25_score,
                 "vector_score": reported_vector_score,
                 "vector_retrieved": vector_retrieved,
@@ -1993,12 +2030,19 @@ class HybridSearch:
         if results and all(r.get("vector_degraded") for r in results):
             logger.info("Vector search unavailable. Results based on BM25 only.")
 
-        total_matches = max(self._bm25.count(query, content=content), len(results))
+        lexical_matches = self._bm25.count(query, content=content)
+        test_matches = (
+            min(self._count_test_matches(query, content), lexical_matches) if lexical_matches else 0
+        )
+        production_matches = lexical_matches - test_matches
+        total_matches = max(lexical_matches, len(results))
         if exact_ids and total_matches == 0:
             total_matches = len(exact_ids)
         return {
             "results": results,
             "total_matches": total_matches,
+            "production_matches": production_matches,
+            "test_matches": test_matches,
             "truncated": total_matches > len(results),
             "vector_health": vector_health,
             "mode": "ranked",
@@ -4017,6 +4061,34 @@ class HybridSearch:
             return []
         return [r["file_path"] for r in rows if _is_test_file(r["file_path"])]
 
+    def _cached_test_file_paths(self) -> list[str]:
+        """Return the test-file paths, caching them until the next reload."""
+        if self._test_paths_cache is None:
+            self._test_paths_cache = self._test_file_paths()
+        return self._test_paths_cache
+
+    def _count_test_matches(self, query: str, content: str) -> int:
+        """Count query-matching chunks that live in test files.
+
+        Batches the stored test paths so a large corpus never exceeds SQLite's
+        bound-variable limit. Used to report production and test match counts
+        separately, including when test results are hidden.
+
+        Args:
+            query: The user query text.
+            content: The content scope used for the search.
+
+        Returns:
+            The number of matching chunks in test files.
+        """
+        paths = self._cached_test_file_paths()
+        if not paths:
+            return 0
+        total = 0
+        for start in range(0, len(paths), 500):
+            total += self._bm25.count(query, content=content, file_paths=paths[start : start + 500])
+        return total
+
     def _fetch_chunks(self, chunk_ids: list[int]) -> list[dict[str, Any]]:
         """Fetch ``code_chunks`` rows for *chunk_ids* as dicts in id order."""
         if not chunk_ids:
@@ -4651,6 +4723,7 @@ class HybridSearch:
         self._symbol_store = None
         self._vocab_by_language = None
         self._analysis = None
+        self._test_paths_cache = None
         self._bm25.invalidate_corpus()
 
     def need_index(self) -> bool:

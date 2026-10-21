@@ -113,7 +113,7 @@ code-search search "database connection pool" --language java --no-include-tests
 | `--limit N` | `10` | Max results |
 | `--language LANG` | — | Filter by language (python, java, typescript, etc.) |
 | `--include-tests` / `--no-include-tests` | `false` | Include/exclude test files (excluded by default; indexed tests are only searchable with `--include-tests`) |
-| `--content {code,config,docs,all,code_focused}` | intent inference | Content axis; code-shaped queries default to `code`, documentation-shaped queries widen to `all`, and other queries use `code_focused` (code + config, docs excluded) |
+| `--content {code,config,docs,all,code_focused}` | intent inference | Content axis; code-shaped queries (including multi-word construct nouns such as `login handler`) default to `code`, documentation-shaped queries widen to `all`, and other queries use `code_focused` (code + config, docs excluded) |
 | `--matching {literal,all_tokens,any_token}` | `all_tokens` | Exhaustive matching semantics (`--mode exhaustive` only); `literal` treats the whole query as one verbatim substring |
 | `--regex` | off | Treat the query as a Python regular expression (`--mode exhaustive` only); invalid patterns return an `invalid_regex` explanation |
 | `--no-startup-check` | off | Skip transparent daemon auto-start for this invocation; repeat CLI use is fastest with an already-running `code-search daemon start` |
@@ -404,14 +404,18 @@ Configure your MCP-compatible client to launch the server. Examples:
 Returns `{"results": [...], "total_matches": N, "truncated": bool, "token_savings": {...}, "freshness": {...}}`.
 `compact` (default `true`) returns `file_path`, `line_start`, `line_end`, `content`
 (a short snippet), `signature`, `content_truncated`, `fqn`, `language`, `score`,
-`is_definition`, `is_test_file`, and `redacted_count`. Set `compact: false` for the
+`score_normalized`, `is_definition`, `is_test_file`, and `redacted_count`. Set `compact: false` for the
 full block plus `bm25_score`, `vector_score`, and `score_sources`. Paths are relative
 to the indexed root. The additive `freshness` object reports index staleness:
 `stale`, `stale_change_count`, `modified_files`, `deleted_files`, `new_files`,
 `index_age_s`, `index_status`, `index_root`, `checked_at`.
 
 `total_matches` is the pre-clamp match count and `truncated` is true when only a sample
-was returned (so agents never mistake a top-k for the complete match set). Each result's
+was returned (so agents never mistake a top-k for the complete match set). Ranked
+responses also split that count into `production_matches` and `test_matches`, so tests
+hidden by the default `include_test_files: false` are still visible in the total.
+`score` is the raw ranked score (boosted, so it can exceed 1); `score_normalized`
+squashes it monotonically into `[0, 1)` for cross-query comparison. Each result's
 `score_sources` (`{bm25, vector, fused, weights, reranked}`) explains the score build.
 
 #### `get_symbol_definition`

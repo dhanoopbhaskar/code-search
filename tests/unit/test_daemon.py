@@ -254,3 +254,47 @@ def test_daemon_forwarded_search_surfaces_scope_signal_and_override(
     err = capsys.readouterr().err
     assert "configuration excluded" in err
     assert "Override with: --content config" in err
+
+
+def test_daemon_forwarded_search_reports_match_split(
+    monkeypatch: Any, tmp_path: Path, capsys: Any
+) -> None:
+    """The daemon-forwarded human path reports the same production/test split
+    as the local path instead of hiding the counts."""
+    import argparse
+
+    from code_search.cli import main as cli_main
+
+    payload = {
+        "results": [],
+        "total_matches": 11,
+        "production_matches": 8,
+        "test_matches": 3,
+        "query_time_ms": 12.0,
+        "freshness": {},
+    }
+    monkeypatch.setattr(cli_main, "_resolve_context_dir", lambda _args: tmp_path)
+    monkeypatch.setattr(DaemonClient, "is_running", staticmethod(lambda _sock: True))
+    monkeypatch.setattr(
+        DaemonClient,
+        "request",
+        lambda _self, _action, _params=None: {"ok": True, "payload": payload},
+    )
+
+    args = argparse.Namespace(
+        command="search",
+        query="login",
+        limit=10,
+        language=None,
+        include_tests=False,
+        mode="ranked",
+        content=None,
+        matching=None,
+        json=False,
+        no_model=True,
+        verbose=False,
+        context_dir=str(tmp_path),
+    )
+    assert cli_main._try_forward_to_daemon(args) == 0
+    out = capsys.readouterr().out
+    assert "Matches: 8 production + 3 test (hidden; use --include-tests)" in out

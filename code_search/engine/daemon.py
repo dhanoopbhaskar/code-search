@@ -489,6 +489,9 @@ class QueryDaemon:
             payload["token_savings"] = envelope["token_savings"]
         if envelope.get("content") is not None:
             payload["content"] = envelope["content"]
+        for count_key in ("production_matches", "test_matches"):
+            if envelope.get(count_key) is not None:
+                payload[count_key] = envelope[count_key]
         if envelope.get("scope") is not None:
             payload["scope"] = envelope["scope"]
         if envelope.get("matching_semantics") is not None:
@@ -801,6 +804,21 @@ class QueryDaemon:
             anchor_id = row["id"]
             chunk_content = row["content"] or ""
 
+        anchor_symbol_id = None
+        anchor_fqn = None
+        anchor_kind = None
+        with comps["db"].connect() as conn:
+            row = conn.execute(
+                "SELECT s.id, s.fqn, s.kind FROM code_chunks c "
+                "JOIN symbols s ON c.fqn = s.fqn "
+                "WHERE c.id = ? LIMIT 1;",
+                (anchor_id,),
+            ).fetchone()
+            if row:
+                anchor_symbol_id = row["id"]
+                anchor_fqn = row["fqn"]
+                anchor_kind = row["kind"]
+
         query_vec = embedding_gen.encode(chunk_content)
         if query_vec is None:
             return {
@@ -856,11 +874,37 @@ class QueryDaemon:
         exclude_file = bool(settings.find_related_exclude_file)
         # Fetch limit + 1 candidates before filtering (the limit-1 fix): an anchor
         # that is its own cosine top-1 must still yield a full limit of neighbours.
+        # A wider pool when semantic reranking is enabled leaves room for
+        # structurally-close neighbours sitting just outside the vector top-k.
+        candidate_k = limit + 1
+        if settings.find_related_semantic_blend > 0:
+            candidate_k = max(candidate_k, limit + 50)
         search_results = vector_index.search(
             query_vec,
-            top_k=limit + 1,
+            top_k=candidate_k,
             exclude_file_paths={stored_path} if exclude_file else None,
         )
+
+        # Blend embeddings with structural proximity (package, type, call graph)
+        # exactly as the MCP surface does, so daemon replies agree with MCP.
+        if settings.find_related_semantic_blend > 0 and anchor_symbol_id:
+            from code_search.engine.semantic_signals import rerank_with_semantic
+
+            anchor_info = {
+                "chunk_id": anchor_id,
+                "fqn": anchor_fqn,
+                "file_path": stored_path,
+                "symbol_id": anchor_symbol_id,
+                "kind": anchor_kind,
+            }
+            semantic_reranked = rerank_with_semantic(
+                search_results,
+                anchor_info,
+                comps["db"],
+                settings,
+                limit + 1,
+            )
+            search_results = [(r["chunk_id"], r["final_score"]) for r in semantic_reranked]
 
         def _build_results(
             scored: list[tuple[int, float]], same_file_flag: bool

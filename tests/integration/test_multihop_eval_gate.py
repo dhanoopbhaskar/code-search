@@ -58,6 +58,20 @@ def test_query_seeds_carry_hybrid_provenance(indexed_multihop: dict[str, Any]) -
 
 
 @pytest.mark.integration
+def test_cold_model_is_warmed_before_seeding(indexed_multihop: dict[str, Any]) -> None:
+    """A cold model must not seed the traversal from a lexical-only ranking."""
+    service = _service(indexed_multihop)
+    generator = indexed_multihop["embedding_gen"]
+    generator.reset_model()
+
+    answer = service.query("which implementation saves a favorite article")
+
+    assert answer.outcome == "resolved"
+    assert generator.is_warm()
+    assert any(seed.name == "save" for seed in answer.seeds)
+
+
+@pytest.mark.integration
 def test_module_imports_are_resolved(indexed_multihop: dict[str, Any]) -> None:
     """Java imports produce resolved module edges and retain their raw target."""
     from code_search.engine.graph import ModuleEdgeStore

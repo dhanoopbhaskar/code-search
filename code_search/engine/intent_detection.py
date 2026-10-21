@@ -119,6 +119,42 @@ _CODE_KEYWORDS: frozenset[str] = frozenset(
     }
 )
 
+# Nouns that name a source-level construct rather than a prose topic. A
+# multi-word query using one of these ("login handler", "user login handler")
+# is asking about code even when the other words are ordinary terms.
+_CODE_CONSTRUCT_NOUNS: frozenset[str] = frozenset(
+    {
+        "adapter",
+        "adapters",
+        "bean",
+        "beans",
+        "component",
+        "components",
+        "dao",
+        "dto",
+        "entity",
+        "entities",
+        "factory",
+        "gateway",
+        "handler",
+        "handlers",
+        "interceptor",
+        "listener",
+        "mapper",
+        "mappers",
+        "middleware",
+        "repository",
+        "repositories",
+        "resolver",
+        "scheduler",
+        "serializer",
+        "service",
+        "services",
+        "validator",
+        "worker",
+    }
+)
+
 # Source-file extensions and identifier shapes that mark a query as
 # code-shaped (``ArticleService.save``, ``login_handler``, ``User``).
 _SOURCE_EXTENSION_RE = re.compile(
@@ -168,8 +204,9 @@ def _is_code_shaped(raw_tokens: list[str], query: str) -> bool:
     """Return whether *query* is a fuzzy source-level search.
 
     A single lowercase token (``login``), code vocabulary (``function``,
-    ``controller``), a snake_case identifier (``login_handler``), or a
-    source-file extension marks the query as code-shaped. Exact symbol-shaped
+    ``controller``), a code construct noun (``login handler``), a snake_case
+    identifier (``login_handler``), or a source-file extension marks the query
+    as code-shaped. Exact symbol-shaped
     queries (``AuthService``, ``ArticleService.save``) are excluded: their
     exact-match boost already outranks configuration, and keeping them on the
     broader default preserves symbol-query behaviour. Documentation and
@@ -182,7 +219,8 @@ def _is_code_shaped(raw_tokens: list[str], query: str) -> bool:
         return False
     if len(raw_tokens) == 1:
         return True
-    if {token.lower() for token in raw_tokens} & _CODE_KEYWORDS:
+    lowered = {token.lower() for token in raw_tokens}
+    if lowered & (_CODE_KEYWORDS | _CODE_CONSTRUCT_NOUNS):
         return True
     if _SOURCE_EXTENSION_RE.search(query):
         return True

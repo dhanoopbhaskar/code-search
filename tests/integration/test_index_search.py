@@ -508,3 +508,22 @@ def test_semantic_rebuild_writes_real_metadata_and_reports_healthy(
         assert item.get("vector_degraded") is False, (
             f"healthy vector layer must not mark result {item.get('chunk_id')} degraded"
         )
+
+
+@pytest.mark.slow
+def test_search_reports_production_and_test_match_counts(
+    indexed_semantic_vector: dict,
+) -> None:
+    """Match counts split production from test files, even when tests are hidden."""
+    comp = indexed_semantic_vector
+
+    hidden = comp["search"].search("session window policy", limit=10, include_tests=False)
+    assert hidden["test_matches"] >= 1
+    assert hidden["production_matches"] >= 1
+    assert hidden["production_matches"] + hidden["test_matches"] == hidden["total_matches"]
+    assert all(not r["is_test_file"] for r in hidden["results"])
+    assert all(0.0 <= r["score_normalized"] < 1.0 for r in hidden["results"])
+
+    shown = comp["search"].search("session window policy", limit=10, include_tests=True)
+    assert shown["test_matches"] == hidden["test_matches"]
+    assert any(r["is_test_file"] for r in shown["results"])

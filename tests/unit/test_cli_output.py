@@ -14,6 +14,7 @@ from code_search.cli.main import (
     _print_ambiguous_candidates,
     _print_graph_results,
     _print_implementations,
+    _print_match_breakdown,
     _print_search_results,
     _print_symbol_details,
 )
@@ -44,6 +45,38 @@ def test_search_table_uses_relative_paths_and_basename_symbols(
     assert "src/main/TokenService.java:10-12" in out
     assert "TokenService.generateToken" in out
     assert str(tmp_path) not in out
+
+
+def test_match_breakdown_marks_hidden_tests(capsys: pytest.CaptureFixture[str]) -> None:
+    """Hidden test chunks are named rather than silently folded into the total."""
+    _print_match_breakdown(18, 2, include_tests=False)
+    assert (
+        capsys.readouterr().out.strip()
+        == "Matches: 18 production + 2 test (hidden; use --include-tests)"
+    )
+
+
+def test_match_breakdown_shows_zero_tests_without_a_hint(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A zero test count is still reported, with no misleading hint."""
+    _print_match_breakdown(12, 0, include_tests=False)
+    assert capsys.readouterr().out.strip() == "Matches: 12 production + 0 test"
+
+
+def test_match_breakdown_reports_a_test_only_match(capsys: pytest.CaptureFixture[str]) -> None:
+    """An all-test match set is visible even when no production chunk matched."""
+    _print_match_breakdown(0, 4, include_tests=False)
+    assert "Matches: 0 production + 4 test (hidden; use --include-tests)" in (
+        capsys.readouterr().out
+    )
+
+
+def test_match_breakdown_is_silent_without_counts(capsys: pytest.CaptureFixture[str]) -> None:
+    """An envelope without a split, or with two zero counts, prints nothing."""
+    _print_match_breakdown(None, None, include_tests=False)
+    _print_match_breakdown(0, 0, include_tests=False)
+    assert capsys.readouterr().out == ""
 
 
 def test_symbol_details_use_relative_location_and_basename_fqn(

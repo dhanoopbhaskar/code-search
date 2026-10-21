@@ -2,7 +2,19 @@ from pathlib import Path
 
 import pytest
 
-from code_search.engine.search import rrf_fusion, tokenize
+from code_search.engine.search import _bounded_score, rrf_fusion, tokenize
+
+
+def test_bounded_score_is_monotonic_and_below_one() -> None:
+    """The additive normalized score preserves order while staying in [0, 1)."""
+    scores = [0.0, 0.5, 1.95, 10.46]
+    normalized = [_bounded_score(score) for score in scores]
+
+    assert normalized[0] == 0.0
+    assert all(0.0 <= value < 1.0 for value in normalized)
+    assert normalized == sorted(normalized)
+    assert _bounded_score(1.0) == 0.5
+    assert _bounded_score(-3.0) == 0.0
 
 
 class _MockBM25Search:

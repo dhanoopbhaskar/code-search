@@ -22,7 +22,7 @@ MIXED_QUERY = "article documentation"
 EMPTY_INFERRED_QUERY = "definitely-no-match-xyzzy documentation"
 
 DOCS_INTENT_SET = ["readme documentation", "how to deploy", "operations guide"]
-NEUTRAL_QUERY_SET = ["user login handler", "parse config file"]
+NEUTRAL_QUERY_SET = ["sum two numbers", "parse config file"]
 
 
 def _names(results: list[dict[str, Any]]) -> set[str]:
@@ -201,6 +201,17 @@ class TestConfigIntentAccuracy:
         signal = envelope["scope"]["signal"]
         assert signal is not None
         assert "content scope config" in signal
+
+    def test_multi_word_code_query_defaults_to_strict_code_scope(
+        self, indexed_transparency: dict[str, Any]
+    ) -> None:
+        """A construct-noun query keeps configuration out of the pool, even
+        when it is not a single token or snake_case identifier."""
+        envelope = indexed_transparency["search"].search("login handler", limit=10)
+        assert envelope["content"] == "code"
+        assert envelope["scope"]["intent"] == "code"
+        assert envelope["scope"]["origin"] == "default"
+        assert all(r.get("content_type") == "code" for r in envelope["results"])
 
     def test_config_named_token_does_not_change_scope(
         self, indexed_transparency: dict[str, Any]

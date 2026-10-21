@@ -70,8 +70,9 @@ code-search search "public Comment save" --mode exhaustive --matching literal --
 `--content {code,config,docs,all,code_focused}` scopes a search to one content
 axis. Omitting `--content` means **no scope preference** and lets **query-intent
 inference** choose on the ranked path. A fuzzy code-shaped query (a short
-word such as "login", a snake_case identifier, or code vocabulary such as
-"function" or "controller") searches `code` only, so configuration and build
+word such as "login", a snake_case identifier, code vocabulary such as
+"function" or "controller", or a code construct noun such as "handler" or
+"repository") searches `code` only, so configuration and build
 files cannot outrank source on shared vocabulary. Exact symbol-shaped queries
 (`AuthService`, `ArticleService.save`) keep the broader default because their
 exact-match boost already outranks configuration. A documentation-shaped query
@@ -85,6 +86,8 @@ includes configuration never claims configuration is excluded. An explicit
 
 Test files are excluded from ranked search by default; add `--include-tests`
 (or `include_test_files: true` on MCP) when the test itself is the answer.
+Ranked envelopes always split the match count into `production_matches` and
+`test_matches`, so hidden tests never silently change the total.
 Machine-readable search output is compact by default: identifiers, locations,
 signatures, and a short content snippet, with `--no-compact` returning the full
 blocks and `score_sources`. Each ranked envelope carries `token_savings`

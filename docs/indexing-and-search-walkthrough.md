@@ -325,12 +325,14 @@ Then `_merge_leaf_boilerplate`:
   the 14-character `import hashlib` stays an `import_statement`;
 - if a file has no recognised AST node, `_module_fallback_chunk` produces
   `ast`/`module` chunks (never demoted into the raw-text pool);
-- a file with no parseable content at all uses `_fallback_chunk_file`, which
+- a heading-structured prose file (`.md`/`.markdown`/`.rst`/`.adoc`) with no
+  AST nodes uses `_prose_heading_chunks`, which emits **one raw-text chunk per
+  heading-delimited section** (ignoring headings inside fenced code blocks).
+  The sample's `docs/auth.md` therefore returns its `# Authentication` section
+  rather than a chunk spanning the whole document;
+- any other file with no parseable content uses `_fallback_chunk_file`, which
   emits **one raw-text chunk per file** (merged unless oversized), or splits
-  oversized files into 100-line blocks. Its first pass only keeps blank-line
-  blocks of at least two lines, which is why the sample's `docs/auth.md` chunk
-  starts at line 2: the single-line `# Authentication` heading is dropped while
-  the two following prose lines become the chunk.
+  oversized files into 100-line blocks.
 
 Every chunk is stamped in the worker with:
 
@@ -687,8 +689,9 @@ flowchart TD
 the scope from the query text:
 
 - fuzzy code-shaped query (a short word such as `login`, a snake_case
-  identifier, or code vocabulary such as `function`/`controller`): search
-  `code` only, so configuration and build files cannot outrank source;
+  identifier, code vocabulary such as `function`/`controller`, or a code
+  construct noun such as `handler`/`repository`): search `code` only, so
+  configuration and build files cannot outrank source;
 - exact symbol-shaped query (`AuthService`, `ArticleService.save`): use
   `code_focused`, since exact matching already outranks configuration;
 - documentation-shaped query (`readme`, `how to deploy`, …): widen to `all` and
