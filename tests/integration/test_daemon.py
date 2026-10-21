@@ -135,7 +135,7 @@ def test_daemon_search_envelope_is_mode_aware(daemon_env: dict[str, Any]) -> Non
     )
     payload = exhaustive["payload"]
     assert payload["total_count"] >= 1
-    assert "total_matches" not in payload
+    assert payload["total_matches"] == payload["total_count"]
     assert payload["complete"] is True
 
     enumerate_resp = daemon_env["client"].request(
@@ -144,7 +144,7 @@ def test_daemon_search_envelope_is_mode_aware(daemon_env: dict[str, Any]) -> Non
     )
     payload = enumerate_resp["payload"]
     assert payload["total_count"] >= 1
-    assert "total_matches" not in payload
+    assert payload["total_matches"] == payload["total_count"]
     assert payload["complete"] is True
 
 

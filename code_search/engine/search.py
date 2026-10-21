@@ -1213,9 +1213,9 @@ class HybridSearch:
             mode: One of ``"ranked"``, ``"exhaustive"``, or ``"enumerate"``.
             content: One of ``"code"``, ``"config"``, ``"docs"``, ``"all"``, or
                 ``"code_focused"``. ``None`` (or an unknown value) means no
-                scope preference: the effective scope is the code-focused
-                default, and a documentation-shaped ranked query that returns
-                nothing is automatically re-run under ``all``.
+                explicit scope preference: a documentation-shaped ranked query
+                is widened to ``all`` automatically; every other query uses the
+                code-focused default (code + config).
             matching: Exhaustive-only matching semantics — ``literal``,
                 ``all_tokens``, or ``any_token`` — the three exhaustive semantics. Ignored outside
                 exhaustive mode.
@@ -1238,10 +1238,10 @@ class HybridSearch:
         suggested: str | None = None
 
         if mode == "ranked" and inference_enabled and not explicit and intent is ContentIntent.DOCS:
-            # Documentation intent with no explicit scope: run the default pass
-            # first. A non-empty result set is returned unchanged with a strong
-            # suggestion; an empty result set (the honest no_match outcome after
-            # the rescue ladder) re-runs the same fused pipeline under ``all``.
+            # A strong documentation intent widens the scope directly instead
+            # of only hinting after code results already outranked the docs.
+            # The effective scope is reported as ``inferred`` so the response
+            # explains why prose was included.
             envelope = self._search_impl(
                 query,
                 limit=limit,
@@ -1249,26 +1249,11 @@ class HybridSearch:
                 include_tests=include_tests,
                 alpha=alpha,
                 mode=mode,
-                content=None,
+                content="all",
                 matching=matching,
                 regex=regex,
             )
-            if envelope.get("results"):
-                origin = "default"
-                suggested = "all"
-            else:
-                envelope = self._search_impl(
-                    query,
-                    limit=limit,
-                    language=language,
-                    include_tests=include_tests,
-                    alpha=alpha,
-                    mode=mode,
-                    content="all",
-                    matching=matching,
-                    regex=regex,
-                )
-                origin = "inferred"
+            origin = "inferred"
         else:
             envelope = self._search_impl(
                 query,
@@ -1311,6 +1296,56 @@ class HybridSearch:
         envelope["query_time_ms"] = round((time.monotonic() - start) * 1000, 3)
         self._stamp_model_status(envelope, was_warm)
         return envelope
+
+    def _token_savings(self, results: list[dict[str, Any]]) -> dict[str, Any]:
+        """Estimate tokens returned versus reading the whole files.
+
+        Uses the indexed file sizes (``file_checksums.size``) for the
+        whole-file baseline and a stable 4-characters-per-token approximation
+        for both sides. The baseline deduplicates files so several chunks from
+        one file are not counted twice.
+
+        Args:
+            results: The returned search results.
+
+        Returns:
+            ``{files, returned_tokens, full_file_tokens, saved_tokens,
+            saved_percent}``.
+        """
+        paths = sorted({str(r["file_path"]) for r in results if r.get("file_path")})
+        returned_chars = sum(len(r.get("content") or "") for r in results)
+        if not paths:
+            return {
+                "files": 0,
+                "returned_tokens": 0,
+                "full_file_tokens": 0,
+                "saved_tokens": 0,
+                "saved_percent": 0.0,
+            }
+        full_chars = 0
+        try:
+            placeholders = ",".join("?" for _ in paths)
+            with self._db.connect() as conn:
+                rows = conn.execute(
+                    f"SELECT file_path, size FROM file_checksums "
+                    f"WHERE file_path IN ({placeholders});",
+                    paths,
+                ).fetchall()
+            full_chars = sum(int(row["size"] or 0) for row in rows)
+        except Exception as exc:
+            logger.debug("Token-savings file-size lookup failed: %s", exc)
+        returned_tokens = returned_chars // 4
+        full_file_tokens = full_chars // 4
+        saved = max(0, full_file_tokens - returned_tokens)
+        return {
+            "files": len(paths),
+            "returned_tokens": returned_tokens,
+            "full_file_tokens": full_file_tokens,
+            "saved_tokens": saved,
+            "saved_percent": (
+                round(saved / full_file_tokens * 100, 1) if full_file_tokens else 0.0
+            ),
+        }
 
     def _stamp_model_status(self, envelope: dict[str, Any], was_warm: bool) -> None:
         """Stamp ``ranked_path``, ``warmup_state``, ``model_status`` on ranked envelopes.
@@ -1967,6 +2002,7 @@ class HybridSearch:
             "best_effort": True,
             "no_match": False,
             "content": content,
+            "token_savings": self._token_savings(results),
         }
 
     def _build_query_match_context(self, query: str) -> QueryMatchContext:
@@ -4270,6 +4306,7 @@ class HybridSearch:
         envelope = {
             "results": results,
             "total_count": total,
+            "total_matches": total,
             "truncated": truncated,
             "vector_health": vector_health,
             "mode": "exhaustive",
@@ -4278,6 +4315,7 @@ class HybridSearch:
             "explanation": None,
             "complete": not truncated,
             "content": content,
+            "token_savings": self._token_savings(results),
         }
         if count_occurrences and scan_needle is not None:
             envelope["occurrence_count"] = total
@@ -4401,12 +4439,14 @@ class HybridSearch:
         envelope: dict[str, Any] = {
             "results": results,
             "total_count": total,
+            "total_matches": total,
             "truncated": truncated,
             "vector_health": vector_health,
             "mode": "enumerate",
             "confidence": "high" if results else "none",
             "explanation": None,
             "complete": (not truncated) and not excluded,
+            "token_savings": self._token_savings(results),
         }
         if excluded:
             envelope["excluded"] = excluded

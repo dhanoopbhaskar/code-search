@@ -429,6 +429,7 @@ class GraphQueryService:
         edge_types: set[str] | None = None,
         token_budget: int = _DEFAULT_TOKEN_BUDGET,
         seeds: list[str] | None = None,
+        include_external: bool = False,
     ) -> GraphAnswer:
         """Traverse the graph from hybrid-search seeds and answer *question*.
 
@@ -440,6 +441,10 @@ class GraphQueryService:
             token_budget: Soft output budget used when trimming the answer.
             seeds: Optional explicit seed symbol references; when omitted seeds
                 are derived from hybrid search.
+            include_external: When false (the default), unresolved/external
+                callee leaves are collapsed out of the neighbourhood so the
+                answer is a clean in-corpus graph. The collapsed count is
+                reported in ``stats["collapsed_externals"]``.
 
         Returns:
             A :class:`GraphAnswer`; ``outcome`` is ``no_seed`` when nothing
@@ -462,6 +467,7 @@ class GraphQueryService:
         seen_edges: set[tuple[str, str, str, str]] = set()
         queue: deque[tuple[GraphNode, int]] = deque((n, 0) for n in seed_nodes)
         truncated = False
+        collapsed_externals = 0
 
         while queue:
             node, node_depth = queue.popleft()
@@ -472,6 +478,9 @@ class GraphQueryService:
                 break
             outgoing = self._fetch_outgoing(node, active_types)
             for edge, target in outgoing:
+                if target.source == "external" and not include_external:
+                    collapsed_externals += 1
+                    continue
                 if len(nodes) >= max_nodes:
                     truncated = True
                     break
@@ -527,6 +536,7 @@ class GraphQueryService:
                 "edge_types": sorted(active_types),
                 "visited": len(nodes),
                 "returned": len(ordered_nodes),
+                "collapsed_externals": collapsed_externals,
                 "elapsed_ms": 0.0,
             },
         )

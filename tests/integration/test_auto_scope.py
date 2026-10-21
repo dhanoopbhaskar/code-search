@@ -59,19 +59,18 @@ class TestDocsIntentReachability:
         assert envelope["content"] == "all"
         assert any(r.get("content_type") == "code" for r in envelope["results"])
 
-    def test_non_empty_default_pass_returned_unchanged_with_suggestion(
+    def test_docs_intent_widens_scope_even_when_code_matches(
         self, indexed_transparency: dict[str, Any]
     ) -> None:
-        """A non-empty default pass is returned unchanged with
-        a strong suggestion; the scope is not switched."""
+        """A strong docs intent widens to ``all`` immediately, so prose is
+        not outranked by code before the scope switch."""
         search = indexed_transparency["search"]
         explicit_default = search.search(MIXED_QUERY, limit=10, content="code_focused")
         envelope = search.search(MIXED_QUERY, limit=10)
-        assert envelope["content"] == "code_focused"
-        assert envelope["scope"]["origin"] == "default"
-        assert envelope["scope"]["suggested"] == "all"
+        assert envelope["content"] == "all"
+        assert envelope["scope"]["origin"] == "inferred"
         assert envelope["scope"]["signal"] is not None
-        assert _names(envelope["results"]) == _names(explicit_default["results"])
+        assert _names(explicit_default["results"]) <= _names(envelope["results"])
 
     def test_mixed_code_and_docs_tokens_do_not_hide_code(
         self, indexed_transparency: dict[str, Any]

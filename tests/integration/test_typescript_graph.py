@@ -74,3 +74,58 @@ def test_score_sources_exposes_ranking_multipliers(indexed_tsreact: dict[str, An
     sources = envelope["results"][0]["score_sources"]
     assert {"rank_class", "content", "test_noise", "infra"} <= set(sources["multipliers"])
     assert {"exact_match", "min_vector_lift"} <= set(sources["additive"])
+
+
+def _caller_fqns(indexed: dict[str, Any], target_reference: str) -> set[str]:
+    """Return the caller FQNs for a resolved symbol reference."""
+    target, _candidates = indexed["symbol_store"].resolve_symbol(target_reference)
+    assert target is not None, f"{target_reference} must be an extracted symbol"
+    call_graph = indexed["edge_store"].get_call_graph(target["id"], direction="callers")
+    return {row["fqn"] for row in call_graph["callers"]}
+
+
+def test_typescript_field_and_local_receiver_calls_resolve(
+    indexed_tsreact: dict[str, Any],
+) -> None:
+    """Declared field/local types resolve receiver calls cross-file."""
+    callers = _caller_fqns(indexed_tsreact, "Loader.fetch")
+    assert any(fqn.endswith("ArticleService.load") for fqn in callers)
+    assert any("loadViaParam" in fqn for fqn in callers)
+
+    service_callers = _caller_fqns(indexed_tsreact, "ArticleService.load")
+    assert any("loadThroughService" in fqn for fqn in service_callers)
+
+
+def test_typescript_this_and_namespace_calls_resolve(
+    indexed_tsreact: dict[str, Any],
+) -> None:
+    """``this.method`` and ``import * as ns`` member calls resolve."""
+    helper_callers = _caller_fqns(indexed_tsreact, "ArticleService.helper")
+    assert any(fqn.endswith("ArticleService.load") for fqn in helper_callers)
+
+    loaders = _caller_fqns(indexed_tsreact, "loadArticles")
+    assert any("NamespaceConsumer" in fqn for fqn in loaders)
+
+
+def test_typescript_external_member_call_stays_unresolved(
+    indexed_tsreact: dict[str, Any],
+) -> None:
+    """A library member call (``store.dispatch``) is captured as unresolved."""
+    with indexed_tsreact["db"].connect() as conn:
+        rows = conn.execute(
+            "SELECT e.resolved, e.target_raw FROM graph_edges e "
+            "JOIN symbols s ON s.id = e.source_symbol_id "
+            "WHERE s.fqn LIKE '%dispatchArticles%' AND e.edge_type = 'CALLS';"
+        ).fetchall()
+    unresolved = [row["target_raw"] for row in rows if row["resolved"] == 0]
+    assert any("store.dispatch" in (raw or "") for raw in unresolved)
+
+
+def test_search_reports_token_savings(indexed_tsreact: dict[str, Any]) -> None:
+    """The ranked envelope reports returned vs whole-file token estimates."""
+    envelope = indexed_tsreact["search"].search("loadArticles", limit=5)
+    savings = envelope["token_savings"]
+    assert savings["files"] >= 1
+    assert savings["returned_tokens"] >= 0
+    assert savings["full_file_tokens"] >= savings["returned_tokens"]
+    assert 0.0 <= savings["saved_percent"] <= 100.0

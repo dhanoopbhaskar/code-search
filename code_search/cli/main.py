@@ -630,8 +630,11 @@ def cmd_search(args: argparse.Namespace) -> int:
         The serving envelope (index-change status + scope hint) is attached
         so the caller always sees an explanation when one is due.
         """
+        from code_search.engine.response_service import relativize_results
+
+        index_root = comps["metadata"].get("index_root") or str(context_dir.parent)
         out: dict[str, Any] = {
-            "results": results,
+            "results": relativize_results(results, index_root),
             count_field: total,
             "truncated": truncated,
             "vector_health": vector_health,
@@ -641,6 +644,10 @@ def cmd_search(args: argparse.Namespace) -> int:
             "performance_hint": performance_hint,
             "freshness": _freshness_signal(comps),
         }
+        if count_field != "total_matches":
+            out["total_matches"] = total
+        if search_envelope.get("token_savings") is not None:
+            out["token_savings"] = search_envelope["token_savings"]
         if serving_envelope.get("envelope") is not None:
             out["envelope"] = serving_envelope["envelope"]
         out["index_status"] = serving_envelope["index_status"]
@@ -724,6 +731,17 @@ def cmd_search(args: argparse.Namespace) -> int:
     )
 
     redacted = comps["redactor"].redact_results(reranked)
+
+    compact = bool(getattr(args, "compact", True))
+    max_snippet_lines = getattr(args, "max_snippet_lines", None)
+    if (
+        not explain_ranking
+        and (args.json or max_snippet_lines is not None)
+        and (compact or max_snippet_lines is not None)
+    ):
+        from code_search.engine.response_service import compact_results
+
+        redacted = compact_results(redacted, max_snippet_lines or 20)
 
     total_redacted = sum(r.get("redacted_count", 0) for r in redacted)
     engine_duration = search_envelope.get("query_time_ms")
@@ -1126,6 +1144,70 @@ def _git_changed_files(root: Path, ref: str) -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def cmd_find_related(args: argparse.Namespace) -> int:
+    """Return chunks semantically related to the chunk at a file/line anchor.
+
+    Shares the MCP ``find_related`` payload builder so both surfaces report the
+    same neighbours, status, and freshness. Text output renders paths relative
+    to the indexed root; JSON keeps the same portable spelling.
+
+    Args:
+        args: Parsed arguments; ``file_path``, ``line``, ``limit``, and
+            ``json`` are honoured.
+
+    Returns:
+        A process exit code: ``0`` on success, ``1`` when the index is not
+        initialised.
+    """
+    start = time.monotonic()
+    _setup_logging(args.verbose)
+    context_dir = _resolve_context_dir(args)
+    comps = _initialize_components(context_dir)
+    settings = comps["settings"]
+    if comps["metadata"].get_index_status() != "ready":
+        print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
+        return 1
+
+    from code_search.engine.response_service import relativize_results
+    from code_search.mcp.server import _find_related_payload, _freshness_signal
+
+    payload = json.loads(_find_related_payload(comps, args.file_path, args.line, args.limit))
+    root = comps["metadata"].get("index_root") or str(context_dir.parent)
+    results = relativize_results(payload.get("results") or [], root)
+    payload["results"] = results
+
+    if args.json:
+        print(json.dumps(payload, indent=2, default=str))
+    elif payload.get("error"):
+        print(payload["error"], file=sys.stderr)
+    else:
+        header = f"{'Similarity':<11} {'File':<40} {'Symbol':<35}"
+        print(header)
+        print("-" * len(header))
+        for result in results:
+            location = f"{result['file_path']}:{result['line_start']}-{result['line_end']}"
+            print(
+                f"  {result.get('similarity', 0.0):.3f}     "
+                f"{location:<40} {result.get('fqn') or '':<35}"
+            )
+        if payload.get("explanation"):
+            print(payload["explanation"], file=sys.stderr)
+        _emit_stale_notice(_freshness_signal(comps))
+
+    duration_ms = int((time.monotonic() - start) * 1000)
+    comps["audit_db"].write_entry(
+        query_type="find_related",
+        query_summary=f"{args.file_path}:{args.line}"[: settings.query_summary_length],
+        result_count=len(results),
+        duration_ms=duration_ms,
+        redacted_count=0,
+    )
+    mc = comps.get("metrics_collector")
+    if mc:
+        mc.record_query(duration_ms)
+    return 0
+
+
 def cmd_query(args: argparse.Namespace) -> int:
     """Answer a natural-language question by traversing the code graph."""
     start = time.monotonic()
@@ -1144,6 +1226,7 @@ def cmd_query(args: argparse.Namespace) -> int:
         max_nodes=args.max_nodes,
         edge_types=_parse_edge_types(args.edge_types),
         token_budget=args.token_budget,
+        include_external=getattr(args, "include_externals", False),
     )
     from code_search.engine.graph_query import render_query_text
     from code_search.mcp.server import _freshness_signal
@@ -2039,6 +2122,8 @@ def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
                     "content": getattr(args, "content", None),
                     "matching": getattr(args, "matching", None),
                     "regex": getattr(args, "regex", False),
+                    "compact": getattr(args, "compact", True),
+                    "max_snippet_lines": getattr(args, "max_snippet_lines", None),
                 },
             )
         elif command == "symbol":
@@ -2301,8 +2386,8 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument(
         "--include-tests",
         action="store_true",
-        default=True,
-        help="Include test files in search (default: True)",
+        default=False,
+        help="Include test files in search (default: False; tests are demoted, not indexed-out)",
     )
     search_parser.add_argument(
         "--no-include-tests",
@@ -2340,6 +2425,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--explain-ranking",
         action="store_true",
         help="Include the score breakdown for every result and print the ranking components",
+    )
+    search_parser.add_argument(
+        "--compact",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Agent-sized JSON (default): identifiers, locations, signatures, "
+        "and a short content snippet instead of full blocks and score "
+        "breakdowns; use --no-compact for the full envelope",
+    )
+    search_parser.add_argument(
+        "--max-snippet-lines",
+        type=int,
+        default=None,
+        help="Trim each result to at most N content lines (adds a signature)",
     )
     search_parser.set_defaults(func=cmd_search)
 
@@ -2382,6 +2481,17 @@ def build_parser() -> argparse.ArgumentParser:
     implementations_parser.add_argument("--json", action="store_true", help="JSON output")
     implementations_parser.set_defaults(func=cmd_implementations)
 
+    related_parser = subparsers.add_parser(
+        "find-related",
+        parents=[global_args],
+        help="Find chunks semantically related to a file/line anchor",
+    )
+    related_parser.add_argument("file_path", help="File path (absolute or project-relative)")
+    related_parser.add_argument("--line", type=int, required=True, help="Anchor line number")
+    related_parser.add_argument("--limit", type=int, default=5, help="Max related chunks")
+    related_parser.add_argument("--json", action="store_true", help="JSON output")
+    related_parser.set_defaults(func=cmd_find_related)
+
     query_parser = subparsers.add_parser(
         "query", parents=[global_args], help="Answer a question by traversing the code graph"
     )
@@ -2395,6 +2505,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     query_parser.add_argument(
         "--token-budget", type=int, default=1500, help="Soft output token budget"
+    )
+    query_parser.add_argument(
+        "--include-externals",
+        action="store_true",
+        help="Include unresolved/external callee leaves (collapsed by default)",
     )
     query_parser.add_argument("--json", action="store_true", help="JSON output")
     query_parser.set_defaults(func=cmd_query)

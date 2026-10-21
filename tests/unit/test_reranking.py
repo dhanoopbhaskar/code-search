@@ -341,3 +341,84 @@ def test_authorization_intent_does_not_boost_unrelated_reference(reranker: Reran
     # The definition boost still applies (generic), but not the auth owner boost
     # for a chunk that has no auth-guard/query match.
     assert reranked[0]["score"] > 0.4
+
+
+def test_identifier_definition_overtakes_usage(reranker: Reranker) -> None:
+    """A named identifier's definition outranks a file that only uses it."""
+    results = [
+        {
+            "chunk_id": 10,
+            "file_path": "src/conduit.ts",
+            "fqn": "src/conduit.ts::render",
+            "content": "return baseApiUrl;",
+            "score": 1.0,
+            "is_definition": False,
+            "is_test_file": False,
+        },
+        {
+            "chunk_id": 11,
+            "file_path": "src/settings.ts",
+            "fqn": "src/settings.ts::baseApiUrl",
+            "content": "export const baseApiUrl = 'x';",
+            "score": 0.8,
+            "is_definition": True,
+            "is_test_file": False,
+        },
+    ]
+    reranked = reranker.rerank(results, query_terms=["baseApiUrl"], query="baseApiUrl")
+    assert reranked[0]["chunk_id"] == 11
+
+
+def test_config_key_definition_gets_boost(reranker: Reranker) -> None:
+    """A dotted config key lifts the config chunk that defines it."""
+    results = [
+        {
+            "chunk_id": 20,
+            "file_path": "src/db.py",
+            "fqn": "src/db.py::connect",
+            "content": "read database.host",
+            "score": 1.0,
+            "is_definition": False,
+            "is_test_file": False,
+        },
+        {
+            "chunk_id": 21,
+            "file_path": "config/application.yml",
+            "fqn": "config/application.yml::2",
+            "content": "database.host: localhost",
+            "score": 1.0,
+            "is_definition": False,
+            "is_test_file": False,
+            "content_type": "config",
+        },
+    ]
+    reranked = reranker.rerank(results, query="database.host")
+    assert reranked[0]["chunk_id"] == 21
+
+
+def test_docs_intent_lifts_prose_over_close_code(reranker: Reranker) -> None:
+    """A docs-shaped query lifts prose above a marginally stronger code hit."""
+    results = [
+        {
+            "chunk_id": 30,
+            "file_path": "src/deploy.py",
+            "fqn": "src/deploy.py::deploy",
+            "content": "def deploy(): ...",
+            "score": 1.15,
+            "is_definition": False,
+            "is_test_file": False,
+            "content_type": "code",
+        },
+        {
+            "chunk_id": 31,
+            "file_path": "README.md",
+            "fqn": "README.md::1",
+            "content": "How to deploy",
+            "score": 1.0,
+            "is_definition": False,
+            "is_test_file": False,
+            "content_type": "docs",
+        },
+    ]
+    reranked = reranker.rerank(results, query="how to deploy")
+    assert reranked[0]["chunk_id"] == 31

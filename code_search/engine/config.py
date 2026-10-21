@@ -336,6 +336,14 @@ class Settings:
         default_factory=lambda: int(os.environ.get("CODE_SEARCH_FAST_EMBEDDING_DIM", "64"))
     )
 
+    # Cold-start handling: a query forwarded to the daemon while the model is
+    # still warming waits up to this many seconds for the warm model before
+    # falling back to the lexical-reduced path. Bounded so a failed/slow load
+    # can never wedge the first query.
+    warmup_wait_s: float = field(
+        default_factory=lambda: max(0.0, float(os.environ.get("CODE_SEARCH_WARMUP_WAIT_S", "5.0")))
+    )
+
     # --- Embedding representation budget ---
     # Maximum characters of the chunk representation (enclosing-context prefix
     # plus chunk content) passed to the semantic model. Enrichment is truncated
@@ -622,6 +630,23 @@ class Settings:
     # --- Reranking ---
     definition_boost: float = field(
         default_factory=lambda: float(os.environ.get("CODE_SEARCH_DEFINITION_BOOST", "1.2"))
+    )
+    # Identifier/config intent: a query that names a concrete identifier or
+    # config key should surface that symbol's definition (or the config entry)
+    # ahead of files that merely use it. The usage penalty only applies when
+    # the same pool also contains a matching definition.
+    identifier_definition_boost: float = field(
+        default_factory=lambda: float(
+            os.environ.get("CODE_SEARCH_IDENTIFIER_DEFINITION_BOOST", "1.5")
+        )
+    )
+    identifier_usage_penalty: float = field(
+        default_factory=lambda: float(
+            os.environ.get("CODE_SEARCH_IDENTIFIER_USAGE_PENALTY", "0.85")
+        )
+    )
+    config_key_boost: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_CONFIG_KEY_BOOST", "1.35"))
     )
     noise_penalty: float = field(
         default_factory=lambda: float(os.environ.get("CODE_SEARCH_NOISE_PENALTY", "0.5"))
@@ -1148,6 +1173,9 @@ class Settings:
             ("constant_intent_boost", 0.0, float("inf")),
             ("constant_intent_cap", 0.0, float("inf")),
             ("definition_owner_boost", 0.0, float("inf")),
+            ("identifier_definition_boost", 0.0, float("inf")),
+            ("identifier_usage_penalty", _MIN_PENALTY, 1.0),
+            ("config_key_boost", 0.0, float("inf")),
             ("declared_rule_boost", 0.0, float("inf")),
             ("model_file_penalty", _MIN_PENALTY, 1.0),
             ("infra_deboost", _MIN_PENALTY, 1.0),

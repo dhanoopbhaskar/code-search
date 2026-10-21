@@ -73,13 +73,21 @@ is **code-focused** — prose/docs chunks (markdown/`.rst`/`.txt`) are excluded
 from ranked results, so docs never pollute code answers, while configuration is
 included. On top of that default, **intent inference** runs on the ranked path:
 a documentation-shaped query (for example "readme documentation", "how to
-deploy") whose default search finds nothing is automatically re-run with content
-scope `all`, and a non-empty default result is returned unchanged with a strong
-suggestion instead of a silent empty answer. A configuration-shaped query never
+deploy") widens the scope to `all` immediately and lifts prose chunks, so a code
+result that merely mentions the words does not automatically outrank the prose
+answer. A configuration-shaped query never
 changes the effective scope (configuration is already included), and its
 guidance is **accurate**: a scope that includes configuration never claims
 configuration is excluded. An explicit `--content` value always overrides
 inference.
+
+Test files are excluded from ranked search by default; add `--include-tests`
+(or `include_test_files: true` on MCP) when the test itself is the answer.
+Machine-readable search output is compact by default: identifiers, locations,
+signatures, and a short content snippet, with `--no-compact` returning the full
+blocks and `score_sources`. Each ranked envelope carries `token_savings`
+(returned tokens vs reading the whole files) so an agent can see the budget it
+saved.
 
 The applied scope is echoed as `content` and in the additive scope object
 (`{effective, origin, intent, suggested, signal, override}`), where `origin` is

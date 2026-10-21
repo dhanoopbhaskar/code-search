@@ -360,12 +360,25 @@ class QueryDaemon:
             # successful empty result instead of the actionable error.
             return {"ok": False, "error": "Index not initialized. Run 'code-search index' first."}
 
+        # Block briefly for the model instead of silently serving the reduced
+        # lexical path: a cold daemon serves a different (and worse) ranking,
+        # so the first forwarded query waits for warmup within a bounded
+        # budget. A failed/slow load still proceeds on the reduced path.
+        warm_gen = comps.get("embedding_gen")
+        wait_warm = getattr(warm_gen, "wait_warm", None)
+        if callable(wait_warm):
+            settings = comps.get("settings")
+            wait_s = float(getattr(settings, "warmup_wait_s", 0.0))
+            if wait_s > 0:
+                with suppress(Exception):
+                    wait_warm(wait_s)
+
         start = _time.monotonic()
         envelope = comps["search"].search(
             query=str(params.get("query", "")),
             limit=int(params.get("limit", 10)),
             language=params.get("language"),
-            include_tests=bool(params.get("include_tests", True)),
+            include_tests=bool(params.get("include_tests", False)),
             mode=str(params.get("mode", "ranked")),
             content=params.get("content"),
             matching=params.get("matching"),
@@ -378,6 +391,17 @@ class QueryDaemon:
             query=params.get("query"),
         )
         redacted = comps["redactor"].redact_results(reranked)
+        # The forwarded CLI request carries the compact policy; applying it
+        # here keeps the daemon (the CLI default path) byte-identical to the
+        # in-process path, including relative paths.
+        if params.get("compact", True):
+            from code_search.engine.response_service import compact_results
+
+            redacted = compact_results(redacted, int(params.get("max_snippet_lines") or 20))
+        from code_search.engine.response_service import relativize_results
+
+        result_root = comps["metadata"].get("index_root") or str(Path(comps["context_dir"]).parent)
+        redacted = relativize_results(redacted, result_root)
         total_redacted = sum(r.get("redacted_count", 0) for r in redacted)
         # Match the CLI's audit semantics: record the engine's per-request
         # timer carried on the envelope, so the served ``query_time_ms`` and
@@ -459,6 +483,10 @@ class QueryDaemon:
             "explanation": envelope.get("explanation"),
             "freshness": _daemon_freshness(comps),
         }
+        if count_field != "total_matches":
+            payload["total_matches"] = total
+        if envelope.get("token_savings") is not None:
+            payload["token_savings"] = envelope["token_savings"]
         if envelope.get("content") is not None:
             payload["content"] = envelope["content"]
         if envelope.get("scope") is not None:

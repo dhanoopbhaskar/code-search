@@ -112,13 +112,15 @@ code-search search "database connection pool" --language java --no-include-tests
 |------|---------|-------------|
 | `--limit N` | `10` | Max results |
 | `--language LANG` | — | Filter by language (python, java, typescript, etc.) |
-| `--include-tests` / `--no-include-tests` | `true` | Include/exclude test files |
+| `--include-tests` / `--no-include-tests` | `false` | Include/exclude test files (excluded by default; indexed tests are only searchable with `--include-tests`) |
 | `--content {code,config,docs,all,code_focused}` | `code_focused` | Content axis; the code-focused default excludes prose/docs from ranked results unless `--content docs`/`all` is requested |
 | `--matching {literal,all_tokens,any_token}` | `all_tokens` | Exhaustive matching semantics (`--mode exhaustive` only); `literal` treats the whole query as one verbatim substring |
 | `--regex` | off | Treat the query as a Python regular expression (`--mode exhaustive` only); invalid patterns return an `invalid_regex` explanation |
 | `--no-startup-check` | off | Skip transparent daemon auto-start for this invocation; repeat CLI use is fastest with an already-running `code-search daemon start` |
 | `--explain-ranking` | off | Include `score_sources` for every result and print the class/content multipliers and additive boosts behind the ranking |
-| `--json` | — | JSON output: `{"results": [...], "total_matches": N, "truncated": bool, "freshness": {...}}` |
+| `--compact` / `--no-compact` | `--compact` | JSON keeps identifiers, locations, signatures, and short content only. `--no-compact` returns full blocks and the `score_sources` breakdown |
+| `--max-snippet-lines N` | `20` in compact JSON | Trim each result to at most N content lines and attach a one-line `signature`; the original line range is preserved |
+| `--json` | — | JSON output: `{"results": [...], "total_matches": N, "truncated": bool, "token_savings": {...}, "freshness": {...}}` |
 
 `--json` reports **`total_matches`** (how many chunks matched the query tokens) and
 **`truncated`** (true when only a sample was returned), so agents can tell when a ranked
@@ -198,6 +200,22 @@ code-search implementations "myproject.auth.ArticleRepository.findBySlug" --json
 
 Each implementation carries its type identity/location, a `relationship` of `direct` or `indirect`, and a `site` for the method that provides it (`inherited: true` names the class that actually declares an inherited method). A reference with no static implementer returns `outcome: "no_static_implementation"` with an explicit explanation instead of a fabricated proxy; an ambiguous reference returns a ranked `candidates` list with nothing auto-selected.
 
+### `code-search find-related`
+
+Find chunks semantically similar to the chunk at a file/line anchor — the CLI
+counterpart of the MCP `find_related` tool.
+
+```bash
+code-search find-related src/auth/service.py --line 42
+code-search find-related src/auth/service.py --line 42 --limit 10 --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--line N` | required | Anchor line inside the chunk to compare |
+| `--limit N` | `5` | Max related chunks |
+| `--json` | — | JSON output (paths relative to the indexed root) |
+
 ### `code-search query`
 
 Answer a multi-hop question by traversing the symbol graph from hybrid-search
@@ -214,6 +232,7 @@ code-search query "who calls ArticleRepository.save" --depth 3 --json
 | `--max-nodes N` | `120` | Maximum graph nodes (max: 200) |
 | `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types; add `IMPORTS` for module navigation |
 | `--token-budget N` | `1500` | Soft output budget; trimmed deterministically |
+| `--include-externals` | off | Include unresolved/external callee leaves; by default they are collapsed and counted in `stats.collapsed_externals` |
 | `--json` | — | JSON output |
 
 ### `code-search path`
@@ -359,12 +378,12 @@ Configure your MCP-compatible client to launch the server. Examples:
 
 | Tool | Description | Key parameters |
 |------|-------------|---------------|
-| `search` | Hybrid BM25 + vector semantic search | `query`, `limit`, `language`, `include_test_files` |
+| `search` | Hybrid BM25 + vector semantic search | `query`, `limit`, `language`, `include_test_files`, `compact`, `max_snippet_lines` |
 | `get_symbol_definition` | Look up a symbol by FQN (file-path or conventional dotted) | `symbol` |
 | `get_call_neighbors` | Traverse the call graph — upstream callers and downstream callees | `symbol`, `direction`, `max_depth`, `transitive` |
 | `get_implementations` | Find the static implementations of an interface method or type | `symbol` |
 | `find_related` | Find semantically similar chunks by file + line number | `file_path`, `line_number`, `limit` |
-| `query_graph` | Answer a multi-hop question by bounded graph traversal | `question`, `depth`, `max_nodes`, `token_budget`, `edge_types` |
+| `query_graph` | Answer a multi-hop question by bounded graph traversal | `question`, `depth`, `max_nodes`, `token_budget`, `edge_types`, `include_external` |
 | `shortest_path` | Shortest path between two symbols | `source`, `target`, `undirected`, `max_hops` |
 | `explain_symbol` | Symbol metadata, relations, rationale, and linked docs | `symbol`, `depth`, `relations` |
 | `get_impact` | Symbols impacted by changed files | `changed_paths`, `depth` |
@@ -376,15 +395,18 @@ Configure your MCP-compatible client to launch the server. Examples:
   "query": "how is JWT validation implemented",
   "limit": 5,
   "language": null,
-  "include_test_files": false
+  "include_test_files": false,
+  "compact": true,
+  "max_snippet_lines": 20
 }
 ```
 
-Returns `{"results": [...], "total_matches": N, "truncated": bool, "freshness": {...}}` —
-`results` is an array of chunks with `file_path`, `line_start`, `line_end`, `content`
-(redacted), `fqn`, `language`, `score`, `bm25_score`, `vector_score`, `score_sources`,
-`is_definition`, `is_test_file`, `redacted_count`. The additive `freshness` object
-reports index staleness:
+Returns `{"results": [...], "total_matches": N, "truncated": bool, "token_savings": {...}, "freshness": {...}}`.
+`compact` (default `true`) returns `file_path`, `line_start`, `line_end`, `content`
+(a short snippet), `signature`, `content_truncated`, `fqn`, `language`, `score`,
+`is_definition`, `is_test_file`, and `redacted_count`. Set `compact: false` for the
+full block plus `bm25_score`, `vector_score`, and `score_sources`. Paths are relative
+to the indexed root. The additive `freshness` object reports index staleness:
 `stale`, `stale_change_count`, `modified_files`, `deleted_files`, `new_files`,
 `index_age_s`, `index_status`, `index_root`, `checked_at`.
 
@@ -429,7 +451,8 @@ Returns `symbol`, `callers[]`, `callees[]` — each with `fqn`, `kind`, `file_pa
   "depth": 2,
   "max_nodes": 120,
   "token_budget": 1500,
-  "edge_types": "CALLS,INHERITS"
+  "edge_types": "CALLS,INHERITS",
+  "include_external": false
 }
 ```
 
@@ -603,20 +626,21 @@ When a query shaped for config/docs is run under `code`/`code_focused` scope, th
 
 ### Production-only search
 
-For production-code questions, test files are down-ranked by default and can be excluded entirely when they are pure noise:
+For production-code questions, test files are excluded by default:
 
 ```bash
-code-search search "what happens when a user favorites an article" --no-include-tests
+code-search search "what happens when a user favorites an article"
+code-search search "validate token" --include-tests   # opt back in
 ```
 
-The default (`include_tests=true`) keeps test files reachable but demotes their candidate scores, so a keyword-dense test class cannot outrank the production code it exercises. `--no-include-tests` removes them from the result set entirely.
+The default (`include_tests=false`) removes test files from the result set, so a keyword-dense test class cannot outrank the production code it exercises. `--include-tests` opts them back in; they are still demoted by the ranking pass rather than treated as equal candidates.
 
 ### Pitfalls to avoid
 
 - Don't use `search` (ranked mode) for exact-string, regex, or counting lookups — use `search --mode exhaustive` (add `--regex` for patterns) or `grep`
 - Don't assume natural-language results are semantic — verify `vector_health: true` first; a `false` value means lexical-only ranking
 - Don't use long prose queries — short keyword phrases (2-6 words) return steadier results
-- Don't forget `--no-include-tests` for production-code questions
+- Don't forget that tests are excluded by default; add `--include-tests` when the test itself is the answer
 - Don't use `find_related` when the vector layer is down — it reports a clear "vector layer unavailable" status; `get_symbol_definition` / `get_call_neighbors` remain reliable regardless
 - Don't use `get_symbol_definition` with a partial name — use `search` first to find the FQN
 - Don't use `get_call_neighbors` with depth > 3 in large codebases — results grow exponentially

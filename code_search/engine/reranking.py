@@ -6,6 +6,7 @@ Scoring pipeline executed after the initial BM25 + vector hybrid retrieval.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from code_search.engine.classification import FileRole, PathClass
@@ -61,6 +62,35 @@ def _fqn_matches(fqn: str, query_fragments: list[str]) -> bool:
     """
     fqn = fqn.lower()
     return any(fragment in fqn for fragment in query_fragments)
+
+
+def _fqn_leaf(fqn: str) -> str:
+    """Return the lowercased declaration leaf of *fqn* without parameters."""
+    leaf = fqn.split("(", 1)[0]
+    if "::" in leaf:
+        leaf = leaf.rsplit("::", 1)[-1]
+    leaf = leaf.rsplit(".", 1)[-1]
+    return leaf.lower()
+
+
+def _identifier_target(query: str | None) -> str | None:
+    """Return the concrete identifier/config key a query names, if any.
+
+    Recognises camelCase/snake_case identifiers (via the shared
+    ``query_symbol_identifier`` rule) and dotted/``::`` config keys such as
+    ``spring.datasource.url``. A natural-language phrase returns ``None``.
+    """
+    if not query:
+        return None
+    from code_search.engine.search import query_symbol_identifier
+
+    identifier = query_symbol_identifier(query)
+    if identifier:
+        return identifier
+    stripped = query.strip().strip("`'\"")
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:[.:][A-Za-z_][A-Za-z0-9_]*)+", stripped):
+        return stripped
+    return None
 
 
 class Reranker:
@@ -143,6 +173,36 @@ class Reranker:
         definition_intent, behavior_intent, scaffold_topic, authorization_intent = (
             self._query_intents(query)
         )
+        from code_search.engine.intent_detection import ContentIntent, classify_content_intent
+
+        docs_intent = classify_content_intent(query) is ContentIntent.DOCS if query else False
+        identifier = _identifier_target(query)
+        identifier_lower = identifier.lower() if identifier else None
+        if query_fragments:
+            concept_terms = set(query_fragments)
+        else:
+            from code_search.engine.search import decompose_query
+
+            concept_terms = set(decompose_query(query or ""))
+        # Concepts whose definition is present in this result pool. Only then
+        # does the usage penalty apply, so a usage-only answer is never
+        # penalised into nothing when the definition was not retrieved.
+        named_concepts: set[str] = set()
+        short_phrase = bool(concept_terms) and len(concept_terms) <= 3
+        for r in results:
+            if not r.get("is_definition", False):
+                continue
+            leaf = _fqn_leaf(str(r.get("fqn") or ""))
+            if not leaf:
+                continue
+            if (identifier_lower is not None and leaf == identifier_lower) or (
+                short_phrase and leaf in concept_terms
+            ):
+                named_concepts.add(leaf)
+
+        id_boost = self._settings.identifier_definition_boost
+        usage_penalty = self._settings.identifier_usage_penalty
+        config_key_boost = self._settings.config_key_boost
 
         for r in results:
             score = r["score"]
@@ -152,12 +212,38 @@ class Reranker:
                 and query_fragments
                 and _fqn_matches(r.get("fqn", ""), query_fragments)
             )
+            leaf = _fqn_leaf(str(r.get("fqn") or ""))
+            is_named_definition = bool(
+                r.get("is_definition", False) and leaf and leaf in named_concepts
+            )
             if is_owner_definition:
                 score *= owner_boost
+            elif is_named_definition:
+                score *= id_boost
             elif r.get("is_definition", False) and (
                 not query_fragments or _fqn_matches(r.get("fqn", ""), query_fragments)
             ):
                 score *= boost
+            # Definitions beat usages: once a named concept's definition is in
+            # the pool, chunks that merely reference the name are demoted so a
+            # usage-heavy file cannot outrank the declaration.
+            if named_concepts and not r.get("is_definition", False):
+                haystack = f"{r.get('fqn') or ''} {r.get('content') or ''}".lower()
+                if any(concept in haystack for concept in named_concepts):
+                    score *= usage_penalty
+            # A concrete config key (dotted or snake_case) is answered by the
+            # config entry that defines it, so lift config chunks containing it.
+            if (
+                identifier_lower
+                and r.get("content_type") == "config"
+                and identifier_lower in (r.get("content") or "").lower()
+            ):
+                score *= config_key_boost
+            # A documentation-shaped query widened to ``all`` still competes
+            # with code on lexical score; lift prose so README/guide chunks
+            # can answer "how do I run the tests?".
+            if docs_intent and r.get("content_type") == "docs":
+                score *= self._settings.docs_content_boost
             # Authorization intent — a question about who
             # may access/restrict behavior boosts the definition/annotation
             # chunks of authorization-relevant code (security checks,

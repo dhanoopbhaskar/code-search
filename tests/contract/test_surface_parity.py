@@ -25,7 +25,9 @@ PARITY_TABLE: list[tuple[str, str, str, Any]] = [
     ("Model toggle", "--no-model", "no_model", False),
     ("Mode", "--mode", "mode", "ranked"),
     ("Language", "--language", "language", None),
-    ("Include tests", "--include-tests", "include_test_files", True),
+    ("Include tests", "--include-tests", "include_test_files", False),
+    ("Compact", "--compact", "compact", True),
+    ("Snippet lines", "--max-snippet-lines", "max_snippet_lines", None),
     ("Limit", "--limit", "limit", 10),
 ]
 
@@ -56,6 +58,8 @@ def _cli_search_options(argv: list[str]) -> dict[str, Any]:
         "mode": getattr(args, "mode", None),
         "language": getattr(args, "language", None),
         "include_tests": getattr(args, "include_tests", None),
+        "compact": getattr(args, "compact", None),
+        "max_snippet_lines": getattr(args, "max_snippet_lines", None),
         "limit": getattr(args, "limit", None),
     }
 
@@ -72,7 +76,9 @@ def _mcp_search_options() -> dict[str, Any]:
         no_model: bool = False,
         mode: str = "ranked",
         language: str | None = None,
-        include_test_files: bool = True,
+        include_test_files: bool = False,
+        compact: bool = True,
+        max_snippet_lines: int | None = None,
         limit: int = 10,
     ) -> str:
         return json.dumps([])
@@ -88,7 +94,9 @@ def _mcp_search_options() -> dict[str, Any]:
         "no_model": props["no_model"].get("default", False),
         "mode": props["mode"].get("default", "ranked"),
         "language": props["language"].get("default", None),
-        "include_test_files": props["include_test_files"].get("default", True),
+        "include_test_files": props["include_test_files"].get("default", False),
+        "compact": props["compact"].get("default", True),
+        "max_snippet_lines": props["max_snippet_lines"].get("default", None),
         "limit": props["limit"].get("default", 10),
     }
 
@@ -168,7 +176,7 @@ def test_mcp_search_schema_accepts_content_and_no_model() -> None:
         no_model: bool = False,
         mode: str = "ranked",
         language: str | None = None,
-        include_test_files: bool = True,
+        include_test_files: bool = False,
         limit: int = 10,
     ) -> str:
         return json.dumps([])
