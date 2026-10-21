@@ -18,7 +18,9 @@ symbols. Walks tree-sitter ASTs to discover function/method/class
 /interface/enum definitions, their fully-qualified hierarchical names
 (FQN), call-graph edges, import relationships, and inheritance edges
 across multiple programming languages (Python, Java, JavaScript,
-TypeScript, Rust, C++, C#).
+TypeScript, Rust, C++, C#). Symbol FQNs are deduplicated per file by
+qualifying collisions with the declaration position, and JS/TS calls
+resolve through import bindings and namespace aliases.
 
 # Key Classes
 
@@ -32,4 +34,6 @@ TypeScript, Rust, C++, C#).
 # Internal Helpers
 
 `_attach_row_signature` parses a `signature` object onto a database row
-from its stored FQN.
+from its stored FQN. `_deduplicate_fqns` qualifies colliding symbol FQNs,
+and `_build_import_map`/`_build_namespace_map`/`_extract_js_import_edges`
+feed JavaScript/TypeScript call resolution.

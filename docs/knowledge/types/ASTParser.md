@@ -16,7 +16,9 @@ sources:
 Wraps tree-sitter grammars to parse source files into ASTs across
 multiple languages, producing chunk boundaries consumed by the indexing
 pipeline and parse trees consumed by
-[`SymbolExtractor`](../types/SymbolExtractor.md). Defined in
+[`SymbolExtractor`](../types/SymbolExtractor.md). `.tsx` files are parsed
+with the internal `tsx` grammar dialect while their public language token
+stays `typescript`, so filters and stored values are unchanged. Defined in
 [`engine.parser`](../modules/engine/parser.md).
 
 # Methods
@@ -30,4 +32,5 @@ pipeline and parse trees consumed by
 | `get_node_text(node: object, source_bytes: bytes) -> str` | Return the source text covered by an AST node. |
 | `get_node_range(node: object) -> tuple[int, int, int, int]` | Return `(row_start, col_start, row_end, col_end)` for an AST node. |
 | `is_excluded_file(file_path: Path, root_path: Path) -> bool` | Check whether *file_path* is excluded by exclusion patterns or, when enabled, a `.gitignore` rule (see [`GitIgnoreMatcher`](GitIgnoreMatcher.md)). |
-| `get_chunks_for_file(file_path: Path, source_bytes: bytes) -> list[ParsedNode]` | Extract indexable AST chunks (definitions, declarations, imports, comments, etc.). |
+| `get_chunks_for_file(file_path: Path, source_bytes: bytes) -> list[ParsedNode]` | Extract indexable AST chunks (definitions, declarations, imports, comments, etc.), including JS/TS `function_declaration` and `lexical_declaration` anchors. |
+| `_lexical_declaration_defines_function(node: object) -> bool` | Return whether a JS/TS `lexical_declaration` binds a function value (arrow function, function expression, or call such as `createAsyncThunk`). |

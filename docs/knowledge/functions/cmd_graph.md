@@ -15,7 +15,10 @@ sources:
 
 Handles the `graph` subcommand, invoking
 [`EdgeStore.get_call_graph`](../types/EdgeStore.md) to print callers and/or
-callees of a symbol. Defined in [`cli.main`](../modules/cli/main.md).
+callees of a symbol; `--direction implements` instead reports static
+implementations via [`find_implementations`](find_implementations.md).
+Paths in human output are rendered relative to the index root. Defined in
+[`cli.main`](../modules/cli/main.md).
 
 # Signature
 

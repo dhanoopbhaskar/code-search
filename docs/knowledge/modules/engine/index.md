@@ -26,7 +26,7 @@ status: draft
 * [index_metadata](index_metadata.md) - index version/health metadata (`IndexMetadata`, `IndexStatus`).
 * [index_service](index_service.md) - server-side index-staleness detection (`IndexChangeDetector`).
 * [indexer](indexer.md) - full/incremental indexing pipeline (`IndexOrchestrator`, `IndexLock`).
-* [intent_detection](intent_detection.md) - query-intent classification (definition/behavior/authorization/DDL/migration/declared-rule).
+* [intent_detection](intent_detection.md) - lexical content-intent classification (docs/config/code/neutral) and scope-signal messages.
 * [language](language.md) - query-time language inference and corpus vocabularies (`QueryAnalysis`).
 * [match_boost](match_boost.md) - bounded additive match-boost layer (`BoostVerdict`, `MatchEvidence`).
 * [metrics](metrics.md) - rolling-window latency metrics collection (`MetricsCollector`).
@@ -38,7 +38,7 @@ status: draft
 * [redactor](redactor.md) - secret redaction and air-gap network enforcement (`Redactor`).
 * [reranking](reranking.md) - post-fusion result reranking (`Reranker`).
 * [rescue_floor](rescue_floor.md) - rescue-ladder eligibility evaluation.
-* [response_service](response_service.md) - builds the final search response envelope.
+* [response_service](response_service.md) - builds the final search response envelope and shapes compact, root-relative output.
 * [scent_detection](scent_detection.md) - config/DDL "scent" detection in queries and content.
 * [search](search.md) - `HybridSearch`, the central BM25 + vector fusion + quality-gate + rescue-ladder orchestrator.
 * [semantic_signals](semantic_signals.md) - semantic scoring signal functions.

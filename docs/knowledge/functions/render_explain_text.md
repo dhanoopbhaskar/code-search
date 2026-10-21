@@ -17,18 +17,20 @@ Formats an [`ExplainAnswer`](../types/ExplainAnswer.md): the symbol's kind,
 location, signature, and the first 200 characters of its docstring; outgoing
 and incoming relations; rationale comments (text clipped to 160 characters);
 and linked documentation. Unresolved or ambiguous outcomes render the outcome
-plus up to five candidate FQNs. Defined in
+plus up to five candidate FQNs. When *root* is given, the symbol location and
+linked-doc paths render relative to it. Defined in
 [`engine.graph_query`](../modules/engine/graph_query.md).
 
 # Signature
 
-`def render_explain_text(answer: ExplainAnswer) -> str`
+`def render_explain_text(answer: ExplainAnswer, *, root: str \| Path \| None = None) -> str`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
 | `answer` | [`ExplainAnswer`](../types/ExplainAnswer.md) | The explain result. |
+| `root` | `str \| Path \| None` | Indexed repository root used to relativise displayed paths. |
 
 # Returns
 

@@ -24,7 +24,7 @@ orchestrator of the search pipeline.
 | Method | Description |
 |---|---|
 | `__init__(db: GraphDatabase, vector_index: VectorIndex, embedding_generator: EmbeddingGenerator, settings: Settings \| None = None, no_model: bool = False) -> None` | Initialize hybrid search over the graph DB and vector index. |
-| `search(query: str, limit: int = 10, language: str \| None = None, include_tests: bool = True, alpha: float \| None = None, mode: str = 'ranked', content: str \| None = None, matching: str \| None = None) -> dict[str, Any]` | Run the full hybrid search pipeline and stamp the per-request timer. |
+| `search(query: str, limit: int = 10, language: str \| None = None, include_tests: bool = True, alpha: float \| None = None, mode: str = 'ranked', content: str \| None = None, matching: str \| None = None, regex: bool = False) -> dict[str, Any]` | Run the full hybrid search pipeline and stamp the per-request timer; *regex* switches ranked/exhaustive scanning to regular-expression matching. |
 | `invalidate_bm25_corpus() -> None` | Invalidate the cached BM25 corpus statistics after re-indexing. |
 | `reset_caches() -> None` | Reset internal caches after an index rebuild. |
 | `need_index() -> bool` | Return whether the index has not reached the `ready` state. |
@@ -39,7 +39,12 @@ orchestrator of the search pipeline.
 | `_build_analysis(query: str, explicit_language: str \| None = None) -> QueryAnalysis` | Build the query-analysis entity once per search. |
 | `_vocab_from_db() -> set[str]` | Exact sub-word vocabulary straight from `code_chunks`. |
 | `_stamp_model_status(envelope: dict[str, Any], was_warm: bool) -> None` | Stamp `ranked_path`, `warmup_state`, `model_status` on ranked envelopes. |
-| `_search_impl(query: str, limit: int = 10, language: str \| None = None, include_tests: bool = True, alpha: float \| None = None, mode: str = 'ranked', content: str \| None = None, matching: str \| None = None) -> dict[str, Any]` | Run the full hybrid search pipeline for *query*. |
+| `_search_impl(query: str, limit: int = 10, language: str \| None = None, include_tests: bool = True, alpha: float \| None = None, mode: str = 'ranked', content: str \| None = None, matching: str \| None = None, regex: bool = False) -> dict[str, Any]` | Run the full hybrid search pipeline for *query*. |
+| `_token_savings(results: list[dict[str, Any]]) -> dict[str, Any]` | Estimate agent token savings (`files`, `returned_tokens`, `full_file_tokens`, `saved_tokens`, `saved_percent`) at 4 characters per token. |
+| `_constant_intent_pass(query: str, fused: dict[int, float], content: str) -> dict[int, dict[str, Any]]` | Lift the config/constant chunks that define a query's named constant (`CODE_SEARCH_CONSTANT_INTENT_*`) and return per-chunk evidence. |
+| `_code_intent(query: str, explicit_language: str \| None) -> bool` | Return whether the query is a fuzzy source-level (code-intent) search. |
+| `_cached_test_file_paths() -> list[str]` | Cached variant of `_test_file_paths`. |
+| `_count_test_matches(query: str, content: str) -> int` | Count FTS5-matching chunks restricted to test files, for the production/test split. |
 | `_build_query_match_context(query: str) -> QueryMatchContext` | Build the query-level match context once per request. |
 | `_is_bare_symbol_token(query: str) -> bool` | Return whether *query* is a single identifier-like token. |
 | `_build_query_name_context(query: str, match_context: QueryMatchContext \| None = None) -> QueryNameContext` | Build the request-scoped name context once per query. |
@@ -87,7 +92,7 @@ orchestrator of the search pipeline.
 | `_code_language_context(explicit_language: str \| None) -> bool` | Return whether a code-language context is active for the query. |
 | `_test_file_paths() -> list[str]` | Return the stored paths of all test files in the index. |
 | `_fetch_chunks(chunk_ids: list[int]) -> list[dict[str, Any]]` | Fetch `code_chunks` rows for *chunk_ids* as dicts in id order. |
-| `_search_exhaustive(query: str, limit: int, language: str \| None, include_tests: bool, vector_health: bool, content: str = 'all', matching: str \| None = None) -> dict[str, Any]` | Line-oriented exhaustive scan over the indexed files. |
+| `_search_exhaustive(query: str, limit: int, language: str \| None, include_tests: bool, vector_health: bool, content: str = 'all', matching: str \| None = None, regex: bool = False) -> dict[str, Any]` | Line-oriented exhaustive scan over the indexed files; *regex* validates the pattern and scans with it. |
 | `_search_enumerate(query: str, limit: int, vector_health: bool) -> dict[str, Any]` | Enumerate the named symbol kind ("list all controllers"). |
 | `_enumeration_intent(query: str) -> bool` | Whether *query* asks to list all of a kind (enumerate auto-select). |
 | `_enumeration_target(query: str) -> str \| None` | Return the enumeration target term of *query*, or `None`. |

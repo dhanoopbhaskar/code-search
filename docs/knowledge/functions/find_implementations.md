@@ -14,7 +14,11 @@ sources:
 # Overview
 
 Resolves static implementations of an interface member or type by
-walking the inheritance (`INHERITS`) graph. Defined in
+walking the inheritance (`INHERITS`) graph. When no static implementer exists,
+the envelope may carry a `framework` descriptor (for example Spring Data
+repositories, `@FeignClient`, `@Mapper`, `@RepositoryRestResource`) explaining
+that the implementation is generated at runtime by convention, rather than
+leaving the caller to infer why. Defined in
 [`engine.implementations`](../modules/engine/implementations.md).
 
 # Signature
@@ -32,4 +36,7 @@ walking the inheritance (`INHERITS`) graph. Defined in
 
 # Returns
 
-The shared `ImplementationResult` envelope: `outcome`, `symbol`, `declaring_type`, `implementations`, `candidates`, and `explanation`.
+The shared `ImplementationResult` envelope: `outcome`, `symbol`,
+`declaring_type`, `implementations`, `candidates`, `framework`, and
+`explanation`. The framework descriptor carries `name`, `generated`, `bases`,
+and `note`, or is `None` when no framework signal is present.

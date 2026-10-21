@@ -13,8 +13,13 @@ sources:
 
 # Overview
 
-Returns the daemon's conventional Unix socket path for a given context
-(index) directory. Defined in
+Returns the daemon's Unix socket path for a given context (index) directory,
+preferring the conventional `context_dir / "code-search.sock"`. When that path
+exceeds the `AF_UNIX` limit (`_MAX_UNIX_SOCKET_PATH` = 107 encoded bytes), it
+falls back to a deterministic hashed name (`code-search-<uid>-<digest>.sock`)
+under `$XDG_RUNTIME_DIR` when that directory is writable, otherwise the system
+temp directory, so a deep checkout path cannot stop the daemon from binding.
+Defined in
 [`engine.daemon`](../modules/engine/daemon.md).
 
 # Signature
@@ -29,4 +34,5 @@ Returns the daemon's conventional Unix socket path for a given context
 
 # Returns
 
-The convention `context_dir / "code-search.sock"` path.
+The socket path to bind; identical for every process resolving the same
+*context_dir*.

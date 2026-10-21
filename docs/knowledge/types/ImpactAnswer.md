@@ -25,6 +25,8 @@ Returned by [`GraphQueryService.impact`](GraphQueryService.md) and consumed by
 | `symbols` | `list[GraphNode]` | Symbols declared in the changed files. |
 | `impacted` | `list[GraphNode]` | Symbols reverse-reachable from the changed symbols. |
 | `files` | `list[str]` | Files containing impacted symbols or importing a changed file. |
+| `production_files` | `list[str]` | The impacted files classified as production code. |
+| `test_files` | `list[str]` | The impacted files classified as test code. |
 | `summary` | `dict[str, int]` | Counts: `symbols`, `files`, `tests`, and `changed_files`. |
 
 # Methods

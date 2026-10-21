@@ -17,6 +17,7 @@ status: draft
 * [cmd_daemon_run](cmd_daemon_run.md) - Handler that runs the daemon blocking in the foreground (used internally by `cmd_daemon start`).
 * [cmd_download_models](cmd_download_models.md) - Handler for the `download-models` subcommand: fetches the embedding model into the Hugging Face cache.
 * [cmd_explain](cmd_explain.md) - Handler for the `explain` subcommand: prints a symbol's metadata, relations, rationale, and linked docs.
+* [cmd_find_related](cmd_find_related.md) - Handler for the `find-related` subcommand: prints chunks semantically related to a file/line anchor.
 * [cmd_graph](cmd_graph.md) - Handler for the `graph` subcommand: prints callers/callees of a symbol.
 * [cmd_implementations](cmd_implementations.md) - Handler for the `implementations` subcommand: prints subtypes or ancestors of a symbol.
 * [cmd_index](cmd_index.md) - Handler for the `index` subcommand: builds or rebuilds the code index.
@@ -85,11 +86,14 @@ status: draft
 ## engine/graph_query.py
 
 * [compact_json](compact_json.md) - Serialise a payload to JSON without indentation for compact agent transport.
+* [display_symbol](display_symbol.md) - Strip an FQN's filesystem path prefix for human display.
 * [edge_resolution_stats](edge_resolution_stats.md) - Per-edge-type resolved/unresolved counts used as a graph-quality metric.
 * [render_architecture_markdown](render_architecture_markdown.md) - Render an ArchitectureReport as deterministic Markdown.
 * [render_explain_text](render_explain_text.md) - Render an ExplainAnswer with metadata, relations, rationale, and linked docs.
+* [render_impact_text](render_impact_text.md) - Render an ImpactAnswer as text with production and test buckets.
 * [render_path_text](render_path_text.md) - Render a PathAnswer as a hop-by-hop chain.
 * [render_query_text](render_query_text.md) - Render a GraphAnswer as compact, agent-friendly text.
+* [relative_display](relative_display.md) - Render a stored file path relative to the index root in POSIX form.
 * [resolve_confidence](resolve_confidence.md) - Map a persisted edge resolution tier to an EXTRACTED/INFERRED/AMBIGUOUS/UNRESOLVED label.
 * [symbol_source_slice](symbol_source_slice.md) - Return the source text spanned by a symbol row.
 
@@ -104,7 +108,7 @@ status: draft
 ## engine/intent_detection.py
 
 * [build_scope_signal](build_scope_signal.md) - Generate a surface-neutral scope message explaining an exclusion.
-* [classify_content_intent](classify_content_intent.md) - Classify a query lexically into docs/config/neutral.
+* [classify_content_intent](classify_content_intent.md) - Classify a query lexically into docs/config/code/neutral.
 * [scope_override](scope_override.md) - The neutral scope token that would include the intent's content type.
 
 ## engine/language.py
@@ -162,6 +166,9 @@ status: draft
 ## engine/response_service.py
 
 * [build_response](build_response.md) - Build a search response, checking for the index-change envelope and code-scoped config hints.
+* [compact_result](compact_result.md) - Return a trimmed, agent-sized version of a search result.
+* [compact_results](compact_results.md) - Apply compact_result to every result in a list.
+* [relativize_results](relativize_results.md) - Return results with file_path/fqn relative to the index root.
 
 ## engine/scent_detection.py
 

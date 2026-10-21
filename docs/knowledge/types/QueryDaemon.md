@@ -15,8 +15,11 @@ sources:
 
 Background daemon process that keeps the search index and embedding
 model warm in memory, serving queries over a local Unix socket to avoid
-per-invocation cold-start cost. Defined in
-[`engine.daemon`](../modules/engine/daemon.md).
+per-invocation cold-start cost. Dispatches `ping`, `search`, `symbol`,
+`implementations`, `graph`, and `find_related` actions. A forwarded search
+waits a bounded `warmup_wait_s` for the model, refuses to serve until the
+index status is `ready`, and compacts/relativises results exactly like the
+in-process CLI. Defined in [`engine.daemon`](../modules/engine/daemon.md).
 
 # Methods
 

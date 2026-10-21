@@ -24,7 +24,11 @@ connection with files committed in groups (`_PERSIST_COMMIT_BATCH` = 256);
 full builds suspend the `chunks_fts` triggers via
 [`GraphDatabase.set_fts_triggers`](../../types/GraphDatabase.md) and rebuild
 the keyword index once afterwards. The pipeline also persists file-level
-import edges, rationale comments, and (opt-in) documentation links.
+import edges, rationale comments, and (opt-in) documentation links. Prose
+files are split by heading (ATX/AsciiDoc/setext, fence-aware) and package
+lockfiles are stored as a single bounded infra chunk so a lockfile cannot
+dominate keyword search. TypeScript/JavaScript imports resolve through
+`tsconfig` `baseUrl`/`paths` aliases and directory barrel `index` files.
 
 # Key Constants
 
@@ -34,6 +38,9 @@ type declarations for fallback resolution. `_PERSIST_COMMIT_BATCH` (256) —
 files per persistence transaction. `_SQL_VAR_LIMIT` (900) — maximum
 placeholders per `IN (...)` query. `_RATIONALE_MARKERS` — the
 `NOTE`/`WHY`/`HACK`/`TODO`/`FIXME`/`ADR`/`RFC` comment markers.
+`_LOCKFILE_CHUNK_CHARS` (2000) bounds a lockfile's single chunk;
+`_HEADING_PROSE_EXTENSIONS`/`_ATX_HEADING`/`_ADOC_HEADING`/`_FENCE_OPEN`/
+`_SETEXT_UNDERLINE` define heading-based prose splitting.
 
 # Key Classes
 
@@ -51,7 +58,12 @@ lists to stay under `_SQL_VAR_LIMIT`. On the orchestrator,
 symbol catalog's conventional FQN, Python through a module-name index) and
 keeps unresolved imports with `resolved = 0`, and `_persist_doc_links` links
 doc/config chunks to code chunks by embedding similarity and exact symbol
-mentions. `_resolve_chunk_fqn` stamps each
-chunk with its enclosing symbol's FQN. `_module_fallback_chunk` and
-`_fallback_chunk_file` guarantee at least one chunk per file when AST
-parsing yields nothing (resource/unparseable files).
+mentions. `_prose_heading_chunks` splits heading-structured prose when the
+AST yields nothing, and `_lockfile_chunk` produces the single bounded
+lockfile record with FQN `<file>::lockfile`. `_load_tsconfig_aliases`,
+`_resolve_ts_alias`, and `_ts_module_candidates` resolve TypeScript import
+specifiers (including `.js`→`.ts` and directory barrels).
+`_resolve_chunk_fqn` stamps each chunk with its enclosing symbol's FQN.
+`_module_fallback_chunk` and `_fallback_chunk_file` guarantee at least one
+chunk per file when AST parsing yields nothing (resource/unparseable
+files).

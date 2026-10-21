@@ -1,7 +1,7 @@
 ---
 type: Overview
 title: "Environment Configuration"
-description: "Full enumeration of CODE_SEARCH_* environment variables: the 144 Settings fields plus the separately-read language-config path."
+description: "Full enumeration of CODE_SEARCH_* environment variables: the 151 Settings fields plus the separately-read language-config path."
 resource: code_search/engine/config.py
 tags: [config, environment, settings]
 generated: { by: code-documenter/skill-v1.0, at: 2026-10-19T00:00:00Z }
@@ -41,6 +41,7 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_FAST_EMBEDDING_MODEL` | `potion-base-2M` | Model used when `model_profile=fast`. |
 | `CODE_SEARCH_FAST_EMBEDDING_DIM` | `64` | Embedding dimensionality for the fast profile. |
 | `CODE_SEARCH_EMBED_TEXT_MAX_CHARS` | `2000` | Max characters of enclosing-context + chunk content passed to the embedding model. |
+| `CODE_SEARCH_WARMUP_WAIT_S` | `5.0` | Bounded wait for the embedding model before the first query falls back to the reduced lexical path; `0` disables the wait. |
 
 # Relevance Threshold
 
@@ -63,7 +64,7 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_CONFIG_CONTENT_BOOST` | `1.35` | Score multiplier for config-classified chunks on a config-scented query. |
 | `CODE_SEARCH_CONFIG_INJECT_BOOST` | `0.75` | Multiplier applied when injecting config chunks into results. |
 | `CODE_SEARCH_CONFIG_INJECT_PRIMARY_EXTRA` | `0.3` | Extra boost for the primary injected config chunk. |
-| `CODE_SEARCH_DOCS_CONTENT_BOOST` | `1.2` | Score multiplier for docs-classified chunks; defined but currently not consumed by the engine. |
+| `CODE_SEARCH_DOCS_CONTENT_BOOST` | `1.2` | Score multiplier applied by the reranker to `docs`-typed chunks when the query's content intent is `DOCS`. |
 | `CODE_SEARCH_NON_CODE_LANGUAGE_DEMOTE` | `0.7` | Demotion multiplier for config/docs chunks under an active code-language query context. |
 | `CODE_SEARCH_CONFIG_SCENT_WORDS` | (built-in list) | Vocabulary that triggers config-scent detection. |
 | `CODE_SEARCH_EXHAUSTIVE_MATCHING_MODE` | `all_tokens` | `literal`, `all_tokens` (AND), or `any_token` (OR) line-matching semantics. |
@@ -139,6 +140,9 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_DDL_SCENT_BOOST` | `1.8` | Boost for DDL-scented query matches; defined but currently not consumed by the engine (the scent detector hard-codes `1.8`). |
 | `CODE_SEARCH_SUGGEST_EDIT_DISTANCE` | `2` | Max edit distance for symbol "did you mean" suggestions; defined but currently not consumed by the engine (the resolver keeps its own `2` default). |
 | `CODE_SEARCH_DEFINITION_BOOST` | `1.2` | [`Reranker`](../types/Reranker.md) boost for definition chunks. |
+| `CODE_SEARCH_IDENTIFIER_DEFINITION_BOOST` | `1.5` | Boost for the definition of the identifier a query names. |
+| `CODE_SEARCH_IDENTIFIER_USAGE_PENALTY` | `0.85` | Demotion for chunks that merely mention the queried identifier; applies only when the matching definition is in the candidate pool. |
+| `CODE_SEARCH_CONFIG_KEY_BOOST` | `1.35` | Boost for the configuration entry or key a config-shaped query names. |
 | `CODE_SEARCH_NOISE_PENALTY` | `0.5` | Reranker penalty for noisy/test-like chunks. |
 | `CODE_SEARCH_NON_CANONICAL_PENALTY` | `0.25` | Reranker penalty for chunks flagged non-canonical (examples/legacy/generated/mocks). |
 
@@ -202,6 +206,9 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_CONCEPT_SYMBOL_POOL_MAX_SHARE` | `0.35` | Candidate-pool share above which a term is not a discriminator. |
 | `CODE_SEARCH_ENDPOINT_INTENT_BOOST` | `2.0` | Boost for a controller method annotated for the query's HTTP verb. |
 | `CODE_SEARCH_ENDPOINT_INTENT_CAP` | `1.5` | Upper bound (as a fraction of the pool maximum) on the endpoint-intent boost. |
+| `CODE_SEARCH_CONSTANT_INTENT_BOOST` | `1.4` | Boost for constant/config declarations on default/constant-shaped queries. |
+| `CODE_SEARCH_CONSTANT_INTENT_CAP` | `1.5` | Upper bound on the constant-intent boost. |
+| `CODE_SEARCH_CONSTANT_INTENT_WORDS` | `default,defaults,constant,constants,final,configured` | Query words that trigger the constant-intent pass. |
 | `CODE_SEARCH_EMBEDDED_SYMBOL_BOOST` | `0.5` | Boost for chunks containing an embedded symbol match. |
 | `CODE_SEARCH_DTS_PENALTY` | `0.7` | Penalty for `.d.ts`-style declaration files. |
 | `CODE_SEARCH_BARREL_PENALTY` | `0.5` | Penalty for barrel/re-export files. |

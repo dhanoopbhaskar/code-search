@@ -31,4 +31,4 @@ Defined in
 
 # Returns
 
-`all` for documentation intent, `config` for configuration intent, and the effective scope itself for neutral intent (no override due).
+`all` for documentation intent, `config` for configuration intent, and the effective scope itself for code or neutral intent (no override due).

@@ -35,11 +35,15 @@ incremental indexing:
    `CODE_SEARCH_RESPECT_GITIGNORE` is `false`.
 2. Parsing — [`ASTParser`](../types/ASTParser.md) (tree-sitter, multi-language)
    produces chunk boundaries; the parse workers also extract rationale
-   comments (`NOTE`/`WHY`/`HACK`/`TODO`/`FIXME`/`ADR`/`RFC`).
+   comments (`NOTE`/`WHY`/`HACK`/`TODO`/`FIXME`/`ADR`/`RFC`). Heading-structured
+   prose is split by heading and package lockfiles become one bounded infra
+   chunk, so neither dominates keyword search.
 3. Symbol/edge extraction — [`SymbolExtractor`](../types/SymbolExtractor.md)
    extracts definitions, calls, imports, and inheritance edges, stored via
    [`SymbolStore`](../types/SymbolStore.md) and [`EdgeStore`](../types/EdgeStore.md)
-   over [`GraphDatabase`](../types/GraphDatabase.md) (SQLite). Persistence
+   over [`GraphDatabase`](../types/GraphDatabase.md) (SQLite). FQNs are
+   deduplicated per file, and TypeScript/JavaScript imports resolve through
+   `tsconfig` aliases and directory barrels. Persistence
    uses one writer connection with files committed in groups of 256; full
    builds suspend the `chunks_fts` triggers and rebuild the keyword index
    once at the end. File-level import edges go to
@@ -62,42 +66,54 @@ orchestrator:
 1. Query analysis — [`analyze_query`](../functions/analyze_query.md) builds a
    [`QueryAnalysis`](../types/QueryAnalysis.md) (expansion, language
    inference, definition intent).
-2. Parallel retrieval — [`BM25Search`](../types/BM25Search.md) and
+2. Scope and intent inference — when no explicit content scope is given,
+   [`classify_content_intent`](../functions/classify_content_intent.md) infers
+   `code`, `all`, or `code_focused` from the query shape. The CLI, MCP, and
+   daemon exclude test files by default, and lexical match counts are split
+   into production and test totals.
+3. Parallel retrieval — [`BM25Search`](../types/BM25Search.md) and
    [`VectorSearch`](../types/VectorSearch.md) run independently.
-3. Fusion — [`rrf_fusion`](../functions/rrf_fusion.md) (Reciprocal Rank Fusion)
-   merges both result lists.
 4. Quality gate — before fusion, a multi-signal gate (informative-token
    coverage, concept signal, exact-token coverage, and top-vector floors)
    evaluated against the raw BM25 hit count and raw vector results decides
    whether the retrieval evidence is trustworthy enough to proceed.
-5. Rescue ladder — when the ranked path yields nothing, progressively
+5. Fusion — [`rrf_fusion`](../functions/rrf_fusion.md) (Reciprocal Rank Fusion)
+   merges both result lists.
+6. Rescue ladder — when the ranked path yields nothing, progressively
    looser tiers ([`_rescue_t1`](../modules/engine/search.md) relaxed lexical,
    then `_rescue_t2` literal substring scan) attempt recovery before
    returning `no_match`.
-6. Boosting and reranking — [`compute_verdict`](../functions/compute_verdict.md)
+7. Boosting and reranking — [`compute_verdict`](../functions/compute_verdict.md)
    (name-match boost), [`scent`](../functions/compute_scent_adjustment.md)
    adjustments, a concept-symbol pass (definitions whose names carry the
    query's rare terms, using
    [`collapse_terms`](../functions/collapse_terms.md)), an endpoint-intent
-   pass (controller methods annotated for the query's HTTP verb), and
-   [`Reranker`](../types/Reranker.md) (definition boost, test-file penalty,
+   pass (controller methods annotated for the query's HTTP verb), a
+   constant-intent pass (constant/config declarations for default-shaped
+   queries), and [`Reranker`](../types/Reranker.md) (definition and
+   identifier-definition boosts, config-key boost, test-file penalty,
    session weighting, file-role penalties) refine the final order.
+8. Output — results are treated as ordered evidence: each carries
+   `score_normalized`, the envelope reports `token_savings`, and compact
+   root-relative JSON is the default.
 
 ## Graph Query Layer
 
 [`GraphQueryService`](../types/GraphQueryService.md) answers multi-hop
 questions over the indexed graph without any LLM or network call. It seeds a
-bounded, deterministic BFS from [`HybridSearch`](../types/HybridSearch.md),
-walks resolved `graph_edges` and `module_edges`, and labels every edge
-`EXTRACTED`, `INFERRED`, `AMBIGUOUS`, or `UNRESOLVED` from its persisted
-resolution tier ([`resolve_confidence`](../functions/resolve_confidence.md)).
+bounded, deterministic BFS from the same reranked hits the search surface
+returns, records a provenance `reason` on every seed, collapses unresolved
+external callee leaves unless asked to include them, walks resolved
+`graph_edges` and `module_edges`, and labels every edge `EXTRACTED`,
+`INFERRED`, `AMBIGUOUS`, or `UNRESOLVED` from its persisted resolution tier
+([`resolve_confidence`](../functions/resolve_confidence.md)).
 It provides `query`, `shortest_path`, `explain`, `impact`, and
 `architecture_report` operations.
 
 ## Serving Surfaces
 
 - **CLI** ([`cli.main`](../modules/cli/main.md)) — direct one-shot
-  `index`/`search`/`symbol`/`graph`/`implementations`/`query`/`path`/`explain`/`affected`/`map`/`metrics`
+  `index`/`search`/`symbol`/`graph`/`implementations`/`find-related`/`query`/`path`/`explain`/`affected`/`map`/`metrics`
   commands.
 - **MCP server** ([`MCPServer`](../types/MCPServer.md)) — exposes `search`,
   `get_symbol_definition`, `get_call_neighbors`, `get_implementations`,

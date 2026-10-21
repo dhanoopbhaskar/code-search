@@ -17,18 +17,21 @@ Formats a [`GraphAnswer`](../types/GraphAnswer.md): a header with seeds and
 node/edge counts (flagged `truncated` when trimmed), nodes grouped by file
 with seeds marked `*`, then the relations rendered by
 [`GraphEdge.render`](../types/GraphEdge.md). A `no_seed` outcome yields a
-single retry hint. Defined in
+single retry hint. When *root* is given, node and edge paths render relative
+to it (see [`relative_display`](relative_display.md)); symbol names render
+through [`display_symbol`](display_symbol.md). Defined in
 [`engine.graph_query`](../modules/engine/graph_query.md).
 
 # Signature
 
-`def render_query_text(answer: GraphAnswer) -> str`
+`def render_query_text(answer: GraphAnswer, *, root: str \| Path \| None = None) -> str`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
 | `answer` | [`GraphAnswer`](../types/GraphAnswer.md) | The graph query result. |
+| `root` | `str \| Path \| None` | Indexed repository root used to relativise displayed paths. |
 
 # Returns
 

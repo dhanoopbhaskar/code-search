@@ -15,9 +15,9 @@ sources:
 
 Handles the `explain` subcommand: calls
 [`GraphQueryService.explain`](../types/GraphQueryService.md) and prints the
-result with [`render_explain_text`](render_explain_text.md), or JSON under
-`--json`. Each call is audited as `explain_symbol`. Defined in
-[`cli.main`](../modules/cli/main.md).
+result with [`render_explain_text`](render_explain_text.md) using
+index-root-relative paths, or JSON under `--json`. Each call is audited as
+`explain_symbol`. Defined in [`cli.main`](../modules/cli/main.md).
 
 # Signature
 

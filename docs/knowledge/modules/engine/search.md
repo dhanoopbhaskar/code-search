@@ -24,6 +24,18 @@ embedding lookups), and [`HybridSearch`](../../types/HybridSearch.md)
 match-boost overlays, and reranking signals such as symbol resolution,
 file-stem rescue, authorization intent, and config scent).
 
+When no explicit `content` scope is supplied, the default is inferred from
+[`classify_content_intent`](../../functions/classify_content_intent.md): a
+code-shaped query defaults to `code`, a docs-shaped query to `all`, and
+other queries to `code_focused`, so config/build files cannot outrank
+source on shared vocabulary. The CLI, MCP, and daemon pass
+`include_tests=False` by default (the engine method still defaults to
+`True`); lexical match counts are split into `production_matches` and
+`test_matches`, with `total_matches` covering both. Scores are reported as ordered evidence, not
+probabilities: each result carries `score_normalized` plus
+`token_savings` at the envelope level. Exhaustive mode accepts an optional
+regular expression (`regex=True`).
+
 # Key Constants
 
 | Constant | Purpose |
@@ -70,3 +82,11 @@ Both emit evidence consumed by the confidence floors in
 `CODE_SEARCH_CONCEPT_SYMBOL_*` and `CODE_SEARCH_ENDPOINT_INTENT_*`
 settings. `_concept_matches` matches a term to a symbol sub-word exactly or
 by a shared prefix whose length differs by at most three characters.
+`_constant_intent_pass` lifts constant/config declarations for
+constant-shaped queries such as "default page size" (controlled by
+`CODE_SEARCH_CONSTANT_INTENT_*`), while `_code_intent` infers the code
+content scope. `_count_test_matches` (with the cached
+`_cached_test_file_paths`) produces the production/test match split, and
+`_token_savings` estimates the tokens an agent avoids reading in full
+files. `_search_exhaustive` supports regular-expression matching when
+`regex=True`.
