@@ -29,18 +29,18 @@ There is **no network call at query time and no model inference beyond a
 
 ```mermaid
 flowchart LR
-    A[Repo files] --> B[Discovery\n.gitignore + extensions]
-    B --> C[Tree-sitter parse]
-    C --> D[Symbols + edges + chunks\n+ rationale]
-    D --> E[(graph.db)]
-    D --> F[Embedding model\npotion-code-16m-32d]
-    F --> G[(vectors.bin\nvectors.meta.json)]
-    E --> H[FTS5 chunks_fts]
-    H --> I[Hybrid search\nBM25 + cosine → RRF]
+    A["Repo files"] --> B["Discovery<br/>.gitignore + extensions"]
+    B --> C["Tree-sitter parse"]
+    C --> D["Symbols + edges + chunks<br/>+ rationale"]
+    D --> E[("graph.db")]
+    D --> F["Embedding model<br/>potion-code-16m-32d"]
+    F --> G[("vectors.bin<br/>vectors.meta.json")]
+    E --> H["FTS5 chunks_fts"]
+    H --> I["Hybrid search<br/>BM25 + cosine → RRF"]
     G --> I
-    I --> J[Heuristic rerank\n+ confidence]
-    J --> K[Redact + audit]
-    K --> L[CLI / MCP agent]
+    I --> J["Heuristic rerank<br/>+ confidence"]
+    J --> K["Redact + audit"]
+    K --> L["CLI / MCP agent"]
 ```
 
 ---
@@ -164,7 +164,7 @@ Observed sizes for the sample:
 | `session.db` | 32,768 B | SQLite database |
 | `audit.db` | 20,480 B | SQLite database |
 | `vectors.bin` | 1,920 B | `15 vectors × 32 dims × 4 bytes` |
-| `vectors.meta.json` | 2,691 B | 15 NDJSON lines |
+| `vectors.meta.json` | 2,667 B | 15 NDJSON lines |
 | `vectors.removed` | 0 B | no tombstones yet |
 
 There is one more important location used only when the model is not bundled:
@@ -376,10 +376,10 @@ For the sample, `code_chunks` has **15 rows**:
 | id | file | lines | def? | node type | content_type | FQN |
 |---:|---|---:|---|---|---|---|
 | 1 | `config/application.properties` | 0–3 | 0 | raw_text | config | `…::app.name=CodeSearchDemo` |
-| 2 | `docs/auth.md` | 2–3 | 0 | raw_text | docs | `…::The JWT flow validates…` |t TokenEr
+| 2 | `docs/auth.md` | 0–3 | 0 | raw_text | docs | `…::# Authentication` |
 | 3 | `src/api/controller.py` | 5–12 | 1 | function_definition | code | `…::login_user` |
 | 4 | `src/api/controller.py` | 0–0 | 0 | module_expression | code | `…::"""HTTP controller…` |
-| 5 | `src/api/controller.py` | 2–2 | 0 | module | code | `…::from src.auth.jwt_service impor` |
+| 5 | `src/api/controller.py` | 2–2 | 0 | module | code | `…::from src.auth.jwt_service import TokenEr` |
 | 6 | `src/auth/jwt_service.py` | 5–6 | 1 | class_definition | code | `…::TokenError` |
 | 7 | `src/auth/jwt_service.py` | 9–21 | 1 | class_definition | code | `…::JwtService` |
 | 8 | `src/auth/jwt_service.py` | 12–13 | 1 | function_definition | code | `…::JwtService.__init__` |
@@ -664,23 +664,23 @@ All of them write an audit entry and attach a `freshness` object.
 
 ```mermaid
 flowchart TD
-    Q[query + scope + mode] --> S[resolve content scope / intent]
-    S --> A[analyze_query\nsymbol intent, coverage, expansion]
-    A --> P[exact precheck\n@annotation / "literal" / jdbc:... / bare identifier]
-    P --> L[BM25 arm\nFTS5 MATCH + weights]
-    P --> V{model warm?}
-    V -- yes --> VE[embed query → cosine top-k]
-    V -- no --> DEFER[defer vector arm]
-    L --> G[query-quality gate]
+    Q["query + scope + mode"] --> S["resolve content scope / intent"]
+    S --> A["analyze_query<br/>symbol intent, coverage, expansion"]
+    A --> P["exact precheck<br/>@annotation / quoted literal / jdbc:... / bare identifier"]
+    P --> L["BM25 arm<br/>FTS5 MATCH + weights"]
+    P --> V{"model warm?"}
+    V -- yes --> VE["embed query → cosine top-k"]
+    V -- no --> DEFER["defer vector arm"]
+    L --> G["query-quality gate"]
     VE --> G
     DEFER --> G
-    G --> F[RRF fusion\nα·semantic + (1−α)·bm25]
-    F --> R[structural passes\nstem rescue, embedded symbol,\nconcept, endpoint, config,\nauthorization, match boost]
-    R --> W[per-class / content / path weights]
-    W --> C[confidence + coherence dedup]
-    C --> RR[CLI/MCP reranker\nsession + penalties]
-    RR --> RED[redaction]
-    RED --> JSON[JSON envelope]
+    G --> F["RRF fusion<br/>α·semantic + (1−α)·bm25"]
+    F --> R["structural passes<br/>stem rescue, embedded symbol,<br/>concept, endpoint, config,<br/>authorization, match boost"]
+    R --> W["per-class / content / path weights"]
+    W --> C["confidence + coherence dedup"]
+    C --> RR["CLI/MCP reranker<br/>session + penalties"]
+    RR --> RED["redaction"]
+    RED --> JSON["JSON envelope"]
 ```
 
 #### Step 1 — content scope and intent
@@ -720,9 +720,10 @@ apply to exhaustive mode; the line scan filters files with the same
   (`where is X defined`);
 - vocabulary coverage against the indexed corpus.
 
-`classify_query` treats a single camelCase/snake_case token as symbol-shaped.
-A symbol-shaped query also resolves through `SymbolStore`; symbol intent leans
-the fusion toward lexical (`alpha_symbol = 0.3` vs `alpha_nl = 0.5`).
+A single camelCase/snake_case token is resolved through `SymbolStore`; when it
+resolves to a known symbol (`_resolved_symbol_name`), the fusion leans toward
+lexical (`alpha_symbol = 0.3` vs `alpha_nl = 0.5`). (`classify_query` exists in
+`search.py` but is not called by the pipeline.)
 
 #### Step 3 — exact pre-check
 
@@ -900,16 +901,20 @@ Every ranked response carries the truthful path it took:
 | Field | Cold process | Warm process |
 |---|---|---|
 | `ranked_path` | `lexical_reduced` | `hybrid` |
-| `model_status.state` | `initializing` | `ready` |
+| `model_status.state` | `initializing` | `warm` |
 | `warmup_state` | `warming` | `warm` |
 | `degraded_reason` | `warming` | `null` |
 | `semantic_contribution` | `deferred` | `semantic` / `lexical_only` |
 | `vector_health` | `true` (index has vectors) | `true` |
 
-The daemon exists to remove the cold penalty: the first CLI invocation starts a
-resident socket daemon in the background and answers from the reduced path; later
-invocations are forwarded warm. `--no-model` instead takes the explicitly
-labelled `lexical_degraded` path with `degraded_reason: "model_disabled"`.
+The daemon exists to remove the cold penalty: unless `--no-startup-check` is
+given, `search` starts the resident socket daemon when none is running and
+forwards the query to it (waiting up to `CODE_SEARCH_WARMUP_WAIT_S` for the
+model), so the default CLI path is normally `hybrid`. The reduced
+`lexical_reduced` path shown in §7.3 is what a one-shot, in-process run
+produces (`--no-startup-check` with no daemon running). `--no-model` instead
+takes the explicitly labelled `lexical_degraded` path with
+`degraded_reason: "model_disabled"`.
 
 ---
 
@@ -918,8 +923,15 @@ labelled `lexical_degraded` path with `degraded_reason: "model_disabled"`.
 ### 7.1 The request
 
 ```bash
-code-search search "how is JWT validation implemented" --limit 3 --json
+code-search --no-startup-check search "how is JWT validation implemented" \
+  --limit 3 --include-tests --no-compact --json
 ```
+
+`--include-tests` is needed because CLI `search` excludes test files by default;
+`--no-compact` keeps the full result objects (the default compact output drops
+`score_sources`, `vector_score`, and similar fields). Paths in both forms are
+relative to the index root. `--no-startup-check` keeps the first run in-process
+so the cold path is observable.
 
 Scope was omitted, so the engine chose `code_focused` (`origin: "default"`,
 `intent: "neutral"`). Docs were therefore excluded from ranked results.
@@ -927,8 +939,8 @@ Scope was omitted, so the engine chose `code_focused` (`origin: "default"`,
 ### 7.2 What each arm contributed
 
 - **Lexical**: decomposed terms included `how`, `is`, `jwt`, `validation`
-  (prefix `val*`), `implemented` / `implement`. 13 chunks matched overall
-  (`total_matches = 13`).
+  (prefix `val*`), `implemented` / `implement`. 12 chunks matched overall
+  (`total_matches = 12`: 10 production, 2 test).
 - **Dense**: query embedding compared against all 15 vectors; on the warm run,
   the top chunks had cosines of `0.658` (`JwtService._sign`), `0.393`
   (`controller.py` import), and `0.388` (`test_jwt.py` import).
@@ -943,22 +955,26 @@ Scope was omitted, so the engine chose `code_focused` (`origin: "default"`,
 
 | # | chunk | file | score | confidence | semantic_contribution |
 |---:|---:|---|---:|---|---|
-| 1 | 10 | `jwt_service.py::JwtService._sign` | 1.0 | low (0.15) | deferred |
+| 1 | 10 | `jwt_service.py::JwtService._sign` | 2.309 | low (0.15) | deferred |
 | 2 | 3 | `controller.py::login_user` | 0.717 | low (0.15) | deferred |
 | 3 | 14 | `test_jwt.py::test_authenticate` | 0.376 | low (0.15) | deferred |
 
 Envelope: `ranked_path = lexical_reduced`, `degraded_reason = "warming"`,
-`query_time_ms ≈ 5.6`, `vector_health = true`.
+`query_time_ms ≈ 7`, `vector_health = true`. Without `--include-tests` the
+third row is the config chunk (chunk 1, score 0.274) instead of the test.
 
 ### 7.4 Warm-run result (second process; model loaded)
 
 | # | chunk | file | score | vector_score | confidence |
 |---:|---:|---|---:|---:|---|
-| 1 | 10 | `jwt_service.py::JwtService._sign` | 1.0 | 0.658 | medium |
+| 1 | 10 | `jwt_service.py::JwtService._sign` | 3.448 | 0.658 | medium (0.65) |
 | 2 | 5 | `controller.py` import statement | 0.724 | 0.393 | low |
 | 3 | 15 | `test_jwt.py` import statement | 0.244 | 0.388 | low |
 
-Envelope: `ranked_path = hybrid`, `semantic_contribution = "semantic"`.
+Envelope: `ranked_path = hybrid`, `semantic_contribution = "semantic"`. Run
+warm by repeating the command without `--no-startup-check` (the daemon
+answers). Each result also carries `score_normalized` (0.731, 0.392, 0.29
+here), a 0–1 rescaling of `score` for display.
 
 The difference between runs is expected and visible, not hidden: the cold path
 has no semantic evidence, so ranking falls back to lexical plus structural
@@ -974,14 +990,15 @@ confidence band.
 ```json
 {
   "chunk_id": 10,
-  "file_path": "/tmp/cs-demo/src/auth/jwt_service.py",
+  "file_path": "src/auth/jwt_service.py",
   "line_start": 20,
   "line_end": 21,
   "content": "def _sign(self, token: str) -> str:\n        return hashlib.sha256(...",
-  "fqn": "/tmp/cs-demo/src/auth/jwt_service.py::JwtService._sign",
+  "fqn": "src/auth/jwt_service.py::JwtService._sign",
   "language": "python",
-  "score": 1.0,
-  "bm25_score": -1.7980977369629386e-06,
+  "score": 2.3089487787944813,
+  "score_normalized": 0.638,
+  "bm25_score": -1.7938795656465944e-06,
   "vector_score": 0.0,
   "vector_retrieved": false,
   "semantic_contribution": "deferred",
@@ -1000,23 +1017,32 @@ confidence band.
   "confidence_band": "low",
   "low_confidence": true,
   "borderline": true,
+  "below_threshold": false,
+  "relevance_threshold_applied": true,
   "file_matches": 8,
   "session_weight": 1.0,
   "score_sources": {
-    "bm25": -1.7980977369629386e-06,
+    "bm25": -1.7938795656465944e-06,
     "vector": 0.0,
-    "fused": 1.7657268694941888,
+    "fused": 1.765627732256619,
     "alpha": 0.5,
     "weights": {"code": 1.0, "boilerplate": 0.65, "resource": 0.35},
+    "multipliers": {"rank_class": 1.0, "content": 1.0, "test_noise": 1.0, "infra": 1.0},
+    "additive": {"exact_match": 0.0, "min_vector_lift": 0.0},
     "match_boost": {"tier": "stem", "boost": 0.16666666666666666,
                     "match_ratio": 0.16666666666666666},
     "path_boost": 0.16666666666666666,
+    "path_class": "canonical",
     "reranked": true
   }
 }
 ```
 
-Why can `fused` be `1.7657` when fusion normalises to `[0, 1]`? Because the
+The remaining `score_sources` keys (`rescue`, `embedded_symbol`, `declared_rule`,
+`symbol_concept`, `endpoint_intent`, `constant_intent`) are `null` here because
+those passes did not fire; they are omitted above.
+
+Why can `fused` be `1.7656` when fusion normalises to `[0, 1]`? Because the
 additive structural passes (match boost, path boost) run **after** fusion and
 add fractions of the pool maximum; `score` is then weighted by the reranker.
 The reranker keeps scores non-negative but does not cap them at `1.0`, so a
@@ -1027,8 +1053,9 @@ strong match can exceed `1.0` and still outrank a near-miss by its true margin.
   otherwise `0.0` (`vector_retrieved` disambiguates).
 - `fused` is post-fusion, pre-weight; `score` is post-weight/post-rerank and
   lower-bounded at `0.0` (not upper-capped).
-- `score_sources` exists only when `score_breakdown` is enabled; it is the
-  audit trail for "why did this rank here?".
+- `score_sources` is present when `score_breakdown` is enabled (the default) and
+  the result is not compacted; it is the audit trail for "why did this rank
+  here?". `--explain-ranking` forces it on.
 - `file_matches` is the number of matching chunks in that file before dedup.
 
 ### 7.6 Other modes on the same index
@@ -1037,10 +1064,11 @@ strong match can exceed `1.0` and still outrank a near-miss by its true margin.
 
 ```json
 {"content": "docs", "scope": {"effective": "docs", "origin": "explicit"},
- "results": [{"chunk_id": 2, "file_path": ".../docs/auth.md", "content_type": "docs", "score": 1.0}]}
+ "results": [{"chunk_id": 2, "file_path": "docs/auth.md", "content_type": "docs", "score": 1.1}]}
 ```
 
-**Exhaustive** (`--mode exhaustive --matching all_tokens "authenticate"`):
+**Exhaustive** (`--mode exhaustive --matching all_tokens --include-tests "authenticate"`;
+without `--include-tests` the test file is skipped and `total_count` is 4):
 
 ```json
 {"mode": "exhaustive", "total_count": 7, "complete": true,
@@ -1188,13 +1216,16 @@ sqlite3 /tmp/cs-demo/.context/graph.db \
 head -1 /tmp/cs-demo/.context/vectors.meta.json
 stat -c '%s' /tmp/cs-demo/.context/vectors.bin   # 15 * 32 * 4 = 1920
 
-# 4. Search cold, then warm:
-code-search search "how is JWT validation implemented" --limit 3 --json
-code-search search "how is JWT validation implemented" --limit 3 --json
+# 4. Search cold (in-process, no daemon), then warm (autostarts the daemon):
+code-search --no-startup-check search "how is JWT validation implemented" \
+  --limit 3 --include-tests --no-compact --json
+code-search search "how is JWT validation implemented" \
+  --limit 3 --include-tests --no-compact --json
 
 # 5. Other views:
 code-search search "how is JWT validation implemented" --content docs --json
-code-search search "authenticate" --mode exhaustive --matching all_tokens --json
+code-search search "authenticate" --mode exhaustive --matching all_tokens \
+  --include-tests --json
 code-search symbol "/tmp/cs-demo/src/auth/jwt_service.py::JwtService.validate_token" --json
 code-search graph  "/tmp/cs-demo/src/auth/jwt_service.py::authenticate" --json
 sqlite3 /tmp/cs-demo/.context/audit.db \

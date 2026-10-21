@@ -15,7 +15,9 @@ sources:
 
 Wraps the Model2Vec `potion-code-16m-32d` model to generate text
 embeddings, with lazy loading and warm-up-state tracking (see
-[`WarmupState`](WarmupState.md)). Defined in
+[`WarmupState`](WarmupState.md)). The daemon and MCP cold-start gate wait a
+bounded interval (`warmup_wait_s`) for the first query so it is not silently
+served from the reduced lexical path. Defined in
 [`engine.embeddings`](../modules/engine/embeddings.md).
 
 # Methods
@@ -29,7 +31,7 @@ embeddings, with lazy loading and warm-up-state tracking (see
 | `begin_warmup() -> None` | Start loading the model in the background; safe to call repeatedly. |
 | `is_warm() -> bool` | Return whether a real model is in memory; never blocks. |
 | `warm_state() -> WarmupState` | Return the model lifecycle state; never blocks. |
-| `wait_warm(timeout: float \| None = None) -> bool` | Wait up to *timeout* seconds for warmup to finish. |
+| `wait_warm(timeout: float \| None = None) -> bool` | Wait up to *timeout* seconds for warmup to finish; used by readiness probes and the daemon/MCP cold-start gate. |
 | `reset_model() -> None` | Reset the model state to force a reload on next use. |
 | `encode(text: str) -> np.ndarray \| None` | Encode a single text string into a normalised embedding vector. |
 | `encode_batch(texts: list[str]) -> list[np.ndarray \| None]` | Encode a list of texts with one batched `model.encode` call. |

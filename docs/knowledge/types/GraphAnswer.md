@@ -27,7 +27,7 @@ Returned by [`GraphQueryService.query`](GraphQueryService.md) and rendered by
 | `edges` | `list[GraphEdge]` | Edges between the returned nodes. |
 | `truncated` | `bool` | Whether depth, node, fanout, or token limits trimmed the answer. |
 | `outcome` | `str` | `resolved` (default) or `no_seed` when nothing mapped to a symbol. |
-| `stats` | `dict[str, Any]` | Traversal statistics. |
+| `stats` | `dict[str, Any]` | Traversal statistics, including `collapsed_externals` when unresolved external leaves were removed. |
 
 # Methods
 

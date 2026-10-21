@@ -33,6 +33,7 @@ A compact, immutable node returned in [`GraphAnswer`](GraphAnswer.md),
 | `distance` | `int` | Traversal distance from the nearest seed; defaults to `0`. |
 | `signature` | `str \| None` | Declared signature, when known. |
 | `docstring` | `str \| None` | Docstring, when known. |
+| `reason` | `str \| None` | Provenance for seed nodes (for example `hybrid search hit #2 (score 0.812)`); `None` for nodes reached by traversal. |
 
 # Methods
 

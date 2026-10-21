@@ -17,7 +17,8 @@ Handles the `affected` subcommand. Changed files come from explicit `paths`
 and, with `--since <ref>`, from `git diff --name-only <ref>` run in the index
 root. The files are passed to
 [`GraphQueryService.impact`](../types/GraphQueryService.md); the text output
-groups impacted symbols by file and tags test files. Each call is audited as
+comes from [`render_impact_text`](render_impact_text.md), which splits
+impacted files into `production` and `tests` buckets. Each call is audited as
 `get_impact`. Defined in [`cli.main`](../modules/cli/main.md).
 
 # Signature

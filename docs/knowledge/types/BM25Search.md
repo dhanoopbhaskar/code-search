@@ -26,4 +26,4 @@ Uses SQLite FTS5 `bm25()` ranking directly. Defined in
 | `informative_tokens(query: str) -> list[str]` | Return the query's informative sub-words (coverage signal). |
 | `concept_subwords(query: str) -> list[str]` | Return the query's candidate concept sub-words (coverage denominator). |
 | `search(query: str, top_k: int = 10, content: str = 'all') -> list[tuple[int, float]]` | Run FTS5 BM25 search, returning `(chunk_rowid, score)` pairs. |
-| `count(query: str) -> int` | Return the number of FTS5-matching chunks for *query* (uncapped). |
+| `count(query: str, content: str = 'all', file_paths: list[str] \| None = None) -> int` | Return the number of FTS5-matching chunks for *query* (uncapped), optionally restricted to *file_paths*. |

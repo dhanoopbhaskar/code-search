@@ -29,15 +29,23 @@ calls an LLM or the network and adds no graph-library dependency.
   `EXTRACTED` / `INFERRED` / `AMBIGUOUS` / `UNRESOLVED`.
 - `edge_resolution_stats(db)` — per-edge-type resolved/total graph-quality
   metric.
+- `display_symbol` / `relative_display` — short symbol labels and
+  index-root-relative path rendering shared by every text renderer.
+- `render_query_text`, `render_path_text`, `render_explain_text`,
+  `render_impact_text`, `render_architecture_markdown`, `compact_json` —
+  deterministic CLI/MCP renderers.
 
 # Behaviour
 
-Seeds come from the hybrid search ranker, with an identifier fallback when the
-ranker returns nothing. Traversal is bounded by depth, node count, per-node
-fanout, and a token budget. Symbol results follow the stored edge direction;
-incoming edges are labelled `(backwards)`. Containment (`CONTAINS`) is
-synthesised from `symbols.parent_symbol_id` so a type seed can reach its
-members.
+Seeds come from the same reranked hits the search surface returns (with an
+identifier fallback when the ranker returns nothing), and every seed records a
+provenance `reason` such as `hybrid search hit #2 (score 0.812)`. Traversal is
+bounded by depth, node count, per-node fanout, and a token budget. Symbol
+results follow the stored edge direction; incoming edges are labelled
+`(backwards)`. Containment (`CONTAINS`) is synthesised from
+`symbols.parent_symbol_id` so a type seed can reach its members. Unresolved or
+external callee leaves are collapsed unless `include_external` is set, with the
+collapsed count reported in `stats["collapsed_externals"]`.
 
 # Surfaces
 

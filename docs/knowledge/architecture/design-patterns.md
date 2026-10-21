@@ -29,6 +29,18 @@ to recover a reasonable answer before
 falling back to an explicit `no_match` envelope — preferring an honest "no
 result" over a low-confidence false positive.
 
+# Intent-Scoped Retrieval
+
+Used in [`HybridSearch`](../types/HybridSearch.md) and
+[`classify_content_intent`](../functions/classify_content_intent.md). The
+content scope is inferred from the query shape rather than fixed, so a
+code-shaped query searches source first, a docs-shaped query widens to all
+content, and a neutral query uses `code_focused`. The same intent machinery
+separates declarations from mentions: identifier/config-key queries lift the
+definition and only demote usages when the definition is present, and
+constant-shaped queries lift constant declarations over similarly named
+accessors. Every lift remains a bounded, evidence-backed boost.
+
 # Bounded, Evidence-Based Boosting
 
 Used in [`match_boost.py`](../modules/engine/match_boost.md) and

@@ -15,7 +15,9 @@ sources:
 
 Handles the `search` subcommand, invoking
 [`HybridSearch.search`](../types/HybridSearch.md) and formatting the
-response envelope for terminal output. Defined in
+response envelope for terminal output. Results are printed with root-relative
+paths; `--explain-ranking` additionally prints the per-result score breakdown
+and the ranking explanation instead of forwarding to the daemon. Defined in
 [`cli.main`](../modules/cli/main.md).
 
 # Signature
@@ -26,7 +28,7 @@ response envelope for terminal output. Defined in
 
 | Name | Type | Description |
 |---|---|---|
-| `args` | `argparse.Namespace` | Parsed arguments; `query`, `limit`, `language`, `include_tests`, `json`, `no_model` are honoured. |
+| `args` | `argparse.Namespace` | Parsed arguments; `query`, `limit`, `language`, `content`, `include_tests` (off by default; `--include-tests` opts in), `matching`, `json`, `no_model`, `regex`, `compact`, `max_snippet_lines`, `explain_ranking`, and `no_startup_check` are honoured. |
 
 # Returns
 

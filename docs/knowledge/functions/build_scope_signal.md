@@ -15,8 +15,11 @@ sources:
 
 Generates a surface-neutral message explaining why content was excluded
 from search results (e.g. docs excluded from a code-only scope), and
-recommending the [`scope_override`](scope_override.md).
-Defined in
+recommending the [`scope_override`](scope_override.md). The text never names a
+command flag, so every surface renders the same message and adds its own
+override dialect. It returns `None` for `CODE` and `NEUTRAL` intents (no
+exclusion is implied) and whenever the effective scope already includes the
+intent's content type. Defined in
 [`engine.intent_detection`](../modules/engine/intent_detection.md).
 
 # Signature

@@ -15,7 +15,7 @@ status: draft
 * [BM25Search](BM25Search.md) - FTS5-based BM25 keyword search over the indexed code_chunks corpus.
 * [BoostVerdict](BoostVerdict.md) - Final bounded boost/no-boost decision produced by the match-boost pass for a single candidate.
 * [ConfidenceMatchEvidence](ConfidenceMatchEvidence.md) - Per-result facts used for confidence computation (confidence.py's MatchEvidence, renamed here to avoid collision).
-* [ContentIntent](ContentIntent.md) - StrEnum for the content axis a query targets (DOCS, CONFIG, NEUTRAL).
+* [ContentIntent](ContentIntent.md) - StrEnum for the content axis a query targets (DOCS, CONFIG, CODE, NEUTRAL).
 * [ContentType](ContentType.md) - StrEnum for the content axis an indexed chunk belongs to (code, config, docs).
 * [ContextManager](ContextManager.md) - Manages the on-disk context directory holding all persistent index data.
 * [DaemonClient](DaemonClient.md) - Client for connecting to and querying a running QueryDaemon over its local socket.
@@ -58,11 +58,11 @@ status: draft
 * [RationaleStore](RationaleStore.md) - CRUD and full-text search for rationale comments linked to symbols.
 * [Redactor](Redactor.md) - Regex-based secret redactor that applies patterns to text and tracks redaction counts.
 * [RelevanceScore](RelevanceScore.md) - Final combined relevance score from structural semantic signals and vector similarity.
-* [Reranker](Reranker.md) - Adjusts raw search scores using definition/file-role boosts, test-file and non-canonical penalties, and session weighting.
+* [Reranker](Reranker.md) - Adjusts raw search scores using definition/identifier/config-key boosts, file-role and test-file penalties, and session weighting.
 * [ResolutionResult](ResolutionResult.md) - Outcome of resolving a name query to a symbol: exact match, ambiguous candidates, or not found.
 * [SemanticSignals](SemanticSignals.md) - Structural semantic signals (package overlap, type sharing, call proximity) between an anchor and a candidate symbol.
 * [SessionDatabase](SessionDatabase.md) - Tracks code navigation events to enable session-based personalised reranking with exponential decay.
-* [Settings](Settings.md) - Central configuration dataclass with 144 CODE_SEARCH_* environment-variable-backed fields.
+* [Settings](Settings.md) - Central configuration dataclass with 151 CODE_SEARCH_* environment-variable-backed fields.
 * [SymbolExtractor](SymbolExtractor.md) - Extracts symbols and edges (calls, imports, inheritance) from tree-sitter ASTs.
 * [SymbolReference](SymbolReference.md) - A caller-supplied name parsed into its matching components (raw, leaf, qualifier, signature, form).
 * [SymbolStore](SymbolStore.md) - SQLite-backed CRUD, resolution, and lookup for symbol records.

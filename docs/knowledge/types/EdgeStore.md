@@ -29,3 +29,4 @@ High-level CRUD for call-graph edges and traversal queries. Defined in
 | `get_call_graph(symbol_id: int, direction: str = 'both', max_depth: int = 1) -> dict[str, list[dict[str, Any]]]` | Traverse callers and/or callees via recursive CTE, clipped to *max_depth*. |
 | `get_subtypes(symbol_id: int, max_depth: int = 5) -> list[dict[str, Any]]` | Return types that inherit from *symbol_id*, with minimum depth. |
 | `get_ancestors(symbol_id: int, max_depth: int = 5) -> list[dict[str, Any]]` | Return the class ancestors of *symbol_id*, nearest base first. |
+| `get_inheritance_targets(symbol_id: int) -> list[dict[str, Any]]` | Return the declared `INHERITS` targets of *symbol_id* as `{name, fqn, resolved}`, reading `target_raw` for unresolved edges. |

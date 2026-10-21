@@ -15,9 +15,11 @@ sources:
 
 Handles the `query` subcommand: calls
 [`GraphQueryService.query`](../types/GraphQueryService.md) to seed a bounded
-traversal from the hybrid-search ranker and prints the result with
-[`render_query_text`](render_query_text.md), or as JSON (with `freshness` and
-`query_time_ms`) under `--json`. Each call is written to the audit log as
+traversal from the same reranked hits the search surface returns and prints
+the result with [`render_query_text`](render_query_text.md) using
+root-relative paths, or as JSON (with `freshness` and `query_time_ms`) under
+`--json`. `--include-externals` keeps unresolved/external callee leaves that
+are collapsed by default. Each call is written to the audit log as
 `query_graph`. Defined in [`cli.main`](../modules/cli/main.md).
 
 # Signature
@@ -28,7 +30,7 @@ traversal from the hybrid-search ranker and prints the result with
 
 | Name | Type | Description |
 |---|---|---|
-| `args` | `argparse.Namespace` | Parsed arguments; `question`, `depth` (default 2), `max_nodes` (default 120), `edge_types` (default `CALLS,INHERITS`), `token_budget` (default 1500), `json`, and the global `context_dir`/`verbose` are honoured. |
+| `args` | `argparse.Namespace` | Parsed arguments; `question`, `depth` (default 2), `max_nodes` (default 120), `edge_types` (default `CALLS,INHERITS`), `token_budget` (default 1500), `include_externals`, `json`, and the global `context_dir`/`verbose` are honoured. |
 
 # Returns
 

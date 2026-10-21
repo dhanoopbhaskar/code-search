@@ -19,7 +19,9 @@ files into Abstract Syntax Trees (ASTs) and extract meaningful chunks
 comments, etc.) for indexing in a multi-language code search engine.
 Supports language detection via file extensions, file discovery with
 configurable exclusion patterns, and extensible language definitions
-through [`LanguageConfig`](../../types/LanguageConfig.md).
+through [`LanguageConfig`](../../types/LanguageConfig.md). `.tsx` files are
+parsed with the internal `tsx` grammar dialect while the stored language
+token remains `typescript`.
 
 # Key Constants
 
@@ -30,7 +32,7 @@ through [`LanguageConfig`](../../types/LanguageConfig.md).
 | `PROSE_EXTENSIONS` | Extensions for prose/transient files not indexed by default |
 | `LOCKFILE_NAMES` | Well-known package lockfile names |
 | `SUPPORTED_LANGUAGES` | 15 languages with bundled tree-sitter grammars |
-| `LANGUAGE_GRAMMAR_MAP` | Maps language names to tree-sitter grammar Python packages |
+| `LANGUAGE_GRAMMAR_MAP` | Maps language names (including the internal `tsx` dialect) to tree-sitter grammar Python packages |
 | `EXTENSIONLESS_INFRA_FILES` | Extension-less infra filenames (`dockerfile`, `makefile`) mapped to language tokens |
 | `EXCLUDED_FILE_NAMES` | File names never indexed regardless of language (`.DS_Store`) |
 
