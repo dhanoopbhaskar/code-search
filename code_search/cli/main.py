@@ -42,8 +42,24 @@ def _setup_logging(verbose: bool = False) -> None:
     )
 
 
-def _initialize_components(context_dir: Path) -> dict[str, Any]:
-    """Create and wire up all engine components for a given context directory."""
+def _initialize_components(
+    context_dir: Path,
+    settings: Settings | None = None,
+    load_vectors: bool = True,
+    for_index: bool = False,
+) -> dict[str, Any]:
+    """Create and wire up all engine components for a given context directory.
+
+    Args:
+        context_dir: Directory holding the index, vectors, and session/audit DBs.
+        settings: Optional pre-resolved settings (for CLI flag overrides); when
+            omitted the environment and ``context_dir`` determine the config.
+        load_vectors: Whether to load the on-disk vector index. Commands that
+            only use the symbol graph skip the sidecar load, which is the
+            largest fixed cost of a one-shot invocation.
+        for_index: Resolve the layout from *settings* (the requested write
+            layout) instead of the layout recorded in index metadata.
+    """
     from code_search.context import ContextManager
     from code_search.engine.audit import AuditDatabase
     from code_search.engine.embeddings import (
@@ -66,7 +82,7 @@ def _initialize_components(context_dir: Path) -> dict[str, Any]:
 
     _reset_parser_warnings()
     _reset_embedding_warnings()
-    settings = Settings.with_context_dir(context_dir)
+    settings = settings or Settings.with_context_dir(context_dir)
     ctx = ContextManager(settings)
     ctx.ensure()
     paths = ctx.paths
@@ -80,11 +96,39 @@ def _initialize_components(context_dir: Path) -> dict[str, Any]:
     symbol_store = SymbolStore(db, settings)
 
     embedding_gen = EmbeddingGenerator(settings)
-    vector_index = VectorIndex(
-        paths.get("vectors_bin", context_dir / "vectors.bin"),
-        paths.get("vectors_meta", context_dir / "vectors.meta.json"),
+    recorded_layout = (
+        settings.index_layout
+        if for_index
+        else (metadata_store.get("index_layout") or settings.index_layout)
     )
-    vector_index.load()
+    compact_layout = recorded_layout == "compact"
+    vectors_bin = context_dir / ("vectors.v2.bin" if compact_layout else "vectors.bin")
+    vectors_meta = context_dir / ("vectors.v2.meta" if compact_layout else "vectors.meta.json")
+    vector_index = VectorIndex(
+        vectors_bin,
+        vectors_meta,
+        compact=compact_layout,
+    )
+    if compact_layout:
+        path_cache: dict[int, str | None] = {}
+
+        def _chunk_path(chunk_id: int) -> str | None:
+            if chunk_id in path_cache:
+                return path_cache[chunk_id]
+            try:
+                with db.connect() as conn:
+                    row = conn.execute(
+                        "SELECT file_path FROM code_chunks WHERE id = ?;", (chunk_id,)
+                    ).fetchone()
+                resolved = str(row["file_path"]) if row is not None else None
+            except Exception:
+                resolved = None
+            path_cache[chunk_id] = resolved
+            return resolved
+
+        vector_index.set_path_lookup(_chunk_path)
+    if load_vectors:
+        vector_index.load()
 
     try:
         session_db = SessionDatabase(paths["session"], settings)
@@ -257,7 +301,7 @@ def cmd_index(args: argparse.Namespace) -> int:
     if args.context_dir:
         context_dir = Path(args.context_dir).resolve()
 
-    comps = _initialize_components(context_dir)
+    comps = _initialize_components(context_dir, settings=_settings_for_args(args), for_index=True)
 
     profile_error = _check_model_profile(comps["settings"])
     if profile_error is not None:
@@ -472,6 +516,40 @@ def _print_scope_override(scope: dict[str, Any]) -> None:
         print(f"Override with: --content {override}", file=sys.stderr)
 
 
+def _settings_for_args(args: argparse.Namespace) -> Settings:
+    """Resolve settings with the runtime-profile CLI overrides applied.
+
+    Args:
+        args: Parsed arguments that may carry ``runtime_profile``,
+            ``index_layout``, ``search_backend``, or ``freshness_mode``.
+
+    Returns:
+        The environment-derived settings with any explicit flags replacing the
+        corresponding profile defaults.
+    """
+    from dataclasses import replace
+
+    settings = Settings.with_context_dir(_resolve_context_dir(args))
+    overrides: dict[str, Any] = {}
+    for attr in ("runtime_profile", "index_layout", "search_backend", "freshness_mode"):
+        value = getattr(args, attr, None)
+        if value is not None:
+            overrides[attr] = value
+    if getattr(args, "no_graph", False):
+        overrides["index_graph"] = False
+    return replace(settings, **overrides) if overrides else settings
+
+
+def _graph_not_indexed_message(comps: dict[str, Any]) -> str | None:
+    """Return the graph_not_indexed explanation when the index has no graph."""
+    if comps["metadata"].get("graph_indexed") == "false":
+        return (
+            "graph_not_indexed: this index was built with --no-graph; "
+            "re-run 'code-search index --force' to populate call edges"
+        )
+    return None
+
+
 def cmd_search(args: argparse.Namespace) -> int:
     """Run a natural-language search over the index.
 
@@ -514,7 +592,7 @@ def cmd_search(args: argparse.Namespace) -> int:
     start = time.monotonic()
     _setup_logging(args.verbose)
     context_dir = _resolve_context_dir(args)
-    comps = _initialize_components(context_dir)
+    comps = _initialize_components(context_dir, settings=_settings_for_args(args))
     settings = comps["settings"]
 
     if external_warmup:
@@ -586,6 +664,7 @@ def cmd_search(args: argparse.Namespace) -> int:
         content=getattr(args, "content", None),
         matching=getattr(args, "matching", None),
         regex=getattr(args, "regex", False),
+        allow_weak=bool(getattr(args, "allow_weak", False)),
     )
     raw_results = search_envelope["results"]
     mode = str(search_envelope.get("mode", "ranked"))
@@ -706,7 +785,12 @@ def cmd_search(args: argparse.Namespace) -> int:
             else int((time.monotonic() - start) * 1000)
         )
         if args.json:
-            print(json.dumps(_envelope_out([]), indent=2, default=str))
+            indent = (
+                2
+                if (getattr(args, "pretty", False) or not getattr(args, "compact", True))
+                else None
+            )
+            print(json.dumps(_envelope_out([]), indent=indent, default=str))
         else:
             if explanation:
                 rescued = ", ".join(explanation.get("rescued_tiers") or []) or "none"
@@ -742,14 +826,19 @@ def cmd_search(args: argparse.Namespace) -> int:
 
     compact = bool(getattr(args, "compact", True))
     max_snippet_lines = getattr(args, "max_snippet_lines", None)
+    paths_only = bool(getattr(args, "paths_only", False))
     if (
         not explain_ranking
-        and (args.json or max_snippet_lines is not None)
-        and (compact or max_snippet_lines is not None)
+        and (args.json or max_snippet_lines is not None or paths_only)
+        and (compact or max_snippet_lines is not None or paths_only)
     ):
         from code_search.engine.response_service import compact_results
 
-        redacted = compact_results(redacted, max_snippet_lines or 20)
+        redacted = compact_results(
+            redacted,
+            10 if max_snippet_lines is None else max_snippet_lines,
+            paths_only=paths_only,
+        )
 
     total_redacted = sum(r.get("redacted_count", 0) for r in redacted)
     engine_duration = search_envelope.get("query_time_ms")
@@ -760,7 +849,8 @@ def cmd_search(args: argparse.Namespace) -> int:
     )
 
     if args.json:
-        print(json.dumps(_envelope_out(redacted), indent=2, default=str))
+        indent = 2 if (getattr(args, "pretty", False) or not compact) else None
+        print(json.dumps(_envelope_out(redacted), indent=indent, default=str))
     else:
         index_root = comps["metadata"].get("index_root") or str(context_dir.parent)
         _print_search_results(redacted, settings, root=index_root)
@@ -815,6 +905,8 @@ def cmd_symbol(args: argparse.Namespace) -> int:
 
     from code_search.mcp.server import _freshness_signal
 
+    if not getattr(args, "no_startup_check", False):
+        _ensure_resident_service(args)
     forwarded = _try_forward_to_daemon(args)
     if forwarded is not None:
         return forwarded
@@ -822,7 +914,9 @@ def cmd_symbol(args: argparse.Namespace) -> int:
     start = time.monotonic()
     _setup_logging(args.verbose)
     context_dir = _resolve_context_dir(args)
-    comps = _initialize_components(context_dir)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args), load_vectors=False
+    )
     settings = comps["settings"]
 
     status = comps["metadata"].get_index_status()
@@ -978,6 +1072,8 @@ def cmd_graph(args: argparse.Namespace) -> int:
     """
     import time
 
+    if not getattr(args, "no_startup_check", False):
+        _ensure_resident_service(args)
     forwarded = _try_forward_to_daemon(args)
     if forwarded is not None:
         return forwarded
@@ -985,12 +1081,22 @@ def cmd_graph(args: argparse.Namespace) -> int:
     start = time.monotonic()
     _setup_logging(args.verbose)
     context_dir = _resolve_context_dir(args)
-    comps = _initialize_components(context_dir)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args), load_vectors=False
+    )
     settings = comps["settings"]
 
     status = comps["metadata"].get_index_status()
     if status not in ("ready",):
         print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
+        return 1
+
+    graph_missing = _graph_not_indexed_message(comps)
+    if graph_missing is not None:
+        if args.json:
+            print(json.dumps({"error": "graph_not_indexed", "message": graph_missing}))
+        else:
+            print(graph_missing, file=sys.stderr)
         return 1
 
     from code_search.mcp.server import _call_neighbors_payload, _freshness_signal
@@ -1005,12 +1111,29 @@ def cmd_graph(args: argparse.Namespace) -> int:
         depth,
         comps.get("freshness"),
         args.transitive,
+        comps["db"],
     )
     data = json.loads(payload)
     symbol = data.get("symbol")
     callers = data.get("callers") or []
     callees = data.get("callees") or []
     index_root = comps["metadata"].get("index_root") or str(context_dir.parent)
+    from code_search.engine.graph_query import edge_resolution_stats
+
+    coverage = edge_resolution_stats(comps["db"])
+    data["coverage"] = coverage
+    unresolved: list[dict[str, Any]] = []
+    if getattr(args, "explain_unresolved", False) and symbol is not None:
+        with comps["db"].connect() as conn:
+            rows = conn.execute(
+                "SELECT edge_type, target_raw FROM graph_edges "
+                "WHERE source_symbol_id = ? AND resolved = 0 ORDER BY edge_type, target_raw;",
+                (symbol.get("id"),),
+            ).fetchall()
+        unresolved = [
+            {"edge_type": row["edge_type"], "target_raw": row["target_raw"]} for row in rows
+        ]
+        data["unresolved"] = unresolved
 
     if args.json:
         data.setdefault("freshness", _freshness_signal(comps))
@@ -1027,6 +1150,25 @@ def cmd_graph(args: argparse.Namespace) -> int:
         _emit_stale_notice(_freshness_signal(comps))
     else:
         _print_graph_results(symbol, callers, callees, root=index_root)
+        for edge_type, stats in coverage.items():
+            print(
+                f"{edge_type}: {stats['ratio'] / 10:.0f}% resolved "
+                f"({stats['resolved']}/{stats['total']})"
+            )
+        if unresolved:
+            print("Unresolved references:")
+            for item in unresolved:
+                print(f"  {item['edge_type']}: {item['target_raw']}")
+        elif (
+            symbol is not None
+            and not callers
+            and not callees
+            and any(stats["unresolved"] for stats in coverage.values())
+        ):
+            print(
+                "No callers/callees resolved; run with --explain-unresolved to list "
+                "unresolved raw targets."
+            )
         _emit_stale_notice(_freshness_signal(comps))
 
     if direction == "implements":
@@ -1069,6 +1211,8 @@ def cmd_implementations(args: argparse.Namespace) -> int:
 
     from code_search.mcp.server import _freshness_signal
 
+    if not getattr(args, "no_startup_check", False):
+        _ensure_resident_service(args)
     forwarded = _try_forward_to_daemon(args)
     if forwarded is not None:
         return forwarded
@@ -1076,7 +1220,9 @@ def cmd_implementations(args: argparse.Namespace) -> int:
     start = time.monotonic()
     _setup_logging(args.verbose)
     context_dir = _resolve_context_dir(args)
-    comps = _initialize_components(context_dir)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args), load_vectors=False
+    )
     settings = comps["settings"]
 
     status = comps["metadata"].get_index_status()
@@ -1173,10 +1319,16 @@ def cmd_find_related(args: argparse.Namespace) -> int:
         A process exit code: ``0`` on success, ``1`` when the index is not
         initialised.
     """
+    if not getattr(args, "no_startup_check", False):
+        _ensure_resident_service(args)
+    forwarded = _try_forward_to_daemon(args)
+    if forwarded is not None:
+        return forwarded
+
     start = time.monotonic()
     _setup_logging(args.verbose)
     context_dir = _resolve_context_dir(args)
-    comps = _initialize_components(context_dir)
+    comps = _initialize_components(context_dir, settings=_settings_for_args(args))
     settings = comps["settings"]
     if comps["metadata"].get_index_status() != "ready":
         print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
@@ -1227,10 +1379,20 @@ def cmd_query(args: argparse.Namespace) -> int:
     start = time.monotonic()
     _setup_logging(args.verbose)
     context_dir = _resolve_context_dir(args)
-    comps = _initialize_components(context_dir)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args), load_vectors=False
+    )
     settings = comps["settings"]
     if comps["metadata"].get_index_status() != "ready":
         print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
+        return 1
+
+    graph_missing = _graph_not_indexed_message(comps)
+    if graph_missing is not None:
+        if getattr(args, "json", False):
+            print(json.dumps({"error": "graph_not_indexed", "message": graph_missing}))
+        else:
+            print(graph_missing, file=sys.stderr)
         return 1
 
     service = _graph_query_service(comps)
@@ -1274,10 +1436,20 @@ def cmd_path(args: argparse.Namespace) -> int:
     start = time.monotonic()
     _setup_logging(args.verbose)
     context_dir = _resolve_context_dir(args)
-    comps = _initialize_components(context_dir)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args), load_vectors=False
+    )
     settings = comps["settings"]
     if comps["metadata"].get_index_status() != "ready":
         print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
+        return 1
+
+    graph_missing = _graph_not_indexed_message(comps)
+    if graph_missing is not None:
+        if getattr(args, "json", False):
+            print(json.dumps({"error": "graph_not_indexed", "message": graph_missing}))
+        else:
+            print(graph_missing, file=sys.stderr)
         return 1
 
     service = _graph_query_service(comps)
@@ -1319,10 +1491,20 @@ def cmd_explain(args: argparse.Namespace) -> int:
     start = time.monotonic()
     _setup_logging(args.verbose)
     context_dir = _resolve_context_dir(args)
-    comps = _initialize_components(context_dir)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args), load_vectors=False
+    )
     settings = comps["settings"]
     if comps["metadata"].get_index_status() != "ready":
         print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
+        return 1
+
+    graph_missing = _graph_not_indexed_message(comps)
+    if graph_missing is not None:
+        if getattr(args, "json", False):
+            print(json.dumps({"error": "graph_not_indexed", "message": graph_missing}))
+        else:
+            print(graph_missing, file=sys.stderr)
         return 1
 
     service = _graph_query_service(comps)
@@ -1363,7 +1545,9 @@ def cmd_affected(args: argparse.Namespace) -> int:
     start = time.monotonic()
     _setup_logging(args.verbose)
     context_dir = _resolve_context_dir(args)
-    comps = _initialize_components(context_dir)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args), load_vectors=False
+    )
     settings = comps["settings"]
     if comps["metadata"].get_index_status() != "ready":
         print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
@@ -1379,6 +1563,14 @@ def cmd_affected(args: argparse.Namespace) -> int:
             return 1
     if not changed:
         print("No changed files: pass paths or --since <git-ref>.", file=sys.stderr)
+        return 1
+
+    graph_missing = _graph_not_indexed_message(comps)
+    if graph_missing is not None:
+        if getattr(args, "json", False):
+            print(json.dumps({"error": "graph_not_indexed", "message": graph_missing}))
+        else:
+            print(graph_missing, file=sys.stderr)
         return 1
 
     service = _graph_query_service(comps)
@@ -1414,9 +1606,19 @@ def cmd_map(args: argparse.Namespace) -> int:
     start = time.monotonic()
     _setup_logging(args.verbose)
     context_dir = _resolve_context_dir(args)
-    comps = _initialize_components(context_dir)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args), load_vectors=False
+    )
     if comps["metadata"].get_index_status() != "ready":
         print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
+        return 1
+
+    graph_missing = _graph_not_indexed_message(comps)
+    if graph_missing is not None:
+        if getattr(args, "json", False):
+            print(json.dumps({"error": "graph_not_indexed", "message": graph_missing}))
+        else:
+            print(graph_missing, file=sys.stderr)
         return 1
 
     service = _graph_query_service(comps)
@@ -1466,7 +1668,9 @@ def cmd_metrics(args: argparse.Namespace) -> int:
     """
     _setup_logging(args.verbose)
     context_dir = _resolve_context_dir(args)
-    comps = _initialize_components(context_dir)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args), load_vectors=False
+    )
 
     meta = comps["metadata"].get_all()
 
@@ -1477,6 +1681,153 @@ def cmd_metrics(args: argparse.Namespace) -> int:
         _print_prometheus_metrics(meta, comps)
     else:
         _print_human_metrics(meta, comps)
+    return 0
+
+
+def _human_bytes(value: int) -> str:
+    """Format a byte count as a compact human-readable string."""
+    size = float(value)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{int(value)} B"
+
+
+def _index_age_seconds(metadata: Any) -> float | None:
+    """Return the seconds since ``last_indexed_at``, or ``None`` when unknown."""
+    from datetime import UTC, datetime
+
+    raw = metadata.get("last_indexed_at")
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return max(0.0, (datetime.now(UTC) - parsed).total_seconds())
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    """Alias for ``daemon start``."""
+    args.daemon_action = "start"
+    return cmd_daemon(args)
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    """Alias for ``daemon status``."""
+    args.daemon_action = "status"
+    return cmd_daemon(args)
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Report index age, model availability, daemon state, and index size."""
+    _setup_logging(args.verbose)
+    context_dir = _resolve_context_dir(args)
+    settings = _settings_for_args(args)
+    comps = _initialize_components(context_dir, settings=settings, load_vectors=False)
+    metadata = comps["metadata"]
+    from code_search.engine.daemon import daemon_status
+
+    status = daemon_status(context_dir)
+    age = _index_age_seconds(metadata)
+    graph_path = context_dir / "graph.db"
+    total = graph_path.stat().st_size if graph_path.is_file() else 0
+    payload = {
+        "context_dir": str(context_dir),
+        "index_status": metadata.get_index_status(),
+        "index_age_s": round(age, 1) if age is not None else None,
+        "index_bytes": total,
+        "profile": settings.runtime_profile,
+        "layout": metadata.get("index_layout") or settings.index_layout,
+        "daemon": status,
+        "model_available": comps["embedding_gen"].is_available(),
+        "graph_indexed": metadata.get("graph_indexed") != "false",
+    }
+    print(json.dumps(payload, indent=2, default=str))
+    return 0
+
+
+def cmd_stats(args: argparse.Namespace) -> int:
+    """Print the effective runtime profile, index layout, and disk footprint.
+
+    Reports the profile selection reason, the recorded layout/backend, index
+    age, database and vector sizes, and the largest content tables so the
+    storage experiments have a reproducible measurement surface.
+
+    Args:
+        args: Parsed arguments; ``format`` selects ``text`` or ``json``.
+
+    Returns:
+        ``0`` on success.
+    """
+    _setup_logging(args.verbose)
+    context_dir = _resolve_context_dir(args)
+    settings = _settings_for_args(args)
+    comps = _initialize_components(context_dir, settings=settings, load_vectors=False)
+    metadata = comps["metadata"]
+    db = comps["db"]
+
+    recorded_layout = metadata.get("index_layout") or settings.index_layout
+    graph_path = context_dir / "graph.db"
+    if not graph_path.is_file():
+        graph_path = Path(settings.context_dir) / "graph.db"
+    vector_bin = context_dir / "vectors.v2.bin"
+    if not vector_bin.is_file():
+        vector_bin = context_dir / "vectors.bin"
+    vector_meta = context_dir / "vectors.v2.meta"
+    if not vector_meta.is_file():
+        vector_meta = context_dir / "vectors.meta.json"
+
+    counts: dict[str, int] = {}
+    try:
+        with db.connect() as conn:
+            for table in ("code_chunks", "symbols", "graph_edges", "module_edges", "chunks_fts"):
+                row = conn.execute(f"SELECT COUNT(*) AS n FROM {table};").fetchone()
+                counts[table] = int(row["n"]) if row is not None else 0
+    except Exception as exc:
+        logger.debug("stats table counts unavailable: %s", exc)
+
+    age = _index_age_seconds(metadata)
+    payload: dict[str, Any] = {
+        "profile": settings.runtime_profile,
+        "profile_reason": settings.profile_reason(),
+        "layout": recorded_layout,
+        "backend": settings.search_backend,
+        "freshness_mode": settings.freshness_mode,
+        "index_status": metadata.get_index_status(),
+        "index_age_s": round(age, 1) if age is not None else None,
+        "graph_db_bytes": graph_path.stat().st_size if graph_path.is_file() else 0,
+        "vectors_bin_bytes": vector_bin.stat().st_size if vector_bin.is_file() else 0,
+        "vectors_meta_bytes": vector_meta.stat().st_size if vector_meta.is_file() else 0,
+        "counts": counts,
+        "thresholds": {
+            "compact_max_chunks": settings.compact_max_chunks,
+            "compact_max_index_mb": settings.compact_max_index_mb,
+            "memory_budget_mb": settings.memory_budget_mb,
+        },
+    }
+    payload["total_bytes"] = (
+        payload["graph_db_bytes"] + payload["vectors_bin_bytes"] + payload["vectors_meta_bytes"]
+    )
+
+    if getattr(args, "format", "text") == "json":
+        print(json.dumps(payload, indent=2, default=str))
+        return 0
+
+    print(f"Profile:        {payload['profile']} ({payload['profile_reason']})")
+    print(f"Layout:         {payload['layout']}")
+    print(f"Backend:        {payload['backend']}")
+    print(f"Freshness:      {payload['freshness_mode']}")
+    print(f"Index status:   {payload['index_status']}")
+    if age is not None:
+        print(f"Index age:      {age:.0f}s")
+    print(f"Total size:     {_human_bytes(int(payload['total_bytes']))}")
+    print(f"  graph.db:     {_human_bytes(int(payload['graph_db_bytes']))}")
+    print(f"  vectors.bin:  {_human_bytes(int(payload['vectors_bin_bytes']))}")
+    print(f"  vectors.meta: {_human_bytes(int(payload['vectors_meta_bytes']))}")
+    for table, count in counts.items():
+        print(f"  {table}: {count:,}")
     return 0
 
 
@@ -1945,7 +2296,6 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         clear_pidfile,
         daemon_status,
         default_socket_path,
-        write_pidfile,
     )
 
     socket_path = Path(args.port) if args.port else default_socket_path(context_dir)
@@ -1954,10 +2304,24 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         status = daemon_status(context_dir)
         if status["running"]:
             warm = "warm" if status.get("warm") else "warming"
-            print(f"running (pid={status['pid']}, socket={status['socket']}, {warm})")
+            state = status.get("state") or warm
+            print(f"running (pid={status['pid']}, socket={status['socket']}, state={state})")
         else:
-            print("not running")
+            print(f"not running (state={status.get('state') or 'unknown'})")
         return 0
+
+    if args.daemon_action == "wait":
+        from code_search.engine.daemon import daemon_status
+
+        deadline = time.monotonic() + float(getattr(args, "timeout", 30.0))
+        while time.monotonic() < deadline:
+            status = daemon_status(context_dir)
+            if status.get("running") and status.get("warm"):
+                print("ready")
+                return 0
+            time.sleep(0.1)
+        print("timed out waiting for a warm daemon", file=sys.stderr)
+        return 1
 
     if args.daemon_action == "stop":
         status = daemon_status(context_dir)
@@ -1982,9 +2346,24 @@ def cmd_daemon(args: argparse.Namespace) -> int:
     if DaemonClient.is_running(socket_path):
         print(f"already running (socket={socket_path})")
         return 0
+    from code_search.engine.daemon import pid_is_alive
+
+    if pid_is_alive(context_dir):
+        # A daemon is already spawning; wait for it instead of creating a
+        # second process.
+        deadline = time.monotonic() + Settings.with_context_dir(context_dir).startup_wait_s
+        while time.monotonic() < deadline:
+            if DaemonClient.is_serving(socket_path, timeout=0.1):
+                print(f"already running (socket={socket_path})")
+                return 0
+            if not pid_is_alive(context_dir):
+                break
+            time.sleep(0.05)
+        if pid_is_alive(context_dir):
+            print("daemon is still starting", file=sys.stderr)
+            return 1
 
     socket_path.parent.mkdir(parents=True, exist_ok=True)
-    write_pidfile(context_dir)
     log_path = context_dir / "code-search-daemon.log"
     with log_path.open("a", buffering=1) as log_handle:
         proc = subprocess.Popen(
@@ -2005,6 +2384,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             stdin=subprocess.DEVNULL,
             env=os.environ.copy(),
         )
+    (context_dir / "code-search.pid").write_text(str(proc.pid))
     print(f"started (pid={proc.pid}, socket={socket_path})")
     return 0
 
@@ -2065,7 +2445,6 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
         DaemonClient,
         default_socket_path,
         pid_is_alive,
-        write_pidfile,
     )
 
     context_dir = _resolve_context_dir(args)
@@ -2079,11 +2458,19 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
         # a crashed daemon.
         became_ready = False
         if pid_is_alive(context_dir):
-            for _ in range(3):
-                time.sleep(0.05)
+            deadline = time.monotonic() + Settings.with_context_dir(context_dir).startup_wait_s
+            while time.monotonic() < deadline:
                 if DaemonClient.is_serving(socket_path, timeout=0.1):
                     became_ready = True
                     break
+                if not pid_is_alive(context_dir):
+                    break
+                time.sleep(0.05)
+            if not became_ready:
+                # The recorded process is alive but never became reachable.
+                # Do not unlink its state while it may still be initialising;
+                # serve this invocation in-process instead.
+                return False
         if not became_ready:
             # A stale socket from a crashed/killed daemon must not make every
             # invocation pay a failed connection before falling back. Remove it
@@ -2095,11 +2482,21 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
             return False
         serving = True
     if not socket_path.exists():
+        if pid_is_alive(context_dir):
+            # Another client already spawned a daemon that has not bound yet.
+            # Wait for it instead of creating a competing process.
+            deadline = time.monotonic() + Settings.with_context_dir(context_dir).startup_wait_s
+            while time.monotonic() < deadline:
+                if DaemonClient.is_serving(socket_path, timeout=0.1):
+                    return True
+                if not pid_is_alive(context_dir):
+                    break
+                time.sleep(0.05)
+            return False
         socket_path.parent.mkdir(parents=True, exist_ok=True)
-        write_pidfile(context_dir)
         log_path = context_dir / "code-search-daemon.log"
         with log_path.open("a", buffering=1) as log_handle:
-            subprocess.Popen(
+            proc = subprocess.Popen(
                 [
                     _sys.executable,
                     "-m",
@@ -2117,11 +2514,15 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
                 stdin=subprocess.DEVNULL,
                 env=os.environ.copy(),
             )
-    # The socket is bound only after component initialisation, so allow the
-    # freshly spawned daemon a short grace period to answer. Never claim the
-    # model load without a successful ping: doing so on a dead daemon leaves
-    # the one-shot process permanently lexical-only.
-    deadline = time.monotonic() + 1.0
+        # The daemon writes its own pid; seeding it here closes the window where
+        # a second client sees no pid and spawns a duplicate.
+        pid = getattr(proc, "pid", os.getpid())
+        (context_dir / "code-search.pid").write_text(str(pid))
+    # The socket binds before component initialisation, so this window covers
+    # process spawn and socket bind only. Never claim the model load without a
+    # successful ping: doing so on a dead daemon leaves the one-shot process
+    # permanently lexical-only.
+    deadline = time.monotonic() + Settings.with_context_dir(context_dir).startup_wait_s
     while True:
         try:
             resp = DaemonClient(socket_path, timeout=0.05).request("ping")
@@ -2162,8 +2563,12 @@ def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
                     "content": getattr(args, "content", None),
                     "matching": getattr(args, "matching", None),
                     "regex": getattr(args, "regex", False),
+                    "allow_weak": bool(getattr(args, "allow_weak", False)),
                     "compact": getattr(args, "compact", True),
                     "max_snippet_lines": getattr(args, "max_snippet_lines", None),
+                    "paths_only": getattr(args, "paths_only", False),
+                    "startup_wait_s": Settings.with_context_dir(context_dir).startup_wait_s,
+                    "wait_for_warm": getattr(args, "wait_for_warm", None) or 0.0,
                 },
             )
         elif command == "symbol":
@@ -2180,6 +2585,11 @@ def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
                     "transitive": args.transitive,
                 },
             )
+        elif command == "find-related":
+            resp = client.request(
+                "find_related",
+                {"file_path": args.file_path, "line": args.line, "limit": args.limit},
+            )
         else:
             return None
         if not resp.get("ok"):
@@ -2187,8 +2597,17 @@ def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
             return None
         payload = resp["payload"]
         root = (payload.get("freshness") or {}).get("index_root") or str(context_dir.parent)
+        if command == "find-related" and payload.get("results"):
+            from code_search.engine.response_service import relativize_results
+
+            payload["results"] = relativize_results(payload["results"], root)
         if args.json:
-            print(json.dumps(payload, indent=2, default=str))
+            indent = (
+                2
+                if (getattr(args, "pretty", False) or not getattr(args, "compact", True))
+                else None
+            )
+            print(json.dumps(payload, indent=indent, default=str))
         else:
             if command == "search":
                 _print_search_results(payload.get("results") or [], root=root)
@@ -2337,11 +2756,13 @@ def build_parser() -> argparse.ArgumentParser:
     global_args.add_argument("--context-dir", help="Path to context directory")
     global_args.add_argument("--verbose", "-v", action="store_true", help="Verbose output")
     global_args.add_argument(
+        "--no-daemon",
         "--no-startup-check",
+        dest="no_startup_check",
         action="store_true",
         default=argparse.SUPPRESS,
-        help="Skip transparent daemon auto-start and serve this invocation locally "
-        "(repeat CLI use is faster once a daemon is already running)",
+        help="Serve this invocation in-process instead of forwarding to the daemon "
+        "(--no-startup-check is a deprecated alias)",
     )
 
     parser = argparse.ArgumentParser(
@@ -2364,6 +2785,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     index_parser.add_argument("--path", default=".", help="Path to codebase root")
     index_parser.add_argument("--force", action="store_true", help="Force re-index")
+    index_parser.add_argument(
+        "--runtime-profile",
+        choices=["standard", "small", "auto"],
+        default=None,
+        help="Runtime preset: standard (default), small, or auto",
+    )
+    index_parser.add_argument(
+        "--index-layout",
+        choices=["legacy", "compact"],
+        default=None,
+        help="Persisted index layout (default: derived from the runtime profile)",
+    )
+    index_parser.add_argument(
+        "--no-graph",
+        action="store_true",
+        help="Build a search-only index without graph edges or symbol rationale",
+    )
     index_parser.add_argument("--incremental", action="store_true", help="Incremental index")
     index_parser.add_argument("--watch", action="store_true", help="Watch for changes")
     index_parser.add_argument("--exclude", help="Comma-separated exclusion patterns")
@@ -2414,6 +2852,45 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     search_parser.add_argument("query", help="Search query")
+    search_parser.add_argument(
+        "--runtime-profile",
+        choices=["standard", "small", "auto"],
+        default=None,
+        help="Runtime preset: standard (default), small, or auto",
+    )
+    search_parser.add_argument(
+        "--search-backend",
+        choices=["sqlite", "memory"],
+        default=None,
+        help="Warm query backend (default: derived from the runtime profile)",
+    )
+    search_parser.add_argument(
+        "--freshness-mode",
+        choices=["blocking", "deferred"],
+        default=None,
+        help="Whether a query waits for the freshness scan (default: blocking)",
+    )
+    search_parser.add_argument(
+        "--wait-for-warm",
+        type=float,
+        default=None,
+        help="Seconds to wait for a cold daemon/model before using the reduced path",
+    )
+    search_parser.add_argument(
+        "--paths-only",
+        action="store_true",
+        help="Return only location and classification fields (no content)",
+    )
+    search_parser.add_argument(
+        "--pretty",
+        action="store_true",
+        help="Pretty-print compact JSON (default is single-line)",
+    )
+    search_parser.add_argument(
+        "--allow-weak",
+        action="store_true",
+        help="Return the weak ranked pool even when the extra abstention gate fires",
+    )
     search_parser.add_argument("--limit", type=int, default=10, help="Max results (max 50)")
     search_parser.add_argument(
         "--content",
@@ -2515,6 +2992,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Expand transitively to --depth; omit for direct-only",
     )
     graph_parser.add_argument("--json", action="store_true", help="JSON output")
+    graph_parser.add_argument(
+        "--explain-unresolved",
+        action="store_true",
+        help="List raw call targets that could not be resolved to indexed symbols",
+    )
     graph_parser.set_defaults(func=cmd_graph)
 
     implementations_parser = subparsers.add_parser(
@@ -2623,6 +3105,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     list_parser.set_defaults(func=cmd_list_languages)
 
+    start_parser = subparsers.add_parser(
+        "start", parents=[global_args], help="Start the daemon (alias for 'daemon start')"
+    )
+    start_parser.add_argument("--port", help="Unix socket path")
+    start_parser.set_defaults(func=cmd_start)
+
+    status_parser = subparsers.add_parser(
+        "status", parents=[global_args], help="Report daemon status (alias for 'daemon status')"
+    )
+    status_parser.add_argument("--port", help="Unix socket path")
+    status_parser.set_defaults(func=cmd_status)
+
+    doctor_parser = subparsers.add_parser(
+        "doctor", parents=[global_args], help="Diagnose index, model, and daemon state"
+    )
+    doctor_parser.set_defaults(func=cmd_doctor)
+
+    stats_parser = subparsers.add_parser(
+        "stats", parents=[global_args], help="Show profile, layout, and index footprint"
+    )
+    stats_parser.add_argument(
+        "--format", choices=["text", "json"], default="text", help="Output format"
+    )
+    stats_parser.set_defaults(func=cmd_stats)
+
     download_parser = subparsers.add_parser(
         "download-models", parents=[global_args], help="Download ML models for offline use"
     )
@@ -2643,6 +3150,13 @@ def build_parser() -> argparse.ArgumentParser:
         "status", parents=[global_args], help="Report daemon status"
     )
     daemon_status_parser.add_argument("--port", help="Unix socket path")
+    daemon_wait_parser = daemon_sub.add_parser(
+        "wait", parents=[global_args], help="Wait until the daemon is warm"
+    )
+    daemon_wait_parser.add_argument("--port", help="Unix socket path")
+    daemon_wait_parser.add_argument(
+        "--timeout", type=float, default=30.0, help="Seconds to wait for a warm daemon"
+    )
     daemon_run = daemon_sub.add_parser(
         "run", parents=[global_args], help="Run the daemon in the foreground"
     )

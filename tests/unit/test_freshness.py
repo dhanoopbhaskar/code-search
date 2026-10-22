@@ -15,7 +15,7 @@ from code_search.engine.config import Settings
 from code_search.engine.freshness import FreshnessChecker
 
 
-def _build_env(tmp_path: Path, ttl: float = 0.0) -> dict[str, Any]:
+def _build_env(tmp_path: Path, ttl: float = 0.0, **settings_kwargs: Any) -> dict[str, Any]:
     from code_search.context import ContextManager
     from code_search.engine.audit import AuditDatabase
     from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
@@ -32,7 +32,7 @@ def _build_env(tmp_path: Path, ttl: float = 0.0) -> dict[str, Any]:
     (repo / "src" / "baz.py").write_text("def baz(): return 3\n")
 
     context_dir = repo / ".context"
-    settings = Settings(context_dir=context_dir, freshness_ttl_seconds=ttl)
+    settings = Settings(context_dir=context_dir, freshness_ttl_seconds=ttl, **settings_kwargs)
     ctx = ContextManager(settings)
     ctx.ensure()
     paths = ctx.paths
@@ -229,3 +229,27 @@ def test_missing_stat_baseline_self_heals(tmp_path: Path) -> None:
     st = (env["repo"] / "src" / "mod.py").stat()
     assert row["size"] == st.st_size
     assert row["file_mtime_ns"] == st.st_mtime_ns
+
+
+def test_deferred_mode_never_blocks_on_scan(tmp_path: Path) -> None:
+    """A deferred check returns the cached signal immediately and refreshes."""
+    import time
+
+    env = _build_env(tmp_path, ttl=0.0, freshness_mode="deferred")
+    env["checker"].mark_clean()
+    (tmp_path / "repo" / "src" / "mod.py").write_text("def foo(): return 99\n")
+
+    started = time.monotonic()
+    first = env["checker"].signal()
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.1
+    assert first["refreshing"] is True
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        refreshed = env["checker"].signal()
+        if not refreshed["refreshing"]:
+            break
+        time.sleep(0.02)
+    assert refreshed["stale"] is True
+    assert refreshed["stale_change_count"] >= 1

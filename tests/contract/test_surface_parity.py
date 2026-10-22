@@ -272,7 +272,7 @@ def test_real_mcp_cli_and_engine_agree_on_scope_and_results(
 
     # Real CLI path over the same registry so the comparison is about surfaces,
     # not about how each surface constructs its components.
-    monkeypatch.setattr(cli_main, "_initialize_components", lambda _ctx: comps)
+    monkeypatch.setattr(cli_main, "_initialize_components", lambda _ctx, **_kwargs: comps)
     monkeypatch.setattr(cli_main, "_ensure_resident_service", lambda _args: False)
     monkeypatch.setattr(cli_main, "_try_forward_to_daemon", lambda _args: None)
     args = argparse.Namespace(

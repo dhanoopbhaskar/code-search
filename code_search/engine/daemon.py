@@ -119,6 +119,32 @@ def default_socket_path(context_dir: Path) -> Path:
     return Path("/tmp") / name
 
 
+def _state_path(context_dir: Path) -> Path:
+    """Return the daemon lifecycle-state file path for *context_dir*."""
+    return context_dir / "code-search.state"
+
+
+def write_state(context_dir: Path, state: str) -> None:
+    """Record the daemon lifecycle state (``starting``/``warming``/``ready``)."""
+    with suppress(OSError):
+        context_dir.mkdir(parents=True, exist_ok=True)
+        _state_path(context_dir).write_text(state)
+
+
+def read_state(context_dir: Path) -> str | None:
+    """Return the recorded daemon lifecycle state, or ``None`` when absent."""
+    try:
+        return _state_path(context_dir).read_text().strip() or None
+    except OSError:
+        return None
+
+
+def clear_state(context_dir: Path) -> None:
+    """Remove the lifecycle-state file, ignoring a missing file."""
+    with suppress(FileNotFoundError):
+        _state_path(context_dir).unlink()
+
+
 class QueryDaemon:
     """Serves ``search``/``symbol``/``graph``/``ping`` over a unix socket.
 
@@ -148,23 +174,21 @@ class QueryDaemon:
         self._running = threading.Event()
         self._comps: dict[str, Any] | None = None
         self._lock = threading.Lock()
+        self._ready = threading.Event()
 
     def start(self) -> None:
         """Initialise components, bind the socket, and serve connections forever.
 
-        Initialises components via ``_initialize_components``, binds the unix
-        socket (removing any stale socket file first), starts the embedding
-        model warming in the background, and blocks in an accept loop — each
-        connection is serviced on its own daemon thread. Binding first means
-        ``ping`` and ``search`` are answerable while the model is still warming;
-        a forwarded query during warmup is served from the reduced cold path.
-        Returns or raises only after ``stop()`` unblocks the loop.
+        The control socket is bound before the expensive component
+        initialisation so a waiting client can observe ``starting``/``warming``
+        instead of mistaking a slow start for a crashed daemon. Model warm-up
+        runs in the background; ``ping`` reports readiness and the recorded
+        lifecycle state. Returns or raises only after ``stop()`` unblocks the
+        loop.
         """
-        from code_search.cli.main import _initialize_components
-
         if self._verbose:
             logging.basicConfig(level=logging.DEBUG, stream=sys.stderr)
-        self._comps = _initialize_components(self._context_dir)
+        write_state(self._context_dir, "starting")
 
         self._socket_path.parent.mkdir(parents=True, exist_ok=True)
         with suppress(FileNotFoundError):
@@ -174,18 +198,12 @@ class QueryDaemon:
         self._server.bind(str(self._socket_path))
         self._server.listen(8)
         self._running.set()
-        logger.info("Query daemon listening on %s", self._socket_path)
+        logger.info("Query daemon socket bound on %s", self._socket_path)
 
-        # Warm the model in the background after binding so readiness probes and
-        # searches are answered while the load is in flight.
-        try:
-            begin_warmup = getattr(self._comps["embedding_gen"], "begin_warmup", None)
-            if callable(begin_warmup):
-                begin_warmup()
-            else:
-                self._comps["embedding_gen"].warm_start()
-        except Exception as exc:
-            logger.warning("Daemon model warm-up failed: %s", exc)
+        init_thread = threading.Thread(
+            target=self._initialize, name="code-search-daemon-init", daemon=True
+        )
+        init_thread.start()
 
         while self._running.is_set():
             try:
@@ -197,6 +215,29 @@ class QueryDaemon:
                 args=(conn,),
                 daemon=True,
             ).start()
+
+    def _initialize(self) -> None:
+        """Initialise components and warm the model on a background thread."""
+        from code_search.cli.main import _initialize_components
+
+        try:
+            self._comps = _initialize_components(self._context_dir)
+        except Exception as exc:
+            logger.exception("Daemon component initialisation failed: %s", exc)
+            write_state(self._context_dir, "failed")
+            return
+        self._ready.set()
+        write_state(self._context_dir, "warming")
+        try:
+            begin_warmup = getattr(self._comps["embedding_gen"], "begin_warmup", None)
+            if callable(begin_warmup):
+                begin_warmup()
+            else:
+                self._comps["embedding_gen"].warm_start()
+        except Exception as exc:
+            logger.warning("Daemon model warm-up failed: %s", exc)
+        if self._is_warm(self._comps):
+            write_state(self._context_dir, "ready")
 
     def stop(self) -> None:
         """Stop servicing requests, close the socket, and remove its path.
@@ -213,6 +254,7 @@ class QueryDaemon:
                 self._server.close()
         with suppress(FileNotFoundError):
             self._socket_path.unlink()
+        write_state(self._context_dir, "stopped")
 
     @property
     def is_running(self) -> bool:
@@ -298,12 +340,26 @@ class QueryDaemon:
         """
         action = request.get("action")
         params = request.get("params") or {}
+        if action == "ping":
+            comps = self._comps
+            warm = bool(comps is not None and self._is_warm(comps))
+            state = read_state(self._context_dir) or ("warming" if comps else "starting")
+            if warm:
+                state = "ready"
+                write_state(self._context_dir, "ready")
+            return {"ok": True, "payload": {"pong": True, "warm": warm, "state": state}}
+        wait_s = float(params.get("startup_wait_s") or 10.0)
+        if self._comps is None and wait_s > 0:
+            self._ready.wait(timeout=wait_s)
         comps = self._comps
         if comps is None:
-            return {"ok": False, "error": "daemon components not initialised"}
+            return {
+                "ok": False,
+                "error": "daemon is starting",
+                "state": read_state(self._context_dir) or "starting",
+                "retry_after_ms": 250,
+            }
         try:
-            if action == "ping":
-                return {"ok": True, "payload": {"pong": True, "warm": self._is_warm(comps)}}
             if action == "search":
                 return self._do_search(comps, params)
             if action == "symbol":
@@ -368,7 +424,8 @@ class QueryDaemon:
         wait_warm = getattr(warm_gen, "wait_warm", None)
         if callable(wait_warm):
             settings = comps.get("settings")
-            wait_s = float(getattr(settings, "warmup_wait_s", 0.0))
+            requested = float(params.get("wait_for_warm") or 0.0)
+            wait_s = max(float(getattr(settings, "warmup_wait_s", 0.0)), requested)
             if wait_s > 0:
                 with suppress(Exception):
                     wait_warm(wait_s)
@@ -383,6 +440,7 @@ class QueryDaemon:
             content=params.get("content"),
             matching=params.get("matching"),
             regex=bool(params.get("regex", False)),
+            allow_weak=bool(params.get("allow_weak", False)),
         )
         results = envelope["results"]
         reranked = comps["reranker"].rerank(
@@ -397,7 +455,12 @@ class QueryDaemon:
         if params.get("compact", True):
             from code_search.engine.response_service import compact_results
 
-            redacted = compact_results(redacted, int(params.get("max_snippet_lines") or 20))
+            max_lines = params.get("max_snippet_lines")
+            redacted = compact_results(
+                redacted,
+                10 if max_lines is None else int(max_lines),
+                paths_only=bool(params.get("paths_only", False)),
+            )
         from code_search.engine.response_service import relativize_results
 
         result_root = comps["metadata"].get("index_root") or str(Path(comps["context_dir"]).parent)
@@ -504,6 +567,9 @@ class QueryDaemon:
             payload["ranked_path"] = envelope["ranked_path"]
         if envelope.get("warmup_state") is not None:
             payload["warmup_state"] = envelope["warmup_state"]
+        if not QueryDaemon._is_warm(comps):
+            payload["warming"] = True
+            payload["retry_after_ms"] = 250
         if "degraded_reason" in envelope:
             payload["degraded_reason"] = envelope["degraded_reason"]
         if envelope.get("no_match") is not None:
@@ -640,6 +706,21 @@ class QueryDaemon:
         payload["found"] = outcome != "not_found"
         payload["ambiguous"] = outcome == "ambiguous"
         payload["freshness"] = _daemon_freshness(comps)
+        payload["query_time_ms"] = 0.0
+        audit_db = comps.get("audit_db")
+        if audit_db is not None:
+            try:
+                audit_db.write_entry(
+                    query_type="get_implementations",
+                    query_summary=str(params.get("fqn", ""))[
+                        : comps["settings"].query_summary_length
+                    ],
+                    result_count=len(payload.get("implementations") or []),
+                    duration_ms=0,
+                    redacted_count=0,
+                )
+            except Exception as exc:
+                logger.warning("Daemon audit write failed: %s", exc)
         return {"ok": True, "payload": payload}
 
     @staticmethod
@@ -689,6 +770,7 @@ class QueryDaemon:
                 depth,
                 comps.get("freshness"),
                 bool(params.get("transitive", False)),
+                comps.get("db"),
             )
         )
         if data.get("symbol") is None and data.get("candidates"):
@@ -1206,11 +1288,18 @@ def daemon_status(context_dir: Path) -> dict[str, Any]:
         return {
             "running": True,
             "warm": bool(payload.get("warm")),
+            "state": payload.get("state") or read_state(context_dir),
             "socket": str(sock),
             "pid": _read_pidfile(context_dir),
         }
     except Exception:
-        return {"running": False, "warm": False, "socket": str(sock), "pid": None}
+        return {
+            "running": False,
+            "warm": False,
+            "state": read_state(context_dir),
+            "socket": str(sock),
+            "pid": _read_pidfile(context_dir),
+        }
 
 
 def _pidfile_path(context_dir: Path) -> Path:
@@ -1298,4 +1387,5 @@ def run_daemon_foreground(context_dir: Path, socket_path: Path, verbose: bool) -
     finally:
         daemon.stop()
         clear_pidfile(context_dir)
+        clear_state(context_dir)
     return 0

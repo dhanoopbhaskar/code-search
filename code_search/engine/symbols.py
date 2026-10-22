@@ -58,6 +58,10 @@ _DEFINITION_NODES: set[str] = {
     "method_signature",
     "abstract_method_signature",
     "class",
+    "type_spec",
+    "method_elem",
+    "object_declaration",
+    "property_declaration",
 }
 
 # Object-creation nodes that may carry an inline anonymous class body. A Java
@@ -251,7 +255,9 @@ class SymbolExtractor:
         except Exception:
             return
 
-        if node_type in _DEFINITION_NODES:
+        if node_type in _DEFINITION_NODES or (
+            node_type == "type_alias" and file_path.suffix.lower() == ".go"
+        ):
             sym = self._extract_symbol(
                 node,
                 source_bytes,
@@ -1766,6 +1772,7 @@ class SymbolExtractor:
             lang = LANGUAGE_MAP.get(lang_suffix, "unknown")
             docstring = self._extract_docstring(node, source_bytes, lang)
             kind = kind_override or self._map_kind(node_type)
+            kind = self._refine_declared_kind(node, node_type, lang, kind)
             if kind == "function" and parent_fqn is not None:
                 kind = "method"
 
@@ -1889,7 +1896,7 @@ class SymbolExtractor:
             for child in node.children:
                 if child.type in ("name", "identifier"):
                     return child
-                if child.type == "variable_declarator":
+                if child.type in ("variable_declarator", "variable_declaration"):
                     for sub in child.children:
                         if sub.type in ("name", "identifier"):
                             return sub
@@ -1898,7 +1905,7 @@ class SymbolExtractor:
                 first = named[0]
                 if first.type in ("name", "identifier"):
                     return first
-                if first.type == "variable_declarator":
+                if first.type in ("variable_declarator", "variable_declaration"):
                     for sub in first.children:
                         if sub.type in ("name", "identifier"):
                             return sub
@@ -2018,6 +2025,42 @@ class SymbolExtractor:
         return None
 
     @staticmethod
+    def _refine_declared_kind(node: Any, node_type: str, language: str, kind: str) -> str:
+        """Refine a declaration's kind from its grammar-specific shape.
+
+        Go packs structs, interfaces, and aliases into ``type_spec`` nodes, and
+        Kotlin parses ``interface`` declarations as ``class_declaration``. The
+        node type alone cannot distinguish them, so the declaration's keyword
+        or type child decides the symbol kind.
+
+        Args:
+            node: The declaration AST node.
+            node_type: The node's tree-sitter type.
+            language: The file's internal language identifier.
+            kind: The kind mapped from *node_type*.
+
+        Returns:
+            The refined symbol kind.
+        """
+        if node_type == "type_spec":
+            try:
+                type_node = node.child_by_field_name("type")
+            except Exception:
+                type_node = None
+            if type_node is not None and type_node.type == "interface_type":
+                return "interface"
+            if type_node is not None and type_node.type == "struct_type":
+                return "class"
+            return "type_alias"
+        if node_type == "class_declaration" and language == "kotlin":
+            try:
+                if any(child.type == "interface" for child in node.children):
+                    return "interface"
+            except Exception:
+                pass
+        return kind
+
+    @staticmethod
     def _map_kind(node_type: str) -> str:
         """Map a tree-sitter definition node type to a symbol kind.
 
@@ -2042,6 +2085,11 @@ class SymbolExtractor:
             "method": "method",
             "method_signature": "method",
             "abstract_method_signature": "method",
+            "type_spec": "class",
+            "type_alias": "type_alias",
+            "method_elem": "method",
+            "object_declaration": "class",
+            "property_declaration": "field",
         }
         return mapping.get(node_type, "variable")
 
@@ -2060,6 +2108,11 @@ class SymbolStore:
         """
         self._db = db
         self._settings = settings or Settings.from_env()
+        self._resolve_cache: dict[tuple[str, int | None], dict[str, Any]] = {}
+
+    def invalidate_resolution_cache(self) -> None:
+        """Drop cached resolution envelopes after an index mutation."""
+        self._resolve_cache.clear()
 
     def insert_symbol(self, symbol: dict[str, Any]) -> int | None:
         """Insert a single symbol record, linking to its parent.
@@ -2225,20 +2278,30 @@ class SymbolStore:
             if max_candidates is not None
             else self._settings.max_resolution_candidates
         )
+        cache_key = (query, cap)
+        cached = self._resolve_cache.get(cache_key)
+        if cached is not None:
+            import copy
+
+            return copy.deepcopy(cached)
         with self._db.connect() as conn:
             candidates = [_attach_row_signature(c) for c in _resolve_symbol_candidates(conn, query)]
             reference = parse_reference(query)
             if reference.signature is not None:
-                return self._resolve_with_signature(
+                resolved = self._resolve_with_signature(
                     query, candidates, max_candidates=cap, conn=conn
                 )
+                self._resolve_cache[cache_key] = resolved
+                return resolved
             symbol, ranked, kind = _rank_symbol_candidates(query, candidates, max_candidates=cap)
             result = ResolutionResult(symbol, ranked, kind)
             envelope = self._build_envelope(result)
             envelope["outcome"] = outcome_for_kind(envelope["kind"])
-            return self._attach_overload_info(
+            resolved = self._attach_overload_info(
                 conn, envelope, overload_scope=self._overload_scope(result)
             )
+            self._resolve_cache[cache_key] = resolved
+            return resolved
 
     def _build_envelope(self, result: ResolutionResult) -> dict[str, Any]:
         """Shape a policy result into the shared resolution envelope."""

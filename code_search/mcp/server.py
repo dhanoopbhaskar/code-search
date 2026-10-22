@@ -163,6 +163,7 @@ def _call_neighbors_payload(
     max_depth: int = 1,
     freshness: Any | None = None,
     transitive: bool = False,
+    db: Any | None = None,
 ) -> str:
     """Build the ``get_call_neighbors`` result payload (the ONE shared rule).
 
@@ -216,6 +217,11 @@ def _call_neighbors_payload(
         )
     effective_depth = max_depth if transitive else 1
     graph_result = edge_store.get_call_graph(sym["id"], direction, effective_depth)
+    coverage: dict[str, Any] | None = None
+    if db is not None:
+        from code_search.engine.graph_query import edge_resolution_stats
+
+        coverage = edge_resolution_stats(db)
     callers = graph_result.get("callers", [])
     callees = graph_result.get("callees", [])
     return _serialize(
@@ -230,6 +236,7 @@ def _call_neighbors_payload(
             },
             "callers": callers,
             "callees": callees,
+            **({"coverage": coverage} if coverage is not None else {}),
         },
         freshness,
     )
@@ -689,6 +696,8 @@ class MCPServer:
                 regex: bool = False,
                 compact: bool = True,
                 max_snippet_lines: int | None = None,
+                paths_only: bool = False,
+                allow_weak: bool = False,
             ) -> str:
                 """Run hybrid search, returning redacted, reranked JSON results.
 
@@ -717,6 +726,12 @@ class MCPServer:
                         outside exhaustive mode.
                     regex: Exhaustive-only regular-expression mode; the query
                         is compiled as a Python regex instead of tokenized.
+                    compact: Return the agent-sized result envelope (default).
+                    max_snippet_lines: Content lines per result; ``0`` omits
+                        content entirely.
+                    paths_only: Return only location and classification fields.
+                    allow_weak: Return the weak ranked pool even when the
+                        post-rank abstention gate would return no_match.
 
                 Returns:
                     A JSON object with ``results`` and ``freshness``.
@@ -756,6 +771,7 @@ class MCPServer:
                     content=content,
                     matching=matching,
                     regex=regex,
+                    allow_weak=allow_weak,
                 )
                 raw = envelope["results"]
                 env_mode = str(envelope.get("mode", "ranked"))
@@ -775,7 +791,11 @@ class MCPServer:
                 if compact:
                     from code_search.engine.response_service import compact_results
 
-                    redacted = compact_results(redacted, max_snippet_lines or 20)
+                    redacted = compact_results(
+                        redacted,
+                        10 if max_snippet_lines is None else max_snippet_lines,
+                        paths_only=paths_only,
+                    )
                 from code_search.engine.response_service import relativize_results
 
                 result_root = comps["metadata"].get("index_root") or str(
@@ -1005,6 +1025,7 @@ class MCPServer:
                     depth,
                     comps.get("freshness"),
                     transitive,
+                    comps.get("db"),
                 )
                 data = json.loads(payload)
                 callers = data.get("callers") or []

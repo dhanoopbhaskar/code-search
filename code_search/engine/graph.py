@@ -28,7 +28,7 @@ from code_search.engine.symbol_resolution import (
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 16
 SYMBOLS_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS symbols (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,7 +57,11 @@ CREATE TABLE IF NOT EXISTS symbols (
 
 SYMBOLS_INDEXES = [
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_fqn ON symbols(fqn);",
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_conventional_fqn ON symbols(conventional_fqn);",
+    # Conventional FQNs are not globally unique: the same package-and-class can
+    # appear in more than one source root (fixtures, vendored copies), and a
+    # field can share its name with a no-arg accessor. Symbol resolution treats
+    # multiple matches as ambiguous, so indexing must not drop them here.
+    "CREATE INDEX IF NOT EXISTS idx_symbols_conventional_fqn ON symbols(conventional_fqn);",
     "CREATE INDEX IF NOT EXISTS idx_symbols_file_path ON symbols(file_path);",
     "CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);",
     "CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);",
@@ -104,6 +108,7 @@ CREATE TABLE IF NOT EXISTS code_chunks (
     declared_rules TEXT,
     tokens_checksum TEXT,
     content_type TEXT NOT NULL DEFAULT 'code',
+    is_test INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     UNIQUE(file_path, line_start)
@@ -114,6 +119,33 @@ CODE_CHUNKS_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_chunks_file_line ON code_chunks(file_path, line_start);",
     "CREATE INDEX IF NOT EXISTS idx_chunks_fqn ON code_chunks(fqn);",
     "CREATE INDEX IF NOT EXISTS idx_chunks_definition ON code_chunks(is_definition);",
+    "CREATE INDEX IF NOT EXISTS idx_chunks_is_test_content ON code_chunks(is_test, content_type);",
+]
+
+# Persisted corpus statistics. Rebuilt at the end of every full or incremental
+# index run so a query can look up only the tokens and prefixes it needs
+# instead of scanning every chunk's ``subwords`` column.
+SUBWORD_STATS_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS subword_stats (
+    token TEXT NOT NULL,
+    language TEXT NOT NULL DEFAULT '',
+    doc_count INTEGER NOT NULL,
+    PRIMARY KEY(token, language)
+);
+"""
+
+PREFIX_STATS_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS prefix_stats (
+    prefix TEXT NOT NULL,
+    language TEXT NOT NULL DEFAULT '',
+    doc_count INTEGER NOT NULL,
+    PRIMARY KEY(prefix, language)
+);
+"""
+
+STATS_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_subword_stats_token ON subword_stats(token);",
+    "CREATE INDEX IF NOT EXISTS idx_prefix_stats_prefix ON prefix_stats(prefix);",
 ]
 
 CHUNKS_FTS_DDL = """
@@ -281,6 +313,9 @@ ALL_DDLS = [
     *GRAPH_EDGES_INDEXES,
     CODE_CHUNKS_TABLE_DDL,
     *CODE_CHUNKS_INDEXES,
+    SUBWORD_STATS_TABLE_DDL,
+    PREFIX_STATS_TABLE_DDL,
+    *STATS_INDEXES,
     CHUNKS_FTS_DDL,
     *CHUNKS_FTS_TRIGGERS,
     FILE_CHECKSUMS_TABLE_DDL,
@@ -390,17 +425,31 @@ def _resolve_symbol_candidates(
         # An empty/whitespace reference must report not_found rather than
         # matching every ``::``-bearing FQN through the empty suffix pattern.
         return []
-    base_rows = conn.execute(
+    # Stage 1a: indexed exact lookups. These use the unique/plain indexes and
+    # never a leading-wildcard LIKE, which would force a full symbol scan.
+    exact_rows = conn.execute(
         "SELECT s.*, p.name AS parent_name, p.kind AS parent_kind, "
         "p.fqn AS parent_fqn "
         "FROM symbols s LEFT JOIN symbols p ON s.parent_symbol_id = p.id "
-        "WHERE s.fqn = ? OR s.name = ? OR s.name = ? "
-        "OR s.fqn LIKE '%::' || ? OR s.conventional_fqn LIKE '%' || ? "
+        "WHERE s.fqn = ? OR s.name = ? OR s.name = ? OR s.conventional_fqn = ? "
         "ORDER BY s.id LIMIT 100;",
-        (query, query, leaf, query, query),
+        (query, query, leaf, query),
     ).fetchall()
-    if base_rows:
-        return [dict(r) for r in base_rows]
+    if exact_rows:
+        return [dict(r) for r in exact_rows]
+
+    # Stage 1b: suffix forms that cannot be indexed (``Class::member`` and
+    # conventional-FQN suffixes). Only reached when no exact row exists.
+    suffix_rows = conn.execute(
+        "SELECT s.*, p.name AS parent_name, p.kind AS parent_kind, "
+        "p.fqn AS parent_fqn "
+        "FROM symbols s LEFT JOIN symbols p ON s.parent_symbol_id = p.id "
+        "WHERE s.fqn LIKE '%::' || ? OR s.conventional_fqn LIKE '%' || ? "
+        "ORDER BY s.id LIMIT 100;",
+        (query, query),
+    ).fetchall()
+    if suffix_rows:
+        return [dict(r) for r in suffix_rows]
 
     # Stage 2: prefix / substring name match
     if len(leaf) >= 2:
@@ -612,6 +661,13 @@ class GraphDatabase:
         with self._write_lock:
             conn = self._create_connection()
             try:
+                # Additive v15 migration must run before the composite index on
+                # (is_test, content_type) is created on an existing database.
+                columns = conn.execute("PRAGMA table_info(code_chunks);").fetchall()
+                if columns and "is_test" not in {col["name"] for col in columns}:
+                    conn.execute(
+                        "ALTER TABLE code_chunks ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0;"
+                    )
                 for ddl in ALL_DDLS:
                     conn.execute(ddl)
                 row = conn.execute(
@@ -693,6 +749,8 @@ class GraphDatabase:
                             self._migrate_v11(conn)
                         if existing_version <= 13:
                             self._migrate_v14(conn)
+                        if existing_version <= 15:
+                            self._migrate_v16(conn)
                         conn.execute(
                             "UPDATE index_metadata SET value = ? WHERE key = 'index_version';",
                             (str(SCHEMA_VERSION),),
@@ -907,6 +965,21 @@ class GraphDatabase:
         """
         logger.info("Migrating schema <= v13 -> v14")
         conn.execute("INSERT INTO rationale_fts(rationale_fts) VALUES('rebuild');")
+
+    def _migrate_v16(self, conn: sqlite3.Connection) -> None:
+        """Migrate a v15 (or older) database to schema v16.
+
+        Replaces the unique ``idx_symbols_conventional_fqn`` index with a
+        non-unique one. Conventional FQNs collide legitimately: duplicate
+        copies of a class in separate source roots, and a field sharing its
+        name with a no-arg accessor. The unique constraint silently dropped
+        those symbols, so a re-index is required to restore them.
+        """
+        logger.info("Migrating schema <= v15 -> v16")
+        conn.execute("DROP INDEX IF EXISTS idx_symbols_conventional_fqn;")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_symbols_conventional_fqn ON symbols(conventional_fqn);"
+        )
 
     @staticmethod
     def _column_nullable(conn: sqlite3.Connection, table: str, column: str) -> bool:

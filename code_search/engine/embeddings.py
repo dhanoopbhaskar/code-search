@@ -824,6 +824,7 @@ class VectorIndex:
         vectors_bin_path: Path,
         vectors_meta_path: Path,
         removed_path: Path | None = None,
+        compact: bool = False,
     ) -> None:
         """Initialize an in-memory vector index backed by three on-disk files.
 
@@ -837,6 +838,9 @@ class VectorIndex:
                 per vector, each carrying ``vec_index`` and ``chunk_id``).
             removed_path: Path of the append-only tombstone list; defaults to
                 the binary path with a ``.removed`` suffix.
+            compact: Persist a compact sidecar (``chunk_id`` and
+                ``content_type`` only) instead of path/FQN metadata. Path
+                filters then resolve through the optional ``path_lookup``.
         """
         self._bin_path = vectors_bin_path
         self._meta_path = vectors_meta_path
@@ -851,6 +855,8 @@ class VectorIndex:
         self._rows_written = 0
         self._pending_removed: list[int] = []
         self._dirty = False
+        self._compact = compact
+        self._path_lookup: Any = None
 
     def load(self) -> None:
         """Load vectors, metadata, and tombstones from disk, if they exist."""
@@ -890,6 +896,23 @@ class VectorIndex:
             logger.warning("Failed to load vector index: %s", exc)
             self._reset_empty()
 
+    def set_path_lookup(self, lookup: Any) -> None:
+        """Attach a ``chunk_id -> file_path`` resolver for compact metadata."""
+        self._path_lookup = lookup
+
+    def _entry_path(self, entry: dict[str, Any]) -> str | None:
+        """Return an entry's file path, resolving compact metadata on demand."""
+        path = entry.get("file_path")
+        if path:
+            return str(path)
+        if self._path_lookup is None:
+            return None
+        try:
+            resolved = self._path_lookup(int(entry.get("chunk_id", -1)))
+        except Exception:
+            return None
+        return resolved if isinstance(resolved, str) else None
+
     def save(self) -> None:
         """Persist the delta since the last save (appended rows + tombstones).
 
@@ -904,9 +927,24 @@ class VectorIndex:
                 if vectors is not None:
                     with self._bin_path.open("ab") as f:
                         vectors[self._rows_written : self._n].tofile(f)
-                with self._meta_path.open("a") as f:
-                    for entry in self._metadata[self._rows_written : self._n]:
-                        f.write(json.dumps(entry) + "\n")
+                if self._compact:
+                    # Rewrite the compact sidecar as parallel arrays. Per-entry
+                    # JSON keys dominate the legacy 78 MB sidecar, so the array
+                    # form keeps a 174k-chunk index well under 5 MB.
+                    compact_payload = {
+                        "v": 2,
+                        "chunk_id": [entry.get("chunk_id") for entry in self._metadata],
+                        "content_type": [
+                            entry.get("content_type", "code") for entry in self._metadata
+                        ],
+                    }
+                    self._meta_path.write_text(
+                        json.dumps(compact_payload, separators=(",", ":")), encoding="utf-8"
+                    )
+                else:
+                    with self._meta_path.open("a") as f:
+                        for entry in self._metadata[self._rows_written : self._n]:
+                            f.write(json.dumps(entry) + "\n")
             if self._pending_removed:
                 with self._removed_path.open("a") as f:
                     for vec_index in self._pending_removed:
@@ -926,6 +964,28 @@ class VectorIndex:
         if not text.strip():
             return []
         stripped = text.strip()
+        if stripped.startswith("{"):
+            try:
+                data = json.loads(stripped)
+            except Exception:
+                data = None
+            if (
+                isinstance(data, dict)
+                and data.get("v") == 2
+                and isinstance(data.get("chunk_id"), list)
+            ):
+                chunk_ids = data.get("chunk_id") or []
+                content_types = data.get("content_type") or []
+                return [
+                    {
+                        "vec_index": index,
+                        "chunk_id": chunk_id,
+                        "content_type": content_types[index]
+                        if index < len(content_types)
+                        else "code",
+                    }
+                    for index, chunk_id in enumerate(chunk_ids)
+                ]
         if stripped.startswith("["):
             try:
                 data = json.loads(stripped)
@@ -1069,7 +1129,7 @@ class VectorIndex:
         if exclude_file_paths:
             keep = np.asarray(
                 [
-                    self._metadata[int(idx)].get("file_path") not in exclude_file_paths
+                    self._entry_path(self._metadata[int(idx)]) not in exclude_file_paths
                     for idx in alive
                 ],
                 dtype=bool,

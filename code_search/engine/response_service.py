@@ -41,9 +41,51 @@ _COMPACT_RESULT_FIELDS: tuple[str, ...] = (
 _SIGNATURE_MAX_CHARS = 200
 
 
+_PATHS_ONLY_FIELDS: tuple[str, ...] = (
+    "file_path",
+    "line_start",
+    "line_end",
+    "symbol",
+    "confidence_band",
+    "is_definition",
+    "is_test_file",
+)
+
+
+def _short_fqn(fqn: str | None, file_path: str | None) -> str | None:
+    """Return the trailing symbol name of *fqn*, or ``None`` when absent."""
+    if not fqn:
+        return None
+    normalized = fqn.split("(", 1)[0]
+    if file_path and normalized.startswith(file_path):
+        suffix = normalized[len(file_path) :].lstrip(":/\\")
+        if suffix:
+            normalized = suffix
+    if "::" in normalized:
+        normalized = normalized.rsplit("::", 1)[-1]
+    elif "." in normalized:
+        normalized = normalized.rsplit(".", 1)[-1]
+    return normalized or None
+
+
+def _drop_empty(result: dict[str, Any]) -> dict[str, Any]:
+    """Remove ``None``/empty optional fields from a compact result."""
+    flags = {"below_threshold", "borderline", "redacted_count"}
+    return {
+        key: value
+        for key, value in result.items()
+        if value is not None
+        and value != ""
+        and value != []
+        and value != {}
+        and not (key in flags and not value)
+    }
+
+
 def compact_result(
     result: dict[str, Any],
-    max_snippet_lines: int = 20,
+    max_snippet_lines: int = 10,
+    paths_only: bool = False,
 ) -> dict[str, Any]:
     """Return a trimmed, agent-sized version of a search result.
 
@@ -55,34 +97,45 @@ def compact_result(
 
     Args:
         result: A ranked search result.
-        max_snippet_lines: Maximum content lines to keep; values below 1 keep
-            one line.
+        max_snippet_lines: Maximum content lines to keep. ``0`` means no
+            content at all (matching the MCP ``max_snippet_lines=0`` contract).
+        paths_only: Return only location and classification fields.
 
     Returns:
-        A new result dict with the compact fields plus ``content``,
-        ``signature``, and ``content_truncated``.
+        A new result dict; optional empty fields are omitted.
     """
+    file_path = result.get("file_path")
+    symbol = _short_fqn(result.get("fqn"), file_path)
+    base = {key: result.get(key) for key in _COMPACT_RESULT_FIELDS if key in result}
+    base["symbol"] = symbol
+    # A compact envelope never repeats the full path inside ``fqn``.
+    if "fqn" in base:
+        base["fqn"] = symbol
+    if paths_only:
+        return _drop_empty({key: base.get(key) for key in _PATHS_ONLY_FIELDS})
+    limit = max(0, max_snippet_lines)
+    if limit == 0:
+        return _drop_empty(base)
     lines = (result.get("content") or "").splitlines()
-    limit = max(1, max_snippet_lines)
     snippet = "\n".join(lines[:limit])
     signature = ""
     for line in lines:
         if line.strip():
             signature = line.strip()
             break
-    compact = {key: result.get(key) for key in _COMPACT_RESULT_FIELDS if key in result}
-    compact["content"] = snippet
-    compact["signature"] = signature[:_SIGNATURE_MAX_CHARS]
-    compact["content_truncated"] = len(lines) > limit
-    return compact
+    base["content"] = snippet
+    base["signature"] = signature[:_SIGNATURE_MAX_CHARS]
+    base["content_truncated"] = len(lines) > limit
+    return _drop_empty(base)
 
 
 def compact_results(
     results: list[dict[str, Any]],
-    max_snippet_lines: int = 20,
+    max_snippet_lines: int = 10,
+    paths_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Apply :func:`compact_result` to every result in *results*."""
-    return [compact_result(result, max_snippet_lines) for result in results]
+    return [compact_result(result, max_snippet_lines, paths_only) for result in results]
 
 
 def relativize_results(

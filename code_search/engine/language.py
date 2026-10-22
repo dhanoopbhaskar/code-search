@@ -119,6 +119,38 @@ def language_vocabularies(db: Any) -> dict[str, set[str]]:
     return result
 
 
+def language_vocabularies_for_tokens(db: Any, tokens: set[str]) -> dict[str, set[str]]:
+    """Map languages to the queried tokens they contain.
+
+    Reads only the requested rows from the persisted ``subword_stats`` table, so
+    language inference never loads every chunk's vocabulary. Falls back to the
+    full legacy scan only when the statistics table is unavailable.
+
+    Args:
+        db: A database exposing ``connect()``.
+        tokens: The query's candidate sub-words.
+
+    Returns:
+        A mapping of language name to the subset of *tokens* observed in that
+        language. Empty when no token is present or the lookup fails.
+    """
+    if not tokens:
+        return {}
+    try:
+        placeholders = ",".join("?" for _ in tokens)
+        with db.connect() as conn:
+            rows = conn.execute(
+                f"SELECT token, language FROM subword_stats WHERE token IN ({placeholders});",
+                sorted(tokens),
+            ).fetchall()
+        result: dict[str, set[str]] = {}
+        for row in rows:
+            result.setdefault(row["language"] or "unknown", set()).add(row["token"])
+        return result
+    except Exception:
+        return language_vocabularies(db)
+
+
 def infer_query_language(
     query: str,
     symbol_store: Any | None = None,

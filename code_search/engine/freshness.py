@@ -21,6 +21,7 @@ pays a scan.
 import hashlib
 import logging
 import sqlite3
+import subprocess
 import threading
 import time
 from datetime import UTC, datetime
@@ -45,6 +46,7 @@ FRESHNESS_KEYS = (
     "index_status",
     "index_root",
     "checked_at",
+    "refreshing",
 )
 
 
@@ -109,25 +111,101 @@ class FreshnessChecker:
         self._context_dir = Path(context_dir)
         self._settings = settings or Settings.from_env()
         self._ttl = self._settings.freshness_ttl_seconds
+        self._mode = self._settings.freshness_mode
         self._lock = threading.Lock()
+        self._refresh_thread: threading.Thread | None = None
 
     def signal(self) -> dict[str, Any]:
-        """Return the current freshness signal, TTL-cached per metadata."""
+        """Return the current freshness signal, TTL-cached per metadata.
+
+        In ``blocking`` mode (the default) an expired cache is recomputed on
+        the calling thread, preserving the existing behaviour. In
+        ``deferred`` mode the last cached signal is served immediately and a
+        background thread refreshes it, so a query never waits for the
+        working-tree scan.
+        """
         now = time.time()
+        cached = self._metadata.get_json("freshness_signal")
+        cached_at = self._metadata.get("freshness_checked_at")
+        if self._mode == "deferred":
+            if self._cache_valid(cached_at, now) and isinstance(cached, dict):
+                result = dict(cached)
+                result["refreshing"] = self._is_refreshing()
+                return result
+            self._start_background_refresh()
+            if isinstance(cached, dict):
+                result = dict(cached)
+                result["refreshing"] = True
+                return result
+            pending = self._base_signal()
+            pending["refreshing"] = True
+            return pending
         with self._lock:
-            cached_at = self._metadata.get("freshness_checked_at")
-            if self._ttl > 0 and cached_at:
-                checked = _parse_iso(cached_at)
-                if checked is not None and (now - checked.timestamp()) < self._ttl:
-                    cached = self._metadata.get_json("freshness_signal")
-                    if isinstance(cached, dict):
-                        return cached
+            if self._cache_valid(cached_at, now) and isinstance(cached, dict):
+                return cached
             signal = self._compute()
-            checked_at = _now_iso()
-            signal["checked_at"] = checked_at
-            self._metadata.set("freshness_checked_at", checked_at)
-            self._metadata.set_json("freshness_signal", signal)
-            return signal
+            return self._store_signal(signal)
+
+    def _cache_valid(self, cached_at: str | None, now: float) -> bool:
+        """Return whether the cached signal is inside the effective TTL.
+
+        The effective TTL scales with the last scan duration so a slow corpus
+        is not rescanned faster than it can be served.
+        """
+        if self._ttl <= 0 or not cached_at:
+            return False
+        checked = _parse_iso(cached_at)
+        if checked is None:
+            return False
+        effective = max(self._ttl, self._last_scan_duration() * 2.0)
+        return (now - checked.timestamp()) < effective
+
+    def _last_scan_duration(self) -> float:
+        """Return the last full-scan duration in seconds (``0`` when unknown)."""
+        raw = self._metadata.get("freshness_scan_duration_s")
+        try:
+            return float(raw) if raw is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _is_refreshing(self) -> bool:
+        """Return whether a deferred background refresh is currently running."""
+        thread = self._refresh_thread
+        return thread is not None and thread.is_alive()
+
+    def _start_background_refresh(self) -> None:
+        """Start one background refresh when none is running."""
+        with self._lock:
+            if self._is_refreshing():
+                return
+            thread = threading.Thread(
+                target=self._refresh_worker,
+                name="code-search-freshness",
+                daemon=True,
+            )
+            self._refresh_thread = thread
+            thread.start()
+
+    def _refresh_worker(self) -> None:
+        """Compute and store a freshness signal on a background thread."""
+        try:
+            started = time.monotonic()
+            signal = self._compute()
+            duration = time.monotonic() - started
+            self._metadata.set("freshness_scan_duration_s", f"{duration:.3f}")
+            self._store_signal(signal)
+        except Exception:
+            logger.warning("Background freshness refresh failed", exc_info=True)
+
+    def _store_signal(self, signal: dict[str, Any]) -> dict[str, Any]:
+        """Persist *signal* under the cache keys used by :meth:`signal`."""
+        checked_at = _now_iso()
+        stored = dict(signal)
+        stored["checked_at"] = checked_at
+        stored["refreshing"] = False
+        self._metadata.set("freshness_checked_at", checked_at)
+        self._metadata.set_json("freshness_signal", stored)
+        return stored
 
     def mark_clean(self) -> None:
         """Seed a current (non-stale) cached signal after a successful index."""
@@ -137,6 +215,10 @@ class FreshnessChecker:
             signal["checked_at"] = checked_at
             self._metadata.set("freshness_checked_at", checked_at)
             self._metadata.set_json("freshness_signal", signal)
+            head = self._git_head(self._index_root())
+            if head:
+                self._metadata.set("index_git_head", head)
+            self._metadata.set("freshness_scan_duration_s", "0")
 
     def _base_signal(self) -> dict[str, Any]:
         """Build a fresh, non-stale signal from current metadata state."""
@@ -186,6 +268,8 @@ class FreshnessChecker:
         mtime-only touches. Returns a non-stale signal (reporting the lifecycle
         status verbatim) when the index is not ``ready``; otherwise classifies
         files as modified, deleted, or new and reports ``stale`` accordingly.
+        A cheap git check short-circuits the scan when the indexed commit is
+        unchanged and the working tree is clean.
         """
         status = self._metadata.get_index_status()
         if status != "ready":
@@ -193,6 +277,9 @@ class FreshnessChecker:
             # with stale=false. Note "stale" here is the pre-existing
             # lifecycle value ("re-index recommended"), distinct from the
             # freshness boolean.
+            return self._base_signal()
+
+        if self._git_unchanged():
             return self._base_signal()
 
         modified = 0
@@ -245,6 +332,10 @@ class FreshnessChecker:
         new_files = self._count_new_files(indexed_paths)
         total = modified + deleted + new_files
 
+        head = self._git_head(self._index_root())
+        if head:
+            self._metadata.set("index_git_head", head)
+
         signal = self._base_signal()
         signal.update(
             {
@@ -256,6 +347,49 @@ class FreshnessChecker:
             }
         )
         return signal
+
+    def _git_unchanged(self) -> bool:
+        """Return whether git proves the working tree matches the index.
+
+        The fast path requires both a stored indexed commit equal to the
+        current ``HEAD`` and a clean (or untracked-free) ``git status``. Any
+        failure or ambiguity falls through to the full scan.
+        """
+        root = self._index_root()
+        stored = self._metadata.get("index_git_head")
+        if not root or not stored:
+            return False
+        current = self._git_head(root)
+        if not current or current != stored:
+            return False
+        try:
+            proc = subprocess.run(
+                ["git", "-C", root, "status", "--porcelain", "--untracked-files=no"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception:
+            return False
+        return proc.returncode == 0 and not proc.stdout.strip()
+
+    @staticmethod
+    def _git_head(root: str | None) -> str | None:
+        """Return the repository's current commit, or ``None`` when unavailable."""
+        if not root:
+            return None
+        try:
+            proc = subprocess.run(
+                ["git", "-C", root, "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception:
+            return None
+        if proc.returncode != 0:
+            return None
+        return proc.stdout.strip() or None
 
     def _count_new_files(self, indexed_paths: set[str]) -> int:
         """Count discoverable files not present in the indexed set.
