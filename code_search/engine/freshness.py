@@ -268,8 +268,8 @@ class FreshnessChecker:
         mtime-only touches. Returns a non-stale signal (reporting the lifecycle
         status verbatim) when the index is not ``ready``; otherwise classifies
         files as modified, deleted, or new and reports ``stale`` accordingly.
-        A cheap git check short-circuits the scan when the indexed commit is
-        unchanged and the working tree is clean.
+        A cheap git check is retained only to record the current commit for
+        diagnostics; it never substitutes for the scan.
         """
         status = self._metadata.get_index_status()
         if status != "ready":
@@ -277,9 +277,6 @@ class FreshnessChecker:
             # with stale=false. Note "stale" here is the pre-existing
             # lifecycle value ("re-index recommended"), distinct from the
             # freshness boolean.
-            return self._base_signal()
-
-        if self._git_unchanged():
             return self._base_signal()
 
         modified = 0
@@ -347,31 +344,6 @@ class FreshnessChecker:
             }
         )
         return signal
-
-    def _git_unchanged(self) -> bool:
-        """Return whether git proves the working tree matches the index.
-
-        The fast path requires both a stored indexed commit equal to the
-        current ``HEAD`` and a clean (or untracked-free) ``git status``. Any
-        failure or ambiguity falls through to the full scan.
-        """
-        root = self._index_root()
-        stored = self._metadata.get("index_git_head")
-        if not root or not stored:
-            return False
-        current = self._git_head(root)
-        if not current or current != stored:
-            return False
-        try:
-            proc = subprocess.run(
-                ["git", "-C", root, "status", "--porcelain", "--untracked-files=no"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-        except Exception:
-            return False
-        return proc.returncode == 0 and not proc.stdout.strip()
 
     @staticmethod
     def _git_head(root: str | None) -> str | None:

@@ -15,7 +15,33 @@ from code_search.engine.config import Settings
 from code_search.engine.freshness import FreshnessChecker
 
 
-def _build_env(tmp_path: Path, ttl: float = 0.0, **settings_kwargs: Any) -> dict[str, Any]:
+def _git_init_commit(repo: Path) -> None:
+    """Initialise a Git repository at *repo* and commit its current files."""
+    import subprocess
+
+    commands = (
+        ["git", "-C", str(repo), "init", "-q"],
+        ["git", "-C", str(repo), "add", "-A"],
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+    )
+    for command in commands:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+
+
+def _build_env(
+    tmp_path: Path, ttl: float = 0.0, git: bool = False, **settings_kwargs: Any
+) -> dict[str, Any]:
     from code_search.context import ContextManager
     from code_search.engine.audit import AuditDatabase
     from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
@@ -30,6 +56,8 @@ def _build_env(tmp_path: Path, ttl: float = 0.0, **settings_kwargs: Any) -> dict
     (repo / "src" / "mod.py").write_text("def foo(): return 1\n")
     (repo / "src" / "bar.py").write_text("def bar(): return 2\n")
     (repo / "src" / "baz.py").write_text("def baz(): return 3\n")
+    if git:
+        _git_init_commit(repo)
 
     context_dir = repo / ".context"
     settings = Settings(context_dir=context_dir, freshness_ttl_seconds=ttl, **settings_kwargs)
@@ -166,6 +194,28 @@ def test_deleted_file_detected(tmp_path: Path) -> None:
 
 def test_new_file_detected(tmp_path: Path) -> None:
     env = _build_env(tmp_path)
+    (env["repo"] / "src" / "qux.py").write_text("def qux(): return 4\n")
+
+    signal = env["checker"].signal()
+    assert signal["stale"] is True
+    assert signal["new_files"] >= 1
+
+
+def test_new_untracked_file_detected_in_git_repo(tmp_path: Path) -> None:
+    """An untracked file is new even when HEAD matches the indexed commit."""
+    env = _build_env(tmp_path, git=True)
+    env["checker"].mark_clean()
+    (env["repo"] / "src" / "qux.py").write_text("def qux(): return 4\n")
+
+    signal = env["checker"].signal()
+    assert signal["stale"] is True
+    assert signal["new_files"] >= 1
+
+
+def test_new_file_detected_in_non_git_directory(tmp_path: Path) -> None:
+    """The same signal works without Git when the cache was seeded clean."""
+    env = _build_env(tmp_path)
+    env["checker"].mark_clean()
     (env["repo"] / "src" / "qux.py").write_text("def qux(): return 4\n")
 
     signal = env["checker"].signal()

@@ -2588,7 +2588,7 @@ def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
         elif command == "find-related":
             resp = client.request(
                 "find_related",
-                {"file_path": args.file_path, "line": args.line, "limit": args.limit},
+                {"file_path": args.file_path, "line_number": args.line, "limit": args.limit},
             )
         else:
             return None
