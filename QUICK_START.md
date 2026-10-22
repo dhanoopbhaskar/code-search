@@ -24,16 +24,28 @@
 
 ## Installation
 
-### From PyPI
+### From a local wheel
 
 ```bash
-pip install code-search
+pip install dist/code_search-*.whl
 ```
 
-For extra language grammars (Go, Rust, Ruby, Swift, Kotlin, PHP, Shell, TOML):
+If you need to build the wheel first, install the `build` package and run
+`make build`.
+
+For extra language grammars (Go, Rust, Ruby, Swift, Kotlin, PHP, TOML), add the
+`lang` extra:
 
 ```bash
-pip install "code-search[lang]"
+pip install "dist/code_search-0.1.0-py3-none-any.whl[lang]"
+```
+
+### From git (pipx)
+
+Installs the CLI into an isolated environment on your `PATH`:
+
+```bash
+pipx install --force "git+https://github.com/dhanoopbhaskar/code-search"
 ```
 
 ### From source (development)
@@ -46,14 +58,18 @@ pip install -e /path/to/code-search
 
 ```bash
 # On a machine with network — build the bundle
-./bundle.sh                            # basic bundle
-./bundle.sh --deps                     # with offline dependency wheels
+./scripts/bundle.sh                    # basic bundle (target still needs dependency access)
+./scripts/bundle.sh --deps             # with offline dependency wheels
 
 # Copy dist/code-search-*-bundle.tar.gz to the target, then:
 tar xzf code-search-*-bundle.tar.gz
 cd bundle
-./install-from-bundle.sh
+python install-from-bundle.py
 ```
+
+Only the `--deps` bundle contains dependency wheels. The installer also
+upgrades `pip` and `wheel` before installing, so a fully offline target needs
+those packages available locally.
 
 ---
 
@@ -85,7 +101,7 @@ directories by default; `--exclude` patterns are additive. Set
 | Flag | Description |
 |------|-------------|
 | `--path PATH` | Path to codebase root (default: `.`) |
-| `--force` | Force re-index (ignores lock) |
+| `--force` | Force a full re-index (a live index lock still aborts) |
 | `--incremental` | Only index changed files (checks SHA256) |
 | `--watch` | Watch for changes after indexing |
 | `--exclude PATTERNS` | Comma-separated exclusion patterns |
@@ -113,10 +129,12 @@ code-search search "database connection pool" --language java --no-include-tests
 | `--limit N` | `10` | Max results |
 | `--language LANG` | — | Filter by language (python, java, typescript, etc.) |
 | `--include-tests` / `--no-include-tests` | `false` | Include/exclude test files (excluded by default; indexed tests are only searchable with `--include-tests`) |
+| `--mode {ranked,exhaustive,enumerate}` | `ranked` | Hybrid ranking, exhaustive line scan, or named symbol-kind enumeration (for example "list all controllers") |
 | `--content {code,config,docs,all,code_focused}` | intent inference | Content axis; code-shaped queries (including multi-word construct nouns such as `login handler`) default to `code`, documentation-shaped queries widen to `all`, and other queries use `code_focused` (code + config, docs excluded) |
 | `--matching {literal,all_tokens,any_token}` | `all_tokens` | Exhaustive matching semantics (`--mode exhaustive` only); `literal` treats the whole query as one verbatim substring |
 | `--regex` | off | Treat the query as a Python regular expression (`--mode exhaustive` only); invalid patterns return an `invalid_regex` explanation |
 | `--no-startup-check` | off | Skip transparent daemon auto-start for this invocation; repeat CLI use is fastest with an already-running `code-search daemon start` |
+| `--no-model` | off | Skip the vector model and fuse lexical signals only; the response is labelled `lexical_degraded` |
 | `--explain-ranking` | off | Include `score_sources` for every result and print the class/content multipliers and additive boosts behind the ranking |
 | `--compact` / `--no-compact` | `--compact` | JSON keeps identifiers, locations, signatures, and short content only. `--no-compact` returns full blocks and the `score_sources` breakdown |
 | `--max-snippet-lines N` | `20` in compact JSON | Trim each result to at most N content lines and attach a one-line `signature`; the original line range is preserved |
@@ -124,16 +142,22 @@ code-search search "database connection pool" --language java --no-include-tests
 
 `--json` reports **`total_matches`** (how many chunks matched the query tokens) and
 **`truncated`** (true when only a sample was returned), so agents can tell when a ranked
-top-k is incomplete. Every result carries a **`score_sources`** breakdown
-(`bm25` / `vector` / `fused` / `weights` / `reranked`) explaining how its score was built.
+top-k is incomplete. With `--no-compact` (or `--explain-ranking`), every result carries a
+**`score_sources`** breakdown (`bm25` / `vector` / `fused` / `weights` / `reranked`)
+explaining how its score was built; the compact default omits it.
 
-Ranked envelopes report **`query_time_ms`**, the measured **`model_status`**
-(`warm`/`cold`/`disabled`), and the additive **`ranked_path`**
-(`hybrid`/`lexical_reduced`/`lexical_degraded`) and **`warmup_state`**. A query
-that races model warmup is answered immediately from the labelled
-`lexical_reduced` cold path (`degraded_reason: warming`) instead of blocking;
-once warm it is `hybrid`. When vector signals are off the envelope also reports
-a visible **`degraded_reason`** (`model_disabled`/`model_unavailable`).
+Ranked envelopes report **`query_time_ms`**, a structured **`model_status`**,
+and the additive **`ranked_path`**
+(`hybrid`/`lexical_reduced`/`lexical_degraded`) and **`warmup_state`**. On
+healthy paths `model_status` is an object whose `state` is
+`warm`/`cold`/`initializing` (a cold-start request reports `initializing`);
+when the model is disabled or unavailable it is the string `disabled`. The
+engine serves a warming query from the labelled `lexical_reduced` cold path
+(`degraded_reason: warming`) without blocking; the daemon and MCP server wait
+up to `CODE_SEARCH_WARMUP_WAIT_S` (default 5 seconds) for the shared model,
+then fall back to the cold path. Once warm the path is `hybrid`. When vector
+signals are off the envelope also reports a visible **`degraded_reason`**
+(`model_disabled`/`model_unavailable`).
 
 `--content code` restricts the pool to source code only, which improves
 precision on code questions but does not repair abstract-paraphrase failures
@@ -142,10 +166,9 @@ scope. It also **excludes config/resource content**; a code-scoped query with
 config-shaped intent gets a visible hint on the response envelope pointing at
 `--content config`/`--content all`.
 
-Docs search (`--content docs`) is rank-only: prose results carry no per-file
-relevance or confidence signal, accepted while the docs corpus stays small
-(see [docs/docs_search.md](docs/docs_search.md)); the revisit trigger is the
-corpus exceeding 1,000 prose chunks or ~1 MB of indexed docs text.
+Docs search (`--content docs`) scopes the ranked pool to prose chunks. Prose
+results use the same hybrid ranking path as code and carry the same per-result
+`confidence`, `confidence_band`, and `borderline` fields.
 
 When the index is stale, a notice like `[stale index: N unindexed change(s) ...]` is
 printed to **stderr** (never stdout) for human output; `--json` carries the signal in the
@@ -230,7 +253,7 @@ code-search query "who calls ArticleRepository.save" --depth 3 --json
 |------|---------|-------------|
 | `--depth N` | `2` | Traversal depth (max: 4) |
 | `--max-nodes N` | `120` | Maximum graph nodes (max: 200) |
-| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types; add `IMPORTS` for module navigation |
+| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`CALLS`, `INHERITS`, `REFERENCES`, `IMPORTS`) |
 | `--token-budget N` | `1500` | Soft output budget; trimmed deterministically |
 | `--include-externals` | off | Include unresolved/external callee leaves; by default they are collapsed and counted in `stats.collapsed_externals` |
 | `--json` | — | JSON output |
@@ -248,7 +271,7 @@ code-search path "ArticleController.favoriteArticle" "ArticleRepository.save" --
 |------|---------|-------------|
 | `--undirected` | off | Traverse edges in both directions |
 | `--max-hops N` | `6` | Maximum path length (max: 6) |
-| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types |
+| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`CALLS`, `INHERITS`, `REFERENCES`, `IMPORTS`) |
 | `--json` | — | JSON output |
 
 Ambiguous endpoints are refused with their ranked candidates instead of being
@@ -267,7 +290,7 @@ code-search explain "ArticleRepository.save" --depth 2 --relations CALLS,INHERIT
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--depth N` | `1` | Ego-graph depth (max: 4) |
-| `--relations LIST` | `CALLS,INHERITS` | Comma-separated relations to include |
+| `--relations LIST` | `CALLS,INHERITS` | Comma-separated relations to include (`CALLS`, `INHERITS`, `REFERENCES`, `IMPORTS`) |
 | `--json` | — | JSON output |
 
 ### `code-search affected`
@@ -333,7 +356,7 @@ code-search list-languages
 code-search serve
 ```
 
-This runs an infinite loop reading JSON-RPC 2.0 requests from stdin. The server enforces air-gap (outbound sockets blocked) and applies secret redaction to all responses.
+This runs an infinite loop reading JSON-RPC 2.0 requests from stdin. The server enforces air-gap (outbound sockets blocked) and redacts secrets in search results, symbol definitions, and `find_related` neighbours.
 
 > Make sure you have indexed the target codebase before starting the server.
 
@@ -341,18 +364,20 @@ This runs an infinite loop reading JSON-RPC 2.0 requests from stdin. The server 
 
 Configure your MCP-compatible client to launch the server. Examples:
 
-**opencode** (`~/.config/opencode/opencode.json` or `./.opencode/opencode.json`):
+**opencode** (`~/.config/opencode/opencode.jsonc` or `./opencode.json`):
 
 ```json
 {
-  "mcpServers": {
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
     "code-search": {
-      "command": "code-search",
-      "args": ["serve"],
-      "env": {
+      "type": "local",
+      "command": ["code-search", "serve"],
+      "environment": {
         "CODE_SEARCH_CONTEXT_DIR": "/path/to/your/project/.context",
         "CODE_SEARCH_LOG_LEVEL": "WARNING"
-      }
+      },
+      "enabled": true
     }
   }
 }
@@ -378,7 +403,7 @@ Configure your MCP-compatible client to launch the server. Examples:
 
 | Tool | Description | Key parameters |
 |------|-------------|---------------|
-| `search` | Hybrid BM25 + vector semantic search | `query`, `limit`, `language`, `include_test_files`, `compact`, `max_snippet_lines` |
+| `search` | Hybrid BM25 + vector semantic search | `query`, `limit`, `language`, `include_test_files`, `mode`, `content`, `no_model`, `matching`, `regex`, `compact`, `max_snippet_lines` |
 | `get_symbol_definition` | Look up a symbol by FQN (file-path or conventional dotted) | `symbol` |
 | `get_call_neighbors` | Traverse the call graph — upstream callers and downstream callees | `symbol`, `direction`, `max_depth`, `transitive` |
 | `get_implementations` | Find the static implementations of an interface method or type | `symbol` |
@@ -429,7 +454,7 @@ squashes it monotonically into `[0, 1)` for cross-query comparison. Each result'
 Returns `found`, `symbol` (fqn, name, kind, `signature`, file_path, line range, docstring,
 source_code), optional `parent`, and a top-level additive `freshness` object (see `search`).
 
-Tries conventional dotted FQN first, then file-path FQN as fallback. Java method lookups
+Resolves an exact FQN, conventional dotted FQN, bare/leaf name, or parent-qualified `Class.method` reference first, then falls back to prefix/substring, decomposed sub-word, and edit-distance suggestions. Java method lookups
 accept a signature (e.g. `TokenService.generateToken(Map<String,Object>,String)`) to select
 the exact overload; a bare overloaded name returns an `ambiguous` candidate list. Unknown,
 malformed, or empty symbols return `found: false` with no error.
@@ -566,7 +591,7 @@ Returns `{"results": [...], "freshness": {...}}` — `results` is an array of ch
     "content": [
       {
         "type": "text",
-        "text": "[{\"chunk_id\": 42, \"file_path\": \"src/config/parser.py\", \"line_start\": 10, \"line_end\": 35, \"content\": \"def load_config(path: str) -> dict:\\n    ...\", \"fqn\": \"src.config.parser.load_config\", \"language\": \"python\", \"score\": 0.89, ...}]"
+        "text": "{\"results\": [{\"chunk_id\": 42, \"file_path\": \"src/config/parser.py\", \"line_start\": 10, \"line_end\": 35, \"content\": \"def load_config(path: str) -> dict:\\n    ...\", \"fqn\": \"src.config.parser.load_config\", \"language\": \"python\", \"score\": 0.89, \"score_normalized\": 0.47}], \"total_matches\": 1, \"truncated\": false, \"vector_health\": true, \"mode\": \"ranked\", \"freshness\": {...}}"
       }
     ]
   }
@@ -583,9 +608,9 @@ When connected as an MCP tool, AI agents should prefer `code-search` over `grep`
 
 Semantic-query claims hold only when the vector layer is healthy. Before trusting natural-language results:
 
-1. Run `code-search search "<query>" --json` and check the envelope's `vector_health` field is `true`.
-2. Inspect per-result `vector_score` (non-zero) and `vector_degraded` (`false`).
-3. Check the envelope's `ranked_path` (`hybrid`/`lexical_reduced`/`lexical_degraded`), `model_status` (`warm`/`cold`/`disabled`) and `degraded_reason` (`warming`/`model_disabled`/`model_unavailable`). A `lexical_reduced` response means warmup is still in progress; retry shortly for the full hybrid result.
+1. Run `code-search search "<query>" --json --no-compact` and check the envelope's `vector_health` field is `true`.
+2. Inspect per-result `vector_score` (non-zero) and `vector_degraded` (`false`); compact JSON omits both fields.
+3. Check the envelope's `ranked_path` (`hybrid`/`lexical_reduced`/`lexical_degraded`), `model_status` (an object with a `state` of `warm`/`cold`/`initializing`, or the string `disabled`) and `degraded_reason` (`warming`/`model_disabled`/`model_unavailable`). A `lexical_reduced` response means warmup is still in progress; retry shortly for the full hybrid result.
 4. If the layer is unavailable (model not loaded, index not rebuilt), fall back to keyword phrasing — `vector_health: false` means the result ordering is lexical-only.
 
 Rebuild the index after major changes so the vector layer reflects the current corpus: `code-search index --path <corpus> --force`.
@@ -619,6 +644,7 @@ Rebuild the index after major changes so the vector layer reflects the current c
 **Mode** (`--mode` / `mode`):
 - `ranked` (default): Hybrid BM25 + vector + RRF fusion with reranking; best for semantic queries
 - `exhaustive`: Line-oriented literal/token scan across all indexed files; returns exact `total_count`; use `matching` (`literal`/`all_tokens`/`any_token`) for semantics
+- `enumerate`: Lists the definitions of a named symbol kind (for example "list all controllers")
 
 **Content scope** (`--content` / `content`):
 - `code`: Source code only; the inferred default for code-shaped queries
@@ -627,7 +653,7 @@ Rebuild the index after major changes so the vector layer reflects the current c
 - `docs`: Prose documentation (Markdown, RST, text)
 - `all`: All content types
 
-When a query shaped for config/docs is run under an excluding `code` scope, the response includes a visible hint: *"config content excluded by code scope; use --content config to include"*.
+When a query shaped for config/docs is run under an excluding `code` scope, the response includes a visible hint such as *"configuration intent detected; configuration is excluded by content scope code; use content scope config to include it"*, and the CLI prints the matching override (`Override with: --content config`) to stderr. Documentation intent gets the analogous `--content all` direction.
 
 ### Production-only search
 
@@ -657,7 +683,7 @@ The default (`include_tests=false`) removes test files from the result set, so a
 
 ## Configuration
 
-All configuration is via environment variables.
+Configuration is environment-variable driven; language definitions can additionally be extended with a JSON file.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -676,6 +702,7 @@ All configuration is via environment variables.
 | `CODE_SEARCH_FILTER_STOPWORDS` | `false` | Filter English stopwords |
 | `CODE_SEARCH_FIND_RELATED_LIMIT` | `100` | Max candidates for find_related |
 | `CODE_SEARCH_MAX_GRAPH_DEPTH` | `5` | Max call graph traversal depth |
+| `CODE_SEARCH_WARMUP_WAIT_S` | `5.0` | Max seconds the daemon/MCP server wait for model warmup before using the cold path |
 
 ---
 
@@ -684,7 +711,7 @@ All configuration is via environment variables.
 - The `.context/` directory is your index — **add it to `.gitignore`**
 - For incremental re-indexing: `code-search index --incremental`
 - For file watching: `code-search index --watch`
-- Config lives entirely in env vars — no config files to write
+- Configuration is env-var driven; an optional `language_config.json` (or `CODE_SEARCH_LANGUAGE_CONFIG`) can extend the built-in language definitions
 - The MCP server runs under air-gap enforcement (outbound connections blocked)
 - Secrets in search results and symbol definitions are automatically redacted
 - All queries are recorded in an append-only audit log

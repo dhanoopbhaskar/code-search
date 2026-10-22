@@ -8,15 +8,15 @@ An AI code context engine for air-gapped, CPU-only enterprise environments. Comb
 - **Symbol definition lookup** — resolve any symbol by fully qualified name (FQN)
 - **Call graph traversal** — navigate upstream callers and downstream callees
 - **Session-aware ranking** — recently modified files rank higher in results
-- **MCP protocol server** — expose search, symbol, and graph tools to MCP-compatible AI assistants
-- **Enterprise compliance** — zero outbound network calls, secret redaction, append-only audit logging
+- **MCP protocol server** — expose the full search, symbol, graph, and impact toolset to MCP-compatible AI assistants
+- **Enterprise compliance** — no outbound network calls during search or serving, secret redaction, append-only audit logging
 
 ## Requirements
 
 - Python 3.11+
 - 4+ cores, 8GB+ RAM
-- Linux (CPU-only, no GPU required)
-- No network access required (air-gap compliant)
+- Linux (CPU-only, no GPU required); bundle build/install tooling also runs on Windows and macOS
+- No network access required for search or serving when the embedding model is available locally (air-gap compliant)
 
 ## Installation
 
@@ -28,7 +28,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-### From a pre-built bundle (no network required)
+### From a pre-built bundle
 
 ```bash
 tar xzf code-search-0.1.0-bundle.tar.gz
@@ -36,12 +36,20 @@ cd bundle
 python install-from-bundle.py
 ```
 
-Installs into `./.venv` with the bundled embedding model included (fully offline, no download prompt). See [Install in another repo](#install-in-another-repo) for the full flag reference.
+Installs into `./.venv` with the bundled embedding model included, so vector search works without a model download prompt. A default `make bundle` does not include dependency wheels; a fully offline install requires a bundle built with `make bundle-deps` and local `pip`/`wheel` availability. See [Install in another repo](#install-in-another-repo) for the full flag reference.
 
 ### From wheel directly
 
 ```bash
 pip install code-search-*.whl
+```
+
+### From git (pipx)
+
+Installs the CLI into an isolated environment on your `PATH`:
+
+```bash
+pipx install --force "git+https://github.com/dhanoopbhaskar/code-search"
 ```
 
 ## Quick Start
@@ -110,6 +118,11 @@ shows config-shaped intent (e.g. "where is the mysql url"), the response
 envelope carries an accurate direction to include it (`--content config` or
 `--content all`).
 
+`--mode {ranked,exhaustive,enumerate}` selects the search mode: `ranked`
+(default) uses hybrid ranking, `exhaustive` scans line by line for an exact
+match set, and `enumerate` lists the definitions of a named symbol kind (for
+example "list all controllers").
+
 `--matching {literal,all_tokens,any_token}` selects the exhaustive matching
 semantics per request (default `all_tokens`): `literal` treats the whole
 query as one verbatim substring, `any_token` keeps OR semantics. Every
@@ -125,22 +138,25 @@ For repeated CLI use, run `code-search daemon start` once so a resident
 process owns the model load. `--no-startup-check` skips the transparent
 daemon auto-start for a single invocation and serves it locally.
 
-Every ranked response also reports `query_time_ms`, the measured
-`model_status` (`warm`/`cold`/`disabled`), the additive `ranked_path`
+Every ranked response also reports `query_time_ms`, a structured
+`model_status`, the additive `ranked_path`
 (`hybrid`/`lexical_reduced`/`lexical_degraded`) and `warmup_state`, and — when
 vector signals are off — a visible `degraded_reason`
-(`warming`/`model_disabled`/`model_unavailable`) instead of a silent false. A
-ranked query that arrives while the model is still warming is answered
-immediately from the labelled `lexical_reduced` cold path rather than blocking
-on the load; once warm it is the unchanged hybrid path.
+(`warming`/`model_disabled`/`model_unavailable`) instead of a silent false.
+On healthy paths `model_status` is an object whose `state` is
+`warm`/`cold`/`initializing` (a cold-start request reports `initializing`);
+when the model is disabled or unavailable it is the string `disabled`. The
+engine serves a cold request from the labelled `lexical_reduced` path without
+blocking on the model load. The daemon and MCP server wait up to
+`CODE_SEARCH_WARMUP_WAIT_S` (default 5 seconds) for the shared model, then fall
+back to the same labelled cold path if warmup does not finish in time; once
+warm, the path is the unchanged hybrid ranking.
 
-Docs search (`--content docs`) is rank-only: prose results carry no per-file
-relevance or confidence signal. This is accepted while the docs corpus stays
-small (see [docs/docs_search.md](docs/docs_search.md)); the revisit trigger is
-the corpus exceeding 1,000 prose chunks or ~1 MB of indexed docs text. A
-long-running server also detects an out-of-band index rebuild and returns a
-visible "index changed — restart required" envelope instead of silent
-empty/stale results.
+Docs search (`--content docs`) scopes the ranked pool to prose chunks. Prose
+results use the same hybrid ranking path as code and carry the same per-result
+`confidence`, `confidence_band`, and `borderline` fields. A long-running server
+also detects an out-of-band index rebuild and returns a visible "index changed
+— restart required" envelope instead of silent empty/stale results.
 
 ### Look up a symbol
 
@@ -196,7 +212,7 @@ code-search query "who calls ArticleRepository.save" --depth 3 --json
 |------|---------|-------------|
 | `--depth N` | `2` | Traversal depth (max: 4) |
 | `--max-nodes N` | `120` | Maximum graph nodes (max: 200) |
-| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`IMPORTS` is opt-in) |
+| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`IMPORTS` and `REFERENCES` are opt-in) |
 | `--token-budget N` | `1500` | Soft output budget; the answer is trimmed deterministically |
 | `--json` | — | Structured JSON output |
 
@@ -211,7 +227,7 @@ code-search path "ArticleController.favoriteArticle" "ArticleRepository.save" --
 |------|---------|-------------|
 | `--undirected` | off | Traverse edges in both directions |
 | `--max-hops N` | `6` | Maximum path length (max: 6) |
-| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types |
+| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`CALLS`, `INHERITS`, `REFERENCES`, `IMPORTS`) |
 | `--json` | — | Structured JSON output |
 
 ### Explain a symbol
@@ -231,7 +247,7 @@ a network call.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--depth N` | `1` | Ego-graph depth (max: 4) |
-| `--relations LIST` | `CALLS,INHERITS` | Comma-separated relations to include |
+| `--relations LIST` | `CALLS,INHERITS` | Comma-separated relations to include (`CALLS`, `INHERITS`, `REFERENCES`, `IMPORTS`) |
 | `--json` | — | Structured JSON output |
 
 ### Impact analysis and architecture map
@@ -251,10 +267,14 @@ code-search map --output graph-report.md
 
 Every CLI invocation is a fresh process, and loading the vector model takes
 time. The CLI handles this transparently: with no daemon running, `search`
-starts the local unix-socket query daemon in the background (fire-and-forget)
-and answers the first query from the reduced cold path while the single resident
-load warms; subsequent invocations are served warm and fast. You can also manage
-the daemon explicitly (air-gapped, socket under `.context/`):
+starts the local unix-socket query daemon in the background and forwards to it
+once it answers `ping`; the daemon waits briefly for the shared model load
+(bounded by `CODE_SEARCH_WARMUP_WAIT_S`, default 5 seconds) so the first
+forwarded query is usually hybrid. If the model does not warm in time, the
+response is the labelled `lexical_reduced` cold path; if no daemon becomes
+reachable, the invocation answers locally from that same cold path. Subsequent
+invocations are served warm and fast. You can also manage the daemon explicitly
+(air-gapped, socket under `.context/`):
 
 ```bash
 code-search daemon start
@@ -356,7 +376,7 @@ pytest tests/test_repo/ -v --keep-index --force-index
 
 ### Acceptance tests
 
-The acceptance suite exercises every CLI command and MCP tool against a real (or sample) codebase end-to-end. It validates the full pipeline: index → search → symbol lookup → graph traversal → metrics → audit log → session tracking → redaction → air-gap.
+The acceptance suite exercises the primary CLI pipeline and a representative subset of MCP tools against a real (or sample) codebase end-to-end. It validates the full pipeline: index → search → symbol lookup → graph traversal → metrics → audit log → session tracking → redaction → air-gap.
 
 ```bash
 # Against the built-in sample repo (fast, CI/smoke testing)
@@ -403,26 +423,31 @@ make check
 │   ├── bundle.py              # Cross-platform bundle builder (Windows/Mac/Linux)
 │   └── install-from-bundle.py # Cross-platform bundle installer
 ├── code_search/
-│   ├── engine/       # Core engine modules
-│   ├── parser.py       # Tree-sitter AST parsing
-│   ├── symbols.py      # Symbol extraction & FQN resolution
-│   ├── graph.py        # SQLite graph DB (symbols, edges, chunks)
-│   ├── search.py       # BM25 + vector hybrid search + RRF
-│   ├── embeddings.py   # Model2Vec static embedding generation
-│   ├── reranking.py    # Definition boost, noise penalties, session weight
-│   ├── session.py      # Session activity tracking & weight decay
-│   ├── redactor.py     # Secret/PII redaction pipeline
-│   ├── audit.py        # Append-only audit log
-│   ├── indexer.py      # Full/incremental indexing orchestration
-│   ├── watcher.py      # File system watcher
-│   └── metrics.py      # Operational metrics
-├── cli/          # CLI entry point
-│   └── main.py         # code-search CLI commands
-├── mcp/          # MCP protocol server
-│   └── server.py       # FastMCP stdio server with 4 tools
-└── context/      # Context directory management
-    └── __init__.py     # .context/ directory setup
+│   ├── engine/       # Core engine modules (selected)
+│   │   ├── parser.py       # Tree-sitter AST parsing
+│   │   ├── symbols.py      # Symbol extraction & FQN resolution
+│   │   ├── graph.py        # SQLite graph DB (symbols, edges, chunks)
+│   │   ├── search.py       # BM25 + vector hybrid search + RRF
+│   │   ├── embeddings.py   # Model2Vec static embedding generation
+│   │   ├── reranking.py    # Definition boost, noise penalties, session weight
+│   │   ├── session.py      # Session activity tracking & weight decay
+│   │   ├── redactor.py     # Secret/PII redaction pipeline
+│   │   ├── audit.py        # Append-only audit log
+│   │   ├── indexer.py      # Full/incremental indexing orchestration
+│   │   ├── watcher.py      # File system watcher
+│   │   └── metrics.py      # Operational metrics
+│   ├── cli/          # CLI entry point
+│   │   └── main.py         # code-search CLI commands
+│   ├── mcp/          # MCP protocol server
+│   │   └── server.py       # FastMCP stdio server with 9 tools
+│   └── context/      # Context directory management
+│       └── __init__.py     # .context/ directory setup
 ```
+
+The engine directory also contains supporting modules such as `config.py`,
+`daemon.py`, `freshness.py`, `graph_query.py`, `implementations.py`,
+`index_service.py`, `model_status.py`, `response_service.py`, and
+`semantic_signals.py`.
 
 ## Distribution & Bundling
 
@@ -470,8 +495,8 @@ The script resolves the bundle directory from its own location, so you can run i
 | `--no-model` | Skip installing the bundled embedding model (breaks offline vector search). Installer flag only — unrelated to the `code-search search --no-model` fast path. |
 
 Notes:
-- The embedding model is bundled by default and installed to `<venv>/share/code-search/models/<name>`, so `Vector Model Avail: true` works air-gapped with zero network — no download prompt.
-- If the bundle contains a `deps/` directory (from `make bundle-deps`), the installer uses `pip --no-index --find-links` for a fully offline install.
+- The embedding model is bundled by default and installed to `<venv>/share/code-search/models/<name>`, so `Vector Model Avail: true` works air-gapped with no model download prompt.
+- If the bundle contains a `deps/` directory (from `make bundle-deps`), the installer uses `pip --no-index --find-links` for the wheel install. It still upgrades `pip` and `wheel` first, so a fully offline target must already provide or cache those packages.
 - `--global` falls back to `pip install --user` if the system Python refuses a global install (e.g. PEP 668 managed environments).
 - After a venv install, activate it before running `code-search`: `source .venv/bin/activate` (Unix) or `.venv\Scripts\activate` (Windows).
 
@@ -492,7 +517,7 @@ Notes:
 2. Copy the tarball to the air-gapped target
 3. `tar xzf ... && cd bundle && python install-from-bundle.py`
 
-The install script detects the `deps/` directory and uses `pip --no-index --find-links` for a fully offline install.
+The install script detects the `deps/` directory and uses `pip --no-index --find-links` for the wheel install. It still upgrades `pip` and `wheel` first, so the air-gapped target needs those packages available locally for a fully offline install.
 
 ## Configuration
 
