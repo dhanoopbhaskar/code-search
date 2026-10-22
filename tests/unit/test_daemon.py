@@ -15,7 +15,16 @@ import time
 from pathlib import Path
 from typing import Any
 
-from code_search.engine.daemon import DaemonClient, QueryDaemon, daemon_status, default_socket_path
+import pytest
+
+from code_search.engine.daemon import (
+    DaemonClient,
+    QueryDaemon,
+    daemon_status,
+    default_socket_path,
+    detached_spawn_kwargs,
+    process_exists,
+)
 
 
 class _FakeGenerator:
@@ -190,6 +199,8 @@ def test_ensure_resident_service_requires_a_live_daemon(monkeypatch: Any, tmp_pa
 
 def test_long_context_path_uses_a_short_socket(tmp_path: Path) -> None:
     """A deep checkout must still produce a bindable ``AF_UNIX`` path."""
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX is not available on this platform")
     context_dir = tmp_path / ("x" * 100) / ".context"
     context_dir.mkdir(parents=True)
 
@@ -298,3 +309,34 @@ def test_daemon_forwarded_search_reports_match_split(
     assert cli_main._try_forward_to_daemon(args) == 0
     out = capsys.readouterr().out
     assert "Matches: 8 production + 3 test (hidden; use --include-tests)" in out
+
+
+def test_process_exists_accepts_own_pid_and_rejects_unknown() -> None:
+    """The liveness probe never signals the target on any platform."""
+    assert process_exists(os.getpid()) is True
+    assert process_exists(2**31 - 1) is False
+
+
+def test_detached_spawn_kwargs_match_platform() -> None:
+    """Windows needs creation flags; POSIX uses a new session."""
+    kwargs = detached_spawn_kwargs()
+    if os.name == "nt":
+        assert kwargs["creationflags"] != 0
+        assert "start_new_session" not in kwargs
+    else:
+        assert kwargs == {"start_new_session": True}
+
+
+def test_shutdown_action_stops_daemon(monkeypatch: Any, tmp_path: Path) -> None:
+    """A shutdown request ends the accept loop and removes the socket."""
+    daemon, thread, _comps = _start_daemon_with_fake(monkeypatch, tmp_path)
+    socket_path = default_socket_path(tmp_path)
+    try:
+        response = DaemonClient(socket_path, timeout=2.0).request("shutdown")
+        assert response == {"ok": True, "payload": {"stopping": True}}
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert not socket_path.exists()
+    finally:
+        daemon.stop()
+        thread.join(timeout=5)

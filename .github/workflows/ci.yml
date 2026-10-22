@@ -6,7 +6,11 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -16,8 +20,17 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Install ripgrep
+      - name: Install ripgrep (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ripgrep
+
+      - name: Install ripgrep (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ripgrep
+
+      - name: Install ripgrep (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ripgrep -y
 
       - name: Install dependencies
         run: |
@@ -25,10 +38,12 @@ jobs:
           pip install -e ".[dev,lang]"
 
       - name: Run quality gate (ruff lint + format + mypy + fast pytest)
-        run: bash scripts/check.sh -- -m "not slow and not benchmark and not test_repo"
+        run: python scripts/check.py -- -m "not slow and not benchmark and not test_repo"
 
       - name: Ranked-path performance budget
+        if: runner.os == 'Linux'
         run: pytest tests/benchmarks/test_match_boost_overhead.py -q
 
       - name: Cold-start latency budget
+        if: runner.os == 'Linux'
         run: pytest tests/benchmarks/test_cold_start_latency.py -q

@@ -288,7 +288,7 @@ def test_ranked_envelope_fields_latency(large_fts5_index: dict[str, Any]) -> Non
     settings = large_fts5_index["settings"]
     search = HybridSearch(
         large_fts5_index["db"],
-        VectorIndex(Path("/tmp/none.bin"), Path("/tmp/none.meta.json")),
+        VectorIndex(Path("none.bin"), Path("none.meta.json")),
         EmbeddingGenerator(settings),
         settings,
     )

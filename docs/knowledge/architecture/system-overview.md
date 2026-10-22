@@ -120,7 +120,7 @@ It provides `query`, `shortest_path`, `explain`, `impact`, and
   `find_related`, `query_graph`, `shortest_path`, `explain_symbol`, and
   `get_impact` as MCP tools over stdio for AI agent consumption.
 - **Daemon** ([`QueryDaemon`](../types/QueryDaemon.md)) — keeps the index and
-  embedding model warm in memory, served over a local Unix socket via
+  embedding model warm in memory, served over a local AF_UNIX socket via
   [`DaemonClient`](../types/DaemonClient.md), avoiding per-invocation
   cold-start cost.
 

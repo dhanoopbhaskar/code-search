@@ -53,7 +53,7 @@ def test_bytes_to_embedding_wrong_size(generator: EmbeddingGenerator) -> None:
 def test_vector_index_empty_search() -> None:
     from pathlib import Path
 
-    idx = VectorIndex(Path("/tmp/test_vectors.bin"), Path("/tmp/test_meta.json"))
+    idx = VectorIndex(Path("test_vectors.bin"), Path("test_meta.json"))
     q = np.ones(EMBEDDING_DIM, dtype=np.float32)
     results = idx.search(q, top_k=5)
     assert results == []
