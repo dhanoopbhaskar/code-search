@@ -309,7 +309,9 @@ def cmd_index(args: argparse.Namespace) -> int:
     if args.context_dir:
         context_dir = Path(args.context_dir).resolve()
 
-    comps = _initialize_components(context_dir, settings=_settings_for_args(args), for_index=True)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args, context_dir), for_index=True
+    )
 
     profile_error = _check_model_profile(comps["settings"])
     if profile_error is not None:
@@ -524,12 +526,17 @@ def _print_scope_override(scope: dict[str, Any]) -> None:
         print(f"Override with: --content {override}", file=sys.stderr)
 
 
-def _settings_for_args(args: argparse.Namespace) -> Settings:
+def _settings_for_args(args: argparse.Namespace, context_dir: Path | None = None) -> Settings:
     """Resolve settings with the runtime-profile CLI overrides applied.
 
     Args:
         args: Parsed arguments that may carry ``runtime_profile``,
             ``index_layout``, or ``freshness_mode``.
+        context_dir: Explicit context directory; when omitted, the resolved CLI
+            value (``--context-dir``, ``CODE_SEARCH_CONTEXT_DIR``) or
+            ``.context`` in the current directory is used. ``index`` passes the
+            directory derived from its ``--path`` root so the index lives with
+            the indexed codebase.
 
     Returns:
         The environment-derived settings with any explicit flags replacing the
@@ -537,7 +544,9 @@ def _settings_for_args(args: argparse.Namespace) -> Settings:
     """
     from dataclasses import replace
 
-    settings = Settings.with_context_dir(_resolve_context_dir(args))
+    settings = Settings.with_context_dir(
+        _resolve_context_dir(args) if context_dir is None else context_dir
+    )
     overrides: dict[str, Any] = {}
     for attr in ("runtime_profile", "index_layout", "freshness_mode"):
         value = getattr(args, attr, None)

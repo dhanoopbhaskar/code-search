@@ -152,6 +152,7 @@ produced:
 ├── audit.db            # append-only query audit log
 ├── vectors.bin         # raw float32 vectors, no header
 ├── vectors.meta.json   # NDJSON metadata, one line per vector
+├── vectors.meta.json.files  # append-only file-path dictionary for the metadata
 ├── vectors.removed     # append-only tombstone row indices
 └── index.lock          # present only while an index is running
 ```
@@ -160,7 +161,7 @@ Observed sizes for the sample:
 
 | File | Size | Meaning |
 |---|---:|---|
-| `graph.db` | 212,992 B | SQLite database (schema v14) |
+| `graph.db` | 245,760 B | SQLite database (schema v16) |
 | `session.db` | 32,768 B | SQLite database |
 | `audit.db` | 20,480 B | SQLite database |
 | `vectors.bin` | 1,920 B | `15 vectors × 32 dims × 4 bytes` |
@@ -196,7 +197,7 @@ Then the orchestrator enforces invariants **before reading a single file**:
 
 1. **Filesystem lock** (`index.lock`, `O_CREAT | O_EXCL`). Concurrent indexing
    is refused; a lock older than `lock_timeout` may be force-released.
-2. **Schema version check** (`index_version`). The sample records `14`. An older
+2. **Schema version check** (`index_version`). The sample records `16`. An older
    schema forces a full re-index.
 3. **Index status check**. `stale` forces a full re-index. A crashed run that
    left `indexing` is recovered by `cmd_index` when no live lock exists.
@@ -472,6 +473,11 @@ Storage (`VectorIndex`):
   Removal flips an in-memory alive flag and queues a tombstone; a later `save()`
   appends only the delta. Physical rows are never reused, so previously
   persisted rows stay addressable.
+- `vectors.meta.json.files` — append-only file-path dictionary. The default
+  (`legacy`) layout keeps the full row objects in `vectors.meta.json`; the
+  `compact` layout instead writes `vectors.v2.meta` (a `CSVMETA1` header plus
+  packed `chunk_id`/`file_id`/`content_type` rows) and resolves paths through
+  this dictionary so path and content filters run as in-memory masks.
 
 In the sample, every one of the 15 chunks — including config and docs — received
 a vector, hence `15 × 32 × 4 = 1920` bytes.
@@ -500,14 +506,18 @@ Then:
 
 | Key | Value |
 |---|---|
-| `index_version` | `14` |
+| `index_version` | `16` |
 | `representation_scheme_version` | `1` |
 | `index_status` | `ready` |
+| `index_layout` | `legacy` |
+| `graph_indexed` | `true` |
 | `last_indexed_at` | `2026-10-19T15:05:09.332473Z` |
 | `index_root` | `/tmp/cs-demo` |
 | `total_files` | `5` |
 | `total_symbols` | `8` |
 | `total_chunks` | `15` |
+| `corpus_chunk_count` | `15` |
+| `skipped_large_files` | `0` |
 | `languages` | `["python"]` |
 | `supported_languages` | `["python"]` |
 | `test_files_included` | `true` |
@@ -528,6 +538,7 @@ Then:
 | `model_load_path` | `/media/…/models/potion-code-16m-32d` |
 | `freshness_checked_at` | ISO timestamp |
 | `freshness_signal` | JSON (stale, counts, age) |
+| `freshness_scan_duration_s` | scan duration in seconds |
 
 Note that `languages` is derived from **symbols**, which is why the `.properties`
 and `.md` files do not add `properties` or `markdown` to the list.
@@ -549,7 +560,9 @@ and `.md` files do not add `properties` or `markdown` to the list.
 | `symbol_rationale` | NOTE/WHY/HACK/TODO/FIXME/ADR comments attached to symbols | 0 |
 | `rationale_fts` | FTS5 over rationale text | 0 |
 | `doc_links` | Offline doc/config → code links (opt-in) | 0 |
-| `index_metadata` | Index lifecycle and statistics | 28 keys |
+| `prefix_stats` | Corpus term-prefix frequencies used by the lexical arm | 79 |
+| `subword_stats` | Corpus sub-word document frequencies for expansion | 127 |
+| `index_metadata` | Index lifecycle and statistics | 33 keys |
 
 Key constraints:
 
@@ -617,7 +630,8 @@ include `search`, `get_symbol_definition`, `get_call_neighbors`,
 
 ### 5.4 Vectors
 
-`vectors.bin`, `vectors.meta.json`, `vectors.removed` — all append-only.
+`vectors.bin`, `vectors.meta.json`, `vectors.meta.json.files`, `vectors.removed`
+— all append-only.
 `VectorIndex.load()` reconstructs the in-memory `_alive` bitmap and
 `chunk_id → physical index` map. `size` counts only live vectors.
 

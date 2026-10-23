@@ -136,7 +136,7 @@ code-search search "database connection pool" --language java --no-include-tests
 | `--no-model` | off | Skip the vector model and fuse lexical signals only; the response is labelled `lexical_degraded` |
 | `--explain-ranking` | off | Include `score_sources` for every result and print the class/content multipliers and additive boosts behind the ranking |
 | `--compact` / `--no-compact` | `--compact` | JSON keeps identifiers, locations, signatures, and short content only. `--no-compact` returns full blocks and the `score_sources` breakdown |
-| `--max-snippet-lines N` | `20` in compact JSON | Trim each result to at most N content lines and attach a one-line `signature`; the original line range is preserved |
+| `--max-snippet-lines N` | `10` in compact JSON | Trim each result to at most N content lines and attach a one-line `signature`; the original line range is preserved |
 | `--json` | — | JSON output: `{"results": [...], "total_matches": N, "truncated": bool, "token_savings": {...}, "freshness": {...}}` |
 
 `--json` reports **`total_matches`** (how many chunks matched the query tokens) and
