@@ -36,7 +36,7 @@ from code_search.engine.intent_detection import (
     classify_content_intent,
     scope_override,
 )
-from code_search.engine.language import QueryAnalysis, analyze_query, language_vocabularies
+from code_search.engine.language import QueryAnalysis, analyze_query
 from code_search.engine.match_boost import (
     MatchEvidence as BoostMatchEvidence,
 )
@@ -593,6 +593,7 @@ class BM25Search:
         self._filter_stopwords = filter_stopwords
         self._subword_terms: set[str] | None = None
         self._corpus_stats: tuple[int, dict[str, int], dict[str, int], set[str]] | None = None
+        self._stats_persisted: bool | None = None
 
     def invalidate_corpus(self) -> None:
         """Drop cached corpus statistics so they are recomputed on next use.
@@ -602,16 +603,86 @@ class BM25Search:
         """
         self._subword_terms = None
         self._corpus_stats = None
+        self._stats_persisted = None
+
+    def _total_chunks(self) -> int:
+        """Return the corpus chunk count from metadata, caching the result."""
+        if self._subword_terms is not None and self._corpus_stats is not None:
+            return self._corpus_stats[0]
+        try:
+            with self._db.connect() as conn:
+                row = conn.execute(
+                    "SELECT value FROM index_metadata WHERE key = 'corpus_chunk_count';"
+                ).fetchone()
+                if row is not None:
+                    return int(row["value"])
+                row = conn.execute("SELECT COUNT(*) AS n FROM code_chunks;").fetchone()
+                return int(row["n"]) if row is not None else 0
+        except Exception:
+            return 0
+
+    def _stats_available(self) -> bool:
+        """Return whether the persisted corpus-statistics tables have rows."""
+        if self._stats_persisted is not None:
+            return self._stats_persisted
+        try:
+            with self._db.connect() as conn:
+                row = conn.execute("SELECT COUNT(*) AS n FROM subword_stats;").fetchone()
+                self._stats_persisted = bool(row is not None and row["n"])
+                return self._stats_persisted
+        except Exception:
+            self._stats_persisted = False
+            return False
+
+    def token_doc_counts(self, tokens: set[str]) -> dict[str, int]:
+        """Return ``token -> distinct chunk count`` for the requested tokens only."""
+        if not tokens:
+            return {}
+        try:
+            placeholders = ",".join("?" for _ in tokens)
+            with self._db.connect() as conn:
+                rows = conn.execute(
+                    f"SELECT token, SUM(doc_count) AS n FROM subword_stats "
+                    f"WHERE token IN ({placeholders}) GROUP BY token;",
+                    sorted(tokens),
+                ).fetchall()
+            return {row["token"]: int(row["n"]) for row in rows}
+        except Exception as exc:
+            logger.warning("Token document-frequency lookup failed: %s", exc)
+            return {}
+
+    def prefix_doc_counts(self, prefixes: set[str]) -> dict[str, int]:
+        """Return ``prefix -> distinct chunk count`` for the requested prefixes only."""
+        if not prefixes:
+            return {}
+        try:
+            placeholders = ",".join("?" for _ in prefixes)
+            with self._db.connect() as conn:
+                rows = conn.execute(
+                    f"SELECT prefix, SUM(doc_count) AS n FROM prefix_stats "
+                    f"WHERE prefix IN ({placeholders}) GROUP BY prefix;",
+                    sorted(prefixes),
+                ).fetchall()
+            return {row["prefix"]: int(row["n"]) for row in rows}
+        except Exception as exc:
+            logger.warning("Prefix document-frequency lookup failed: %s", exc)
+            return {}
+
+    def present_terms(self, tokens: set[str]) -> set[str]:
+        """Return the subset of *tokens* present in the indexed corpus."""
+        if not tokens:
+            return set()
+        if self._stats_available():
+            return set(self.token_doc_counts(tokens))
+        return tokens & self._corpus_subword_stats()[3]
 
     def _corpus_subword_stats(self) -> tuple[int, dict[str, int], dict[str, int], set[str]]:
-        """Return ``(total_chunks, token_doc_frequency, prefix_doc_frequency,
-        subword_vocabulary)`` for the indexed corpus.
+        """Return corpus document frequencies, using persisted stats when present.
 
-        ``token_doc_frequency`` counts distinct chunks whose ``subwords`` column
-        contains the exact token; ``prefix_doc_frequency`` counts distinct chunks
-        containing any sub-word with a given 3-char prefix. Used by the
-        informative-token coverage signal. Cached until the corpus is
-        invalidated.
+        The persisted tables are read once and cached for the lifetime of the
+        search object. An index that predates them (or a hand-built test
+        database) falls back to scanning ``code_chunks.subwords`` exactly as
+        before, so correctness never depends on the migration having run.
         """
         if self._corpus_stats is not None:
             return self._corpus_stats
@@ -620,19 +691,33 @@ class BM25Search:
         prefix_df: dict[str, int] = {}
         try:
             with self._db.connect() as conn:
-                rows = conn.execute("SELECT subwords FROM code_chunks;").fetchall()
-            for row in rows:
-                total += 1
-                seen_tokens: set[str] = set()
-                seen_prefixes: set[str] = set()
-                for w in (row["subwords"] or "").split():
-                    seen_tokens.add(w)
-                    if len(w) >= 3:
-                        seen_prefixes.add(w[:3])
-                for w in seen_tokens:
-                    token_df[w] = token_df.get(w, 0) + 1
-                for p in seen_prefixes:
-                    prefix_df[p] = prefix_df.get(p, 0) + 1
+                count_row = conn.execute(
+                    "SELECT value FROM index_metadata WHERE key = 'corpus_chunk_count';"
+                ).fetchone()
+                total = int(count_row["value"]) if count_row is not None else 0
+                if self._stats_available():
+                    self._stats_persisted = True
+                    for row in conn.execute(
+                        "SELECT token, SUM(doc_count) AS n FROM subword_stats GROUP BY token;"
+                    ).fetchall():
+                        token_df[row["token"]] = int(row["n"])
+                    for row in conn.execute(
+                        "SELECT prefix, SUM(doc_count) AS n FROM prefix_stats GROUP BY prefix;"
+                    ).fetchall():
+                        prefix_df[row["prefix"]] = int(row["n"])
+                    if total <= 0:
+                        total = sum(token_df.values())
+                else:
+                    self._stats_persisted = False
+                    rows = conn.execute("SELECT language, subwords FROM code_chunks;").fetchall()
+                    for row in rows:
+                        total += 1
+                        seen_tokens = set((row["subwords"] or "").split())
+                        seen_prefixes = {w[:3] for w in seen_tokens if len(w) >= 3}
+                        for w in seen_tokens:
+                            token_df[w] = token_df.get(w, 0) + 1
+                        for p in seen_prefixes:
+                            prefix_df[p] = prefix_df.get(p, 0) + 1
         except Exception as exc:
             logger.warning("Failed to load corpus subword statistics: %s", exc)
         self._corpus_stats = (total, token_df, prefix_df, set(token_df.keys()))
@@ -641,9 +726,8 @@ class BM25Search:
     def _corpus_subword_terms(self) -> set[str]:
         """Return the set of sub-words present in the indexed corpus.
 
-        Used to decide whether a decomposed query sub-word is an exact corpus
-        token (no prefix expansion) or a novel vocabulary word (expanded to a
-        ≥3-char prefix). Cached until the corpus is invalidated.
+        Only used as the fallback vocabulary for an index without persisted
+        statistics; the persisted path answers per-token membership.
         """
         return self._corpus_subword_stats()[3]
 
@@ -657,23 +741,42 @@ class BM25Search:
         subwords = decompose_query(query, self._filter_stopwords, expand_variants=False)
         if not subwords:
             return []
-        total, token_df, prefix_df, corpus = self._corpus_subword_stats()
+        total = self._total_chunks()
         if total <= 0:
             return []
-        informative: list[str] = []
+        if not self._stats_available():
+            total, token_df, prefix_df, corpus = self._corpus_subword_stats()
+            informative: list[str] = []
+            for w in subwords:
+                if len(w) < 3 or w in STOPWORDS or w in NON_INFORMATIVE_CODE_TERMS:
+                    continue
+                if w in corpus:
+                    docs = token_df.get(w, 0)
+                elif prefix_df.get(w[:3], 0) > 0:
+                    docs = prefix_df[w[:3]]
+                else:
+                    continue
+                if docs <= 0:
+                    continue
+                idf = math.log(total / docs)
+                if idf >= self._settings.idf_floor or docs <= 2:
+                    informative.append(w)
+            return informative
+        candidates = {
+            w
+            for w in subwords
+            if len(w) >= 3 and w not in STOPWORDS and w not in NON_INFORMATIVE_CODE_TERMS
+        }
+        token_counts = self.token_doc_counts(candidates)
+        missing_prefixes = {w[:3] for w in candidates if w not in token_counts}
+        prefix_counts = self.prefix_doc_counts(missing_prefixes)
+        informative = []
         for w in subwords:
             if len(w) < 3 or w in STOPWORDS or w in NON_INFORMATIVE_CODE_TERMS:
                 continue
-            if w in corpus:
-                docs = token_df.get(w, 0)
-            elif prefix_df.get(w[:3], 0) > 0:
-                docs = prefix_df[w[:3]]
-            else:
-                continue
+            docs = token_counts.get(w) or prefix_counts.get(w[:3], 0)
             if docs <= 0:
                 continue
-            # A sub-word in very few chunks is concept-specific regardless of
-            # corpus size (on tiny corpora the relative IDF is degenerate).
             idf = math.log(total / docs)
             if idf >= self._settings.idf_floor or docs <= 2:
                 informative.append(w)
@@ -733,7 +836,13 @@ class BM25Search:
         result = self._search_topk(query, top_k, count_only=False, content=content)
         return result if isinstance(result, list) else []
 
-    def count(self, query: str, content: str = "all", file_paths: list[str] | None = None) -> int:
+    def count(
+        self,
+        query: str,
+        content: str = "all",
+        file_paths: list[str] | None = None,
+        test_filter: bool | None = None,
+    ) -> int:
         """Return the number of FTS5-matching chunks for *query* (uncapped).
 
         The count reflects total distinct matches for the query tokens before
@@ -742,11 +851,17 @@ class BM25Search:
         :meth:`search`, so ``total_matches`` never advertises chunks the
         response scope excluded. *file_paths* further restricts the count to
         those stored paths (used to split production and test match counts).
-        Returns ``0`` when the query produces no MATCH expression or the
-        search fails.
+        *test_filter* selects only test chunks (``True``), excludes them
+        (``False``), or applies no test filter (``None``). Returns ``0`` when
+        the query produces no MATCH expression or the search fails.
         """
         result = self._search_topk(
-            query, None, count_only=True, content=content, file_paths=file_paths
+            query,
+            None,
+            count_only=True,
+            content=content,
+            file_paths=file_paths,
+            test_filter=test_filter,
         )
         return result if isinstance(result, int) else 0
 
@@ -757,6 +872,7 @@ class BM25Search:
         count_only: bool = False,
         content: str = "all",
         file_paths: list[str] | None = None,
+        test_filter: bool | None = None,
     ) -> int | list[tuple[int, float]]:
         """Execute the FTS5 query for *query*.
 
@@ -782,6 +898,11 @@ class BM25Search:
                     else " AND c.content_type = ?"
                 )
             )
+            test_clause = ""
+            if test_filter is True:
+                test_clause = " AND c.is_test = 1"
+            elif test_filter is False:
+                test_clause = " AND c.is_test = 0"
             path_clause = ""
             if file_paths is not None:
                 if not file_paths:
@@ -798,7 +919,11 @@ class BM25Search:
                     row = conn.execute(
                         "SELECT COUNT(*) AS n FROM chunks_fts AS f "
                         "JOIN code_chunks AS c ON c.id = f.rowid "
-                        "WHERE chunks_fts MATCH ?" + content_clause + path_clause + ";",
+                        "WHERE chunks_fts MATCH ?"
+                        + content_clause
+                        + test_clause
+                        + path_clause
+                        + ";",
                         params,
                     ).fetchone()
                     return cast(int, row["n"]) if row is not None else 0
@@ -809,6 +934,7 @@ class BM25Search:
                     "FROM chunks_fts AS f JOIN code_chunks AS c ON c.id = f.rowid "
                     "WHERE chunks_fts MATCH ?"
                     + content_clause
+                    + test_clause
                     + path_clause
                     + " ORDER BY score LIMIT ?;",
                     params,
@@ -1173,10 +1299,10 @@ class HybridSearch:
         placeholders = ",".join("?" for _ in candidate_ids)
         with self._db.connect() as conn:
             rows = conn.execute(
-                f"SELECT id, file_path\nFROM code_chunks WHERE id IN ({placeholders});",
+                f"SELECT id, is_test FROM code_chunks WHERE id IN ({placeholders});",
                 list(candidate_ids),
             ).fetchall()
-        test_chunk_ids = {row["id"] for row in rows if _is_test_file(row["file_path"])}
+        test_chunk_ids = {row["id"] for row in rows if row["is_test"]}
         return demote_test_file_candidates(
             bm25_results,
             vector_results,
@@ -1194,17 +1320,24 @@ class HybridSearch:
             from code_search.engine.symbols import SymbolStore
 
             self._symbol_store = SymbolStore(self._db, self._settings)
-        if self._vocab_by_language is None:
-            self._vocab_by_language = language_vocabularies(self._db)
-        corpus_terms = getattr(self._bm25, "_corpus_subword_terms", None)
-        vocabulary = corpus_terms() if corpus_terms is not None else self._vocab_from_db()
+        expansion_table = self._expansion_table
+        expanded = expansion_table.expanded_text(query) if expansion_table is not None else query
+        from code_search.engine.language import _concept_subwords, language_vocabularies_for_tokens
+
+        concept_tokens = set(_concept_subwords(expanded))
+        present_terms = getattr(self._bm25, "present_terms", None)
+        if callable(present_terms):
+            vocabulary = present_terms(concept_tokens)
+        else:
+            vocabulary = self._vocab_from_db()
+        vocab_by_language = language_vocabularies_for_tokens(self._db, concept_tokens)
         return analyze_query(
             query,
             settings=self._settings,
             vocabulary=vocabulary,
-            expansion_table=self._expansion_table,
+            expansion_table=expansion_table,
             symbol_store=self._symbol_store,
-            vocab_by_language=self._vocab_by_language,
+            vocab_by_language=vocab_by_language,
             explicit_language=explicit_language,
         )
 
@@ -1236,6 +1369,7 @@ class HybridSearch:
         content: str | None = None,
         matching: str | None = None,
         regex: bool = False,
+        allow_weak: bool = False,
     ) -> dict[str, Any]:
         """Run the full hybrid search pipeline and stamp the per-request timer.
 
@@ -1261,7 +1395,9 @@ class HybridSearch:
                 is widened to ``all`` automatically, a code-shaped query is
                 narrowed to ``code``, and configuration-shaped/neutral queries
                 use the code-focused default (code + config).
-            matching: Exhaustive-only matching semantics — ``literal``,
+            allow_weak: When true, bypass the post-rank abstention gate and
+                return the weak ranked pool. Exhaustive-only ``matching``
+                semantics — ``literal``,
                 ``all_tokens``, or ``any_token`` — the three exhaustive semantics. Ignored outside
                 exhaustive mode.
             regex: Exhaustive-only regular-expression mode; *query* is compiled
@@ -1308,6 +1444,7 @@ class HybridSearch:
             content=effective_content,
             matching=matching,
             regex=regex,
+            allow_weak=allow_weak,
         )
 
         effective = envelope.get("content") or DEFAULT_CONTENT_SCOPE
@@ -1463,6 +1600,7 @@ class HybridSearch:
         content: str | None = None,
         matching: str | None = None,
         regex: bool = False,
+        allow_weak: bool = False,
     ) -> dict[str, Any]:
         """Run the full hybrid search pipeline for *query*.
 
@@ -1512,6 +1650,7 @@ class HybridSearch:
                 ``"all"`` (default). An unknown value falls back to ``all``.
             regex: Exhaustive-only regular-expression mode; ignored for the
                 ranked and enumerate paths.
+            allow_weak: Bypass the post-rank abstention gate.
 
         Returns:
             The search envelope (see above); ``results`` is empty when the
@@ -1674,6 +1813,8 @@ class HybridSearch:
         rule_evidence: dict[int, float] = {}
         if symbol_name is None and self._declared_rule_intent(query):
             rule_evidence = self._declared_rules_pass(query, fused)
+        if symbol_name is None and classify_content_intent(query) is ContentIntent.DOCS:
+            self._docs_inject_pass(fused)
         if symbol_name is None and self._resource_scent(query):
             self._config_inject_pass(query, fused)
         if symbol_name is None and self._authorization_intent(query):
@@ -1741,6 +1882,22 @@ class HybridSearch:
             ).fetchall()
 
         chunk_map = {row["id"]: dict(row) for row in rows}
+
+        if (
+            self._settings.relevance_gate
+            and not allow_weak
+            and symbol_name is None
+            and not pattern_query
+        ):
+            insufficient, signals = self._insufficient_signal(
+                retrieval_query, top_chunk_ids, chunk_map, fused
+            )
+            if insufficient:
+                envelope = self._no_match_envelope(
+                    vector_health, [], query, content, reason="insufficient_signal"
+                )
+                envelope["no_match_signals"] = signals
+                return envelope
 
         path_boost_evidence: dict[int, float] = {}
         if symbol_name is None:
@@ -2777,22 +2934,41 @@ class HybridSearch:
         Returns:
             Up to ``concept_symbol_terms_max`` terms, rarest first.
         """
-        stats_fn = getattr(self._bm25, "_corpus_subword_stats", None)
-        if not callable(stats_fn):
-            return []
-        total, token_df, prefix_df, _corpus = stats_fn()
+        total_fn = getattr(self._bm25, "_total_chunks", None)
+        token_fn = getattr(self._bm25, "token_doc_counts", None)
+        prefix_fn = getattr(self._bm25, "prefix_doc_counts", None)
+        stats_available_fn = getattr(self._bm25, "_stats_available", None)
+        stats_available = bool(stats_available_fn()) if callable(stats_available_fn) else True
+        if not (
+            callable(total_fn) and callable(token_fn) and callable(prefix_fn) and stats_available
+        ):
+            stats_fn = getattr(self._bm25, "_corpus_subword_stats", None)
+            if not callable(stats_fn):
+                return []
+            total, token_counts, prefix_counts, _corpus = stats_fn()
+        else:
+            total = total_fn()
+            raw_terms = decompose_query(query, filter_stopwords=True)
+            token_counts = token_fn({term for term in raw_terms if len(term) >= 3})
+            prefix_counts = prefix_fn(
+                {
+                    term[:3]
+                    for term in collapse_terms(raw_terms, preferred=set(token_counts))
+                    if term not in token_counts
+                }
+            )
         if total <= 0:
             return []
         concepts = collapse_terms(
             decompose_query(query, filter_stopwords=True),
-            preferred=set(token_df),
+            preferred=set(token_counts),
         )
         max_common = max(3, int(total * self._settings.concept_symbol_common_df))
         scored: list[tuple[int, str]] = []
         for term in concepts:
             if len(term) < 3 or term in STOPWORDS or term in NON_INFORMATIVE_CODE_TERMS:
                 continue
-            df = token_df[term] if term in token_df else prefix_df.get(term[:3], 0)
+            df = token_counts.get(term) or prefix_counts.get(term[:3], 0)
             if df <= 0 or df > max_common:
                 continue
             scored.append((df, term))
@@ -3290,6 +3466,38 @@ class HybridSearch:
             evidence[chunk_id] = boost
         return evidence
 
+    def _docs_inject_pass(self, fused: dict[int, float]) -> dict[int, float]:
+        """Add documentation chunks to the fused pool for a docs-intent query.
+
+        A docs question can be crowded out of the fused code pool before the
+        documentation tier has a chance to rank it. This pass adds every docs
+        chunk at a fraction of the current pool maximum; the reranker then
+        applies the project/nested/generated/third-party tiers.
+
+        Args:
+            fused: The fused score pool (mutated in place).
+
+        Returns:
+            Per-chunk evidence ``{chunk_id: boost}``.
+        """
+        try:
+            with self._db.connect() as conn:
+                rows = conn.execute(
+                    "SELECT id FROM code_chunks WHERE content_type = 'docs';"
+                ).fetchall()
+        except Exception as exc:
+            logger.warning("Docs-inject lookup failed: %s", exc)
+            return {}
+        if not rows:
+            return {}
+        base = self._settings.docs_inject_boost * self._pool_max(fused)
+        evidence: dict[int, float] = {}
+        for row in rows:
+            chunk_id = int(row["id"])
+            fused[chunk_id] = max(fused.get(chunk_id, 0.0), base)
+            evidence[chunk_id] = base
+        return evidence
+
     def _content_weights(self, config_scent: bool, code_context: bool) -> dict[str, float]:
         """Return the per-content-type weight map for the current query.
 
@@ -3344,6 +3552,71 @@ class HybridSearch:
         except Exception as exc:
             logger.warning("Exact pre-check query failed: %s", exc)
         return exact_ids
+
+    def _insufficient_signal(
+        self,
+        query: str,
+        top_chunk_ids: list[int],
+        chunk_map: dict[int, dict[str, Any]],
+        fused: dict[int, float],
+    ) -> tuple[bool, dict[str, Any]]:
+        """Return whether a weak, partially in-domain pool should abstain.
+
+        Two post-rank signals are combined: the fraction of the query's
+        high-IDF concepts present in the top results, and the separation
+        between the top fused score and the median of the next few. A query
+        must be both poorly covered and poorly separated to abstain, so a
+        legitimate weak paraphrase with one clear best answer still returns
+        results.
+
+        Args:
+            query: The retrieval query text (expanded).
+            top_chunk_ids: Candidate ids in fused order.
+            chunk_map: Fetched candidate rows by id.
+            fused: The fused score pool.
+
+        Returns:
+            ``(insufficient, signals)`` where *signals* records the observed
+            coverage and separation for the response.
+        """
+        informative_fn = getattr(self._bm25, "informative_tokens", None)
+        if not callable(informative_fn):
+            return False, {"concepts": 0, "coverage": 0.0, "separation": 0.0}
+        concepts = informative_fn(query)
+        if len(concepts) < 3:
+            return False, {"concepts": len(concepts), "coverage": 0.0, "separation": 0.0}
+        top_ids = top_chunk_ids[:5]
+        present = 0
+        for concept in concepts:
+            for chunk_id in top_ids:
+                chunk = chunk_map.get(chunk_id)
+                if chunk is None:
+                    continue
+                subwords = set((chunk.get("subwords") or "").split())
+                content = (chunk.get("content") or "").lower()
+                if (
+                    concept in subwords
+                    or concept in content
+                    or any(token.startswith(concept[:3]) for token in subwords if len(concept) >= 3)
+                ):
+                    present += 1
+                    break
+        coverage = present / len(concepts)
+        scores = sorted((fused[cid] for cid in top_ids if cid in fused), reverse=True)
+        separation = 1.0
+        if len(scores) >= 2:
+            top = max(scores[0], 1e-9)
+            baseline = scores[len(scores) // 2]
+            separation = top / max(baseline, 1e-9)
+        insufficient = (
+            coverage <= self._settings.abstention_coverage_min
+            and separation <= self._settings.abstention_separation_min
+        )
+        return insufficient, {
+            "concepts": len(concepts),
+            "coverage": round(coverage, 3),
+            "separation": round(separation, 3),
+        }
 
     def _query_quality_gate(
         self,
@@ -3469,9 +3742,13 @@ class HybridSearch:
         # prefix-matched tokens like "not" from "notaword" from counting as
         # meaningful overlap, while still requiring IDF-significant tokens.
         all_informative = self._bm25.informative_tokens(expanded)
-        # Filter to exact corpus matches only (exclude prefix-matched tokens)
-        _, _, _, corpus = self._bm25._corpus_subword_stats()
-        informative = [w for w in all_informative if w in corpus]
+        # Filter to exact corpus matches only (exclude prefix-matched tokens).
+        present_fn = getattr(self._bm25, "present_terms", None)
+        if callable(present_fn):
+            present = present_fn(set(all_informative))
+        else:
+            present = self._bm25._corpus_subword_stats()[3]
+        informative = [w for w in all_informative if w in present]
         # Filter query tokens the same way informative_tokens does:
         # exclude stopwords, non-informative code terms, and tokens < 3 chars.
         query_tokens = [
@@ -3712,11 +3989,7 @@ class HybridSearch:
             where.append("language = ?")
             params.append(language)
         if not include_tests:
-            test_rows = self._test_file_paths()
-            if test_rows:
-                test_placeholders = ",".join("?" for _ in test_rows)
-                where.append(f"file_path NOT IN ({test_placeholders})")
-                params.extend(test_rows)
+            where.append("is_test = 0")
         rows = []
         try:
             with self._db.connect() as conn:
@@ -3813,15 +4086,18 @@ class HybridSearch:
         tiers_tried: list[str],
         query: str | None = None,
         content: str = "all",
+        reason: str | None = None,
     ) -> dict[str, Any]:
         """Return the honest ``no_match`` explanation envelope.
 
         ``reason`` is ``invalid_query`` when the query decomposes to nothing
-        (blank/whitespace), else ``no_match``. Results are never fabricated.
+        (blank/whitespace), the supplied *reason*, or ``no_match``. Results
+        are never fabricated.
         """
-        reason = "no_match"
-        if query is not None and not decompose_query(query, self._settings.filter_stopwords):
-            reason = "invalid_query"
+        if reason is None:
+            reason = "no_match"
+            if query is not None and not decompose_query(query, self._settings.filter_stopwords):
+                reason = "invalid_query"
         return {
             "results": [],
             "total_matches": 0,
@@ -4070,9 +4346,8 @@ class HybridSearch:
     def _count_test_matches(self, query: str, content: str) -> int:
         """Count query-matching chunks that live in test files.
 
-        Batches the stored test paths so a large corpus never exceeds SQLite's
-        bound-variable limit. Used to report production and test match counts
-        separately, including when test results are hidden.
+        Uses the indexed ``is_test`` column so the count is one FTS query
+        instead of a batched ``file_path IN (...)`` query per 500 test paths.
 
         Args:
             query: The user query text.
@@ -4081,13 +4356,7 @@ class HybridSearch:
         Returns:
             The number of matching chunks in test files.
         """
-        paths = self._cached_test_file_paths()
-        if not paths:
-            return 0
-        total = 0
-        for start in range(0, len(paths), 500):
-            total += self._bm25.count(query, content=content, file_paths=paths[start : start + 500])
-        return total
+        return self._bm25.count(query, content=content, test_filter=True)
 
     def _fetch_chunks(self, chunk_ids: list[int]) -> list[dict[str, Any]]:
         """Fetch ``code_chunks`` rows for *chunk_ids* as dicts in id order."""

@@ -20,6 +20,18 @@ def edge_store(db: GraphDatabase) -> EdgeStore:
     return EdgeStore(db)
 
 
+def test_post_index_maintenance_optimizes_and_analyzes(db: GraphDatabase) -> None:
+    """Post-build maintenance runs for both incremental and full rebuilds."""
+    db.run_post_index_maintenance(full_rebuild=False)
+    db.run_post_index_maintenance(full_rebuild=True)
+    with db.connect() as conn:
+        tables = {
+            row["name"]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table';")
+        }
+    assert "sqlite_stat1" in tables
+
+
 @pytest.fixture
 def populated_db(db: GraphDatabase) -> GraphDatabase:
     with db.write_transaction() as conn:

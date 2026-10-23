@@ -920,6 +920,46 @@ class ASTParser:
             )
         return regions
 
+    @staticmethod
+    def _canonical_chunk_node_type(node: object, node_type: str) -> str:
+        """Map language-specific declaration nodes onto canonical chunk types.
+
+        Go declares structs, interfaces, and aliases through ``type_spec``
+        nodes, Kotlin declares interfaces through ``class_declaration`` and
+        objects through ``object_declaration``, and Go interface members are
+        ``method_elem`` nodes. Storing the canonical type keeps downstream
+        chunk classification and symbol-kind mapping consistent with other
+        grammars.
+
+        Args:
+            node: The AST node being converted.
+            node_type: The node's tree-sitter type.
+
+        Returns:
+            The canonical ``chunk_node_type`` for the node.
+        """
+        if node_type == "type_spec":
+            try:
+                type_node = node.child_by_field_name("type")  # type: ignore[attr-defined]
+            except Exception:
+                type_node = None
+            if type_node is not None and type_node.type == "interface_type":
+                return "interface_declaration"
+            if type_node is not None and type_node.type == "struct_type":
+                return "class_declaration"
+            return "type_alias"
+        if node_type == "object_declaration":
+            return "class_declaration"
+        if node_type == "method_elem":
+            return "method_declaration"
+        if node_type == "class_declaration":
+            try:
+                if any(child.type == "interface" for child in node.children):  # type: ignore[attr-defined]
+                    return "interface_declaration"
+            except Exception:
+                pass
+        return node_type
+
     def _extract_chunks(
         self,
         node: object,
@@ -965,6 +1005,11 @@ class ASTParser:
             "record_declaration",
             "annotation_declaration",
             "type_alias_declaration",
+            "type_spec",
+            "method_elem",
+            "object_declaration",
+            "table",
+            "table_array_element",
         }
 
         new_chunk_types: dict[str, str] = {
@@ -979,6 +1024,7 @@ class ASTParser:
             "type_alias_statement": "type_alias",
             "type_definition": "type_alias",
             "alias_declaration": "type_alias",
+            "property_declaration": "field_declaration",
         }
 
         is_definition_types: set[str] = {
@@ -992,6 +1038,9 @@ class ASTParser:
             "method_declaration",
             "constructor_declaration",
             "field_declaration",
+            "type_spec",
+            "method_elem",
+            "object_declaration",
         }
 
         # Container definitions (classes/interfaces/enums/records/modules) hold
@@ -1005,6 +1054,8 @@ class ASTParser:
             "record_declaration",
             "module_definition",
             "annotation_type_declaration",
+            "type_spec",
+            "object_declaration",
         }
 
         # Non-container definitions with executable bodies (functions/methods/
@@ -1026,7 +1077,9 @@ class ASTParser:
             if node_type == "comment" and len(text.strip()) < 5:
                 return
             if text.strip():
-                resolved_type = new_chunk_types.get(node_type, node_type)
+                resolved_type = new_chunk_types.get(
+                    node_type, self._canonical_chunk_node_type(node, node_type)
+                )
                 is_def = node_type in is_definition_types or (
                     node_type == "lexical_declaration"
                     and self._lexical_declaration_defines_function(node)
@@ -1126,6 +1179,24 @@ class ASTParser:
                 )
             return
 
+        if node_type == "pair" and parent_is_root:
+            line_start, _col_start, line_end, _col_end = self.get_node_range(node)
+            text = self.get_node_text(node, source_bytes)
+            if text.strip():
+                chunks.append(
+                    {
+                        "file_path": str(file_path),
+                        "line_start": line_start,
+                        "line_end": line_end,
+                        "content": text,
+                        "language": lang or "unknown",
+                        "is_definition": False,
+                        "chunk_type": "ast",
+                        "chunk_node_type": "pair",
+                    }
+                )
+            return
+
         try:
             for child in node.children:  # type: ignore[attr-defined]
                 self._extract_chunks(
@@ -1133,7 +1204,7 @@ class ASTParser:
                     source_bytes,
                     file_path,
                     chunks,
-                    parent_is_root=(node_type in ("module", "program")),
+                    parent_is_root=(node_type in ("module", "program", "document")),
                 )
         except Exception:
             pass

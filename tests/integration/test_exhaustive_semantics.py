@@ -11,6 +11,7 @@ an ``any_token`` set is never presented as an exact literal count.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,12 @@ import pytest
 from code_search.engine.config import Settings
 from code_search.engine.paths import normalize_indexed_path
 from code_search.engine.search import HybridSearch
+
+# ``rg`` is the ground-truth oracle for these assertions. CI installs it; a
+# developer machine without ripgrep skips rather than reporting false failures.
+pytestmark = pytest.mark.skipif(
+    shutil.which("rg") is None, reason="ripgrep (rg) is required as the oracle"
+)
 
 
 def _rg_member_set(files: list[Path], term: str) -> set[tuple[str, int]]:

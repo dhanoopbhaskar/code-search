@@ -21,7 +21,7 @@ def _env_override(name: str, value: str) -> Iterator[None]:
 def test_freshness_ttl_seconds_default() -> None:
     old = os.environ.pop("CODE_SEARCH_FRESHNESS_TTL_SECONDS", None)
     try:
-        assert Settings().freshness_ttl_seconds == 5.0
+        assert Settings().freshness_ttl_seconds == 60.0
     finally:
         if old is not None:
             os.environ["CODE_SEARCH_FRESHNESS_TTL_SECONDS"] = old

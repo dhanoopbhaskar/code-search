@@ -162,7 +162,10 @@ def test_cli_json_candidates_match_mcp_payloads(
 
     from code_search.cli import main as cli_main
 
-    monkeypatch.setattr(cli_main, "_initialize_components", lambda _ctx: ambiguous_components)
+    def _components_for(_ctx: Path, **_kwargs: Any) -> dict[str, Any]:
+        return ambiguous_components
+
+    monkeypatch.setattr(cli_main, "_initialize_components", _components_for)
 
     store = ambiguous_components["symbol_store"]
     edge_store = ambiguous_components["edge_store"]

@@ -312,3 +312,28 @@ def test_recursive_self_edge_preserved_after_sweep(quality_defects_components: d
     assert self_count == len(walk_edges), (
         f"only genuine recursive self-calls remain, got {self_count} self-edges"
     )
+
+
+@pytest.mark.integration
+def test_java_field_and_no_arg_accessor_with_same_name_both_indexed(
+    java_repo: Path, components: dict
+) -> None:
+    """A field and its no-arg accessor share a conventional FQN; keep both."""
+    repo_file = java_repo / "src" / "IdentityProfile.java"
+    repo_file.write_text(
+        "package com.example;\n"
+        "public class IdentityProfile {\n"
+        "    private final String displayName;\n"
+        "    public IdentityProfile(String displayName) { this.displayName = displayName; }\n"
+        "    public String displayName() { return this.displayName; }\n"
+        "}\n"
+    )
+    components["orchestrator"].index_codebase(
+        root_path=java_repo,
+        force=True,
+        incremental=False,
+        verbose=False,
+    )
+    symbols = components["symbol_store"].lookup_by_file(str(repo_file))
+    same_name = [s for s in symbols if s["name"] == "displayName"]
+    assert {s["kind"] for s in same_name} == {"field", "method"}

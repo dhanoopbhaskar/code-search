@@ -209,16 +209,18 @@ def test_daemon_status_running(daemon_env: dict[str, Any]) -> None:
 
 
 def test_default_socket_path_under_context(tmp_path: Path) -> None:
+    """The default socket sits under the context dir unless that path is too long."""
     from code_search.engine import daemon as daemon_module
 
     conventional = tmp_path / "code-search.sock"
     socket_path = default_socket_path(tmp_path)
+    assert socket_path == default_socket_path(tmp_path), "socket path must be deterministic"
+    assert daemon_module._unix_socket_path_fits(socket_path)
     if daemon_module._unix_socket_path_fits(conventional):
         assert socket_path == conventional
     else:
         # macOS temp paths can exceed the shorter sockaddr_un limit.
         assert socket_path != conventional
-        assert daemon_module._unix_socket_path_fits(socket_path)
 
 
 def test_daemon_implementations_action(indexed_implementations: dict[str, Any]) -> None:

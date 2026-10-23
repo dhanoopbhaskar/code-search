@@ -767,3 +767,57 @@ def test_tsx_grammar_parses_jsx_and_chunks_components(parser: ASTParser, tmp_pat
     function_chunks = [c for c in chunks if c["chunk_node_type"] == "function_declaration"]
     assert function_chunks, "function declaration must be chunked"
     assert function_chunks[0]["is_definition"] is True
+
+
+def test_get_chunks_for_go_types(parser: ASTParser, tmp_path: Path) -> None:
+    """Go type declarations chunk as canonical class/interface/alias anchors."""
+    go_file = tmp_path / "types.go"
+    go_file.write_text(
+        "package main\n"
+        "\n"
+        "type Greeter struct { Name string }\n"
+        "\n"
+        "type Speaker interface { Speak() string }\n"
+        "\n"
+        "type ID = string\n"
+    )
+
+    chunks = parser.get_chunks_for_file(go_file, go_file.read_bytes())
+    by_type = {c["chunk_node_type"] for c in chunks}
+
+    assert {"class_declaration", "interface_declaration", "type_alias"} <= by_type
+    assert any(c["is_definition"] and "Speaker" in c["content"] for c in chunks)
+
+
+def test_get_chunks_for_kotlin_objects_and_properties(parser: ASTParser, tmp_path: Path) -> None:
+    """Kotlin interfaces, objects, and properties produce canonical chunks."""
+    kotlin_file = tmp_path / "Types.kt"
+    kotlin_file.write_text(
+        "package demo\n"
+        "\n"
+        "interface Speaker { fun speak(): String }\n"
+        "\n"
+        "object Singleton {\n"
+        "    val count = 1\n"
+        "    fun hello() {}\n"
+        "}\n"
+    )
+
+    chunks = parser.get_chunks_for_file(kotlin_file, kotlin_file.read_bytes())
+    by_type = {c["chunk_node_type"] for c in chunks}
+
+    assert {"interface_declaration", "class_declaration"} <= by_type
+    object_chunk = next(c for c in chunks if "object Singleton" in c["content"])
+    assert "val count = 1" in object_chunk["content"]
+
+
+def test_get_chunks_for_toml_tables(parser: ASTParser, tmp_path: Path) -> None:
+    """TOML tables and root-level pairs become chunked config sections."""
+    toml_file = tmp_path / "pyproject.toml"
+    toml_file.write_text('title = "demo"\n\n[package]\nname = "demo"\n\n[[bin]]\nname = "cli"\n')
+
+    chunks = parser.get_chunks_for_file(toml_file, toml_file.read_bytes())
+    by_type = {c["chunk_node_type"] for c in chunks}
+
+    assert {"pair", "table", "table_array_element"} <= by_type
+    assert any('name = "demo"' in c["content"] for c in chunks if c["chunk_node_type"] == "table")

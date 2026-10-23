@@ -215,7 +215,9 @@ def _cli_payload(
 ) -> dict[str, Any]:
     from code_search.cli import main as cli_main
 
-    monkeypatch.setattr(cli_main, "_initialize_components", lambda _ctx: comps)
+    monkeypatch.setattr(cli_main, "_initialize_components", lambda _ctx, **_kwargs: comps)
+    monkeypatch.setattr(cli_main, "_ensure_resident_service", lambda _args: False)
+    monkeypatch.setattr(cli_main, "_try_forward_to_daemon", lambda _args: None)
     args = argparse.Namespace(
         command="graph",
         fqn=symbol,
@@ -314,7 +316,9 @@ def test_audit_result_count_matches_deduplicated_count(
     """The CLI audit entry records the deduplicated neighbor count."""
     from code_search.cli import main as cli_main
 
-    monkeypatch.setattr(cli_main, "_initialize_components", lambda _ctx: dedup_comps)
+    monkeypatch.setattr(cli_main, "_initialize_components", lambda _ctx, **_kwargs: dedup_comps)
+    monkeypatch.setattr(cli_main, "_ensure_resident_service", lambda _args: False)
+    monkeypatch.setattr(cli_main, "_try_forward_to_daemon", lambda _args: None)
     args = argparse.Namespace(
         command="graph",
         fqn="root",
@@ -342,7 +346,7 @@ def test_no_schema_or_column_change(dedup_comps: dict[str, Any]) -> None:
     ``symbols``/``graph_edges`` columns are unchanged."""
     from code_search.engine.graph import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == 14
+    assert SCHEMA_VERSION == 16
     with dedup_comps["db"].connect() as conn:
         symbol_cols = {r["name"] for r in conn.execute("PRAGMA table_info(symbols);")}
         edge_cols = {r["name"] for r in conn.execute("PRAGMA table_info(graph_edges);")}

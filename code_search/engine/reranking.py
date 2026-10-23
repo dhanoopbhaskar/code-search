@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path
 from typing import Any
 
 from code_search.engine.classification import FileRole, PathClass
@@ -176,6 +177,7 @@ class Reranker:
         from code_search.engine.intent_detection import ContentIntent, classify_content_intent
 
         docs_intent = classify_content_intent(query) is ContentIntent.DOCS if query else False
+        config_intent = classify_content_intent(query) is ContentIntent.CONFIG if query else False
         identifier = _identifier_target(query)
         identifier_lower = identifier.lower() if identifier else None
         if query_fragments:
@@ -243,7 +245,33 @@ class Reranker:
             # with code on lexical score; lift prose so README/guide chunks
             # can answer "how do I run the tests?".
             if docs_intent and r.get("content_type") == "docs":
+                from code_search.engine.classification import documentation_tier
+
                 score *= self._settings.docs_content_boost
+                tier = documentation_tier(r.get("file_path", ""))
+                if tier == "project":
+                    score *= self._settings.docs_project_boost
+                elif tier == "third_party":
+                    score *= self._settings.docs_third_party_penalty
+                elif tier == "generated":
+                    score *= self._settings.docs_generated_penalty
+            if config_intent and r.get("content_type") == "config":
+                from code_search.engine.classification import config_tier
+
+                tier = config_tier(r.get("file_path", ""))
+                if tier == "primary":
+                    score *= self._settings.config_primary_boost
+                elif tier in ("test", "sample", "generated"):
+                    score *= self._settings.config_nonprimary_penalty
+            # Module cohesion: a result inside a module whose path segment
+            # exactly matches a query term is preferred over similarly named
+            # clones (spring-kafka vs spring-kafka-2) when the query names the
+            # module. Small and multiplicative so lexical evidence still wins.
+            cohesion_terms = {term for term in query_fragments if len(term) >= 3}
+            if cohesion_terms:
+                segments = {part.lower() for part in Path(r.get("file_path", "")).parts}
+                if cohesion_terms & segments:
+                    score *= self._settings.module_cohesion_boost
             # Authorization intent — a question about who
             # may access/restrict behavior boosts the definition/annotation
             # chunks of authorization-relevant code (security checks,
@@ -299,6 +327,17 @@ class Reranker:
             # demoted below a same-scored code reference.
             if r.get("file_role") == FileRole.INFRA and not is_owner_definition:
                 score *= self._settings.resource_deboost
+            # Corpus hygiene: minified bundles and vendored web assets are
+            # lexical noise, not canonical source. Exhaustive search still sees
+            # them; only ranked ordering demotes them.
+            lowered_path = r.get("file_path", "").lower()
+            if lowered_path.endswith((".min.js", ".min.css")) or "/dist/" in lowered_path:
+                score *= self._settings.minified_penalty
+            if any(
+                segment in lowered_path
+                for segment in ("/node_modules/", "/vendor/", "/bower_components/")
+            ):
+                score *= self._settings.vendor_penalty
             # Path penalties: multiplicative, strictly positive, so a
             # demoted declaration/barrel file stays reachable.
             path_class = r.get("path_class")

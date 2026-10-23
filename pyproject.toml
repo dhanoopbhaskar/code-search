@@ -18,6 +18,9 @@ dependencies = [
     "tree-sitter-cpp>=0.21",
     "tree-sitter-bash>=0.21",
     "tree-sitter-yaml>=0.7",
+    "tree-sitter-go>=0.21",
+    "tree-sitter-kotlin>=0.21",
+    "tree-sitter-toml>=0.7",
     "model2vec>=0.2",
     "rank-bm25>=0.2",
     "pathspec>=0.11",
@@ -35,13 +38,10 @@ dev = [
     "mypy>=1.10",
 ]
 lang = [
-    "tree-sitter-go>=0.21",
     "tree-sitter-rust>=0.21",
     "tree-sitter-ruby>=0.21",
     "tree-sitter-swift>=0.7",
-    "tree-sitter-kotlin>=0.21",
     "tree-sitter-php>=0.21",
-    "tree-sitter-toml>=0.7",
     "tree-sitter-cpp>=0.21",
     "tree-sitter-c-sharp>=0.21",
 ]
@@ -56,6 +56,9 @@ code-search = "code_search.cli.main:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["code_search*"]
+
+[tool.setuptools.data-files]
+"share/code-search/models/potion-code-16m-32d" = ["models/potion-code-16m-32d/*"]
 
 [tool.ruff]
 target-version = "py311"

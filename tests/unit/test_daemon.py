@@ -45,7 +45,11 @@ def _start_daemon_with_fake(
 ) -> tuple[QueryDaemon, threading.Thread, dict]:
     fake = _FakeGenerator()
     comps: dict[str, Any] = {"embedding_gen": fake}
-    monkeypatch.setattr("code_search.cli.main._initialize_components", lambda _ctx: comps)
+
+    def _components_for(_ctx: Any, **_kwargs: Any) -> dict[str, Any]:
+        return comps
+
+    monkeypatch.setattr("code_search.cli.main._initialize_components", _components_for)
 
     socket_path = default_socket_path(tmp_path)
     daemon = QueryDaemon(socket_path, tmp_path)

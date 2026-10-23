@@ -32,8 +32,8 @@ Optional dependency groups (`[project.optional-dependencies]`):
 
 - `dev` — `pytest`, `pytest-asyncio`, `pytest-benchmark`, `hypothesis`,
   `ruff`, `mypy`.
-- `lang` — additional tree-sitter grammars (Go, Rust, Ruby, Swift,
-  Kotlin, PHP, TOML, C++, C#).
+- `lang` — additional tree-sitter grammars (Rust, Ruby, Swift, PHP, C++,
+  C#).
 - `prod` — `prometheus-client`, `presidio-analyzer` (production metrics
   and PII detection).
 

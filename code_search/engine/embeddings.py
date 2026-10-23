@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import struct
 import sys
 import sysconfig
 import threading
@@ -807,6 +808,27 @@ class EmbeddingGenerator:
 
 _INITIAL_CAPACITY = 1024
 
+# Compact sidecar binary layout: a fixed header followed by packed row records.
+# The file dictionary lives in a sibling append-only NDJSON file so new rows and
+# new paths both land in O(delta) writes instead of reserialising every chunk id.
+_COMPACT_META_MAGIC = b"CSVMETA1"
+_COMPACT_META_VERSION = 1
+_COMPACT_META_HEADER = struct.Struct("<8sII")
+_COMPACT_ROW_DTYPE = np.dtype([("chunk_id", "<i4"), ("file_id", "<i4"), ("content_type", "<i1")])
+_CONTENT_TYPE_CODES = {"code": 0, "config": 1, "docs": 2}
+_CONTENT_TYPE_NAMES = {code: name for name, code in _CONTENT_TYPE_CODES.items()}
+_CONTENT_TYPE_OTHER = 3
+
+
+def _content_type_code(value: object) -> int:
+    """Return the persisted byte for a chunk's content axis."""
+    return _CONTENT_TYPE_CODES.get(str(value or "code"), _CONTENT_TYPE_OTHER)
+
+
+def _content_type_name(code: int) -> str:
+    """Return the content axis for a persisted byte, defaulting to ``code``."""
+    return _CONTENT_TYPE_NAMES.get(int(code), "code")
+
 
 class VectorIndex:
     """Flat numpy-based vector store with O(1) removal via tombstones.
@@ -817,6 +839,11 @@ class VectorIndex:
     queues a tombstone; :meth:`save` writes only the delta accumulated since
     the previous save, so an incremental index never rewrites the corpus.
     Cosine-similarity search scores all rows but returns only alive ones.
+
+    In compact mode the metadata sidecar is a binary header followed by packed
+    ``(chunk_id, file_id, content_type)`` rows, with file paths appended to a
+    sibling ``.files`` NDJSON file. That lets path and content filters run as
+    numpy masks over in-memory arrays instead of one SQL lookup per candidate.
     """
 
     def __init__(
@@ -824,6 +851,7 @@ class VectorIndex:
         vectors_bin_path: Path,
         vectors_meta_path: Path,
         removed_path: Path | None = None,
+        compact: bool = False,
     ) -> None:
         """Initialize an in-memory vector index backed by three on-disk files.
 
@@ -837,9 +865,14 @@ class VectorIndex:
                 per vector, each carrying ``vec_index`` and ``chunk_id``).
             removed_path: Path of the append-only tombstone list; defaults to
                 the binary path with a ``.removed`` suffix.
+            compact: Persist a compact binary sidecar (``chunk_id``,
+                ``file_id``, and ``content_type`` only) instead of path/FQN
+                metadata. Path and content filters then run as numpy masks
+                over the in-memory arrays.
         """
         self._bin_path = vectors_bin_path
         self._meta_path = vectors_meta_path
+        self._files_path = vectors_meta_path.with_name(vectors_meta_path.name + ".files")
         self._removed_path = removed_path or vectors_bin_path.with_suffix(".removed")
         self._buffer: np.ndarray | None = None
         self._vectors: np.ndarray | None = None
@@ -851,6 +884,17 @@ class VectorIndex:
         self._rows_written = 0
         self._pending_removed: list[int] = []
         self._dirty = False
+        self._compact = compact
+        self._path_lookup: Any = None
+        self._path_bulk_lookup: Any = None
+        self._compact_chunk_ids: np.ndarray | None = None
+        self._compact_file_ids: np.ndarray | None = None
+        self._compact_content: np.ndarray | None = None
+        self._files: list[str] = []
+        self._file_to_id: dict[str, int] = {}
+        self._files_written = 0
+        self._meta_rows_written = 0
+        self._meta_binary = False
 
     def load(self) -> None:
         """Load vectors, metadata, and tombstones from disk, if they exist."""
@@ -871,7 +915,10 @@ class VectorIndex:
                 self._vectors = None
                 self._n = 0
                 self._rows_written = 0
-            self._metadata = self._read_metadata()[: self._n]
+            if self._compact:
+                self._load_compact_metadata()
+            else:
+                self._metadata = self._read_metadata()[: self._n]
             self._alive = [True] * len(self._metadata)
             self._alive_count = len(self._metadata)
             self._chunk_to_vec = {
@@ -890,6 +937,32 @@ class VectorIndex:
             logger.warning("Failed to load vector index: %s", exc)
             self._reset_empty()
 
+    def set_path_lookup(self, lookup: Any, bulk_lookup: Any = None) -> None:
+        """Attach ``chunk_id -> file_path`` resolvers for compact metadata.
+
+        Args:
+            lookup: Per-chunk resolver used only as a fallback for rows a
+                legacy sidecar left without a file id.
+            bulk_lookup: Optional zero-argument callable returning a mapping of
+                every ``chunk_id`` to its ``file_path``. A legacy sidecar is
+                migrated with this single query instead of one lookup per row.
+        """
+        self._path_lookup = lookup
+        self._path_bulk_lookup = bulk_lookup
+
+    def _entry_path(self, entry: dict[str, Any]) -> str | None:
+        """Return an entry's file path, resolving compact metadata on demand."""
+        path = entry.get("file_path")
+        if path:
+            return str(path)
+        if self._path_lookup is None:
+            return None
+        try:
+            resolved = self._path_lookup(int(entry.get("chunk_id", -1)))
+        except Exception:
+            return None
+        return resolved if isinstance(resolved, str) else None
+
     def save(self) -> None:
         """Persist the delta since the last save (appended rows + tombstones).
 
@@ -904,9 +977,12 @@ class VectorIndex:
                 if vectors is not None:
                     with self._bin_path.open("ab") as f:
                         vectors[self._rows_written : self._n].tofile(f)
-                with self._meta_path.open("a") as f:
-                    for entry in self._metadata[self._rows_written : self._n]:
-                        f.write(json.dumps(entry) + "\n")
+                if not self._compact:
+                    with self._meta_path.open("a") as f:
+                        for entry in self._metadata[self._rows_written : self._n]:
+                            f.write(json.dumps(entry) + "\n")
+            if self._compact:
+                self._save_compact_meta()
             if self._pending_removed:
                 with self._removed_path.open("a") as f:
                     for vec_index in self._pending_removed:
@@ -918,6 +994,232 @@ class VectorIndex:
         except Exception as exc:
             logger.warning("Failed to save vector index: %s", exc)
 
+    def _load_compact_metadata(self) -> None:
+        """Populate the compact row arrays and file dictionary from disk."""
+        metadata, chunk_ids, file_ids, codes, files, persisted = self._read_compact_meta()
+        self._metadata = metadata[: self._n]
+        self._files = files
+        self._file_to_id = {path: index for index, path in enumerate(files)}
+        self._files_written = len(files)
+        self._meta_rows_written = persisted
+        self._compact_chunk_ids = self._fit_compact_array(chunk_ids, self._n, -1, np.int32)
+        self._compact_file_ids = self._fit_compact_array(file_ids, self._n, -1, np.int32)
+        self._compact_content = self._fit_compact_array(codes, self._n, 0, np.int8)
+        if not self._meta_binary:
+            self._resolve_compact_file_ids_bulk()
+
+    @staticmethod
+    def _fit_compact_array(
+        values: np.ndarray, size: int, fill: int, dtype: type[np.generic]
+    ) -> np.ndarray:
+        """Return a *size*-length array, padding missing rows with *fill*."""
+        fitted = np.full(size, fill, dtype=dtype)
+        if values.size:
+            limit = min(size, values.size)
+            fitted[:limit] = values[:limit]
+        return fitted
+
+    def _read_compact_meta(
+        self,
+    ) -> tuple[list[dict[str, Any]], np.ndarray, np.ndarray, np.ndarray, list[str], int]:
+        """Parse the compact sidecar, accepting binary v1 and legacy JSON v2.
+
+        Returns:
+            A tuple of metadata entries, chunk ids, file ids, content-type
+            codes, the file dictionary, and the persisted row count.
+        """
+        empty_i32 = np.empty(0, dtype=np.int32)
+        empty_i8 = np.empty(0, dtype=np.int8)
+        if not self._meta_path.exists():
+            return [], empty_i32, empty_i32, empty_i8, [], 0
+        with self._meta_path.open("rb") as f:
+            header = f.read(_COMPACT_META_HEADER.size)
+        if header.startswith(_COMPACT_META_MAGIC):
+            if len(header) < _COMPACT_META_HEADER.size:
+                return [], empty_i32, empty_i32, empty_i8, [], 0
+            _magic, version, count = _COMPACT_META_HEADER.unpack(header)
+            if version != _COMPACT_META_VERSION:
+                logger.warning("Unsupported compact sidecar version %s", version)
+                return [], empty_i32, empty_i32, empty_i8, [], 0
+            self._meta_binary = True
+            files = self._read_files()
+            rows = np.fromfile(
+                str(self._meta_path),
+                dtype=_COMPACT_ROW_DTYPE,
+                count=count,
+                offset=_COMPACT_META_HEADER.size,
+            )
+            entries = [
+                {
+                    "vec_index": index,
+                    "chunk_id": int(row["chunk_id"]),
+                    "content_type": _content_type_name(int(row["content_type"])),
+                }
+                for index, row in enumerate(rows)
+            ]
+            return (
+                entries,
+                rows["chunk_id"].astype(np.int32, copy=True),
+                rows["file_id"].astype(np.int32, copy=True),
+                rows["content_type"].astype(np.int8, copy=True),
+                files,
+                int(count),
+            )
+        self._meta_binary = False
+        entries = self._read_metadata()
+        chunk_ids = np.asarray(
+            [
+                entry["chunk_id"] if isinstance(entry.get("chunk_id"), int) else -1
+                for entry in entries
+            ],
+            dtype=np.int32,
+        )
+        codes = np.asarray(
+            [_content_type_code(entry.get("content_type", "code")) for entry in entries],
+            dtype=np.int8,
+        )
+        file_ids = np.full(len(entries), -1, dtype=np.int32)
+        return entries, chunk_ids, file_ids, codes, [], 0
+
+    def _read_files(self) -> list[str]:
+        """Parse the append-only compact file dictionary."""
+        if not self._files_path.exists():
+            return []
+        files: list[str] = []
+        for line in self._files_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                value = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(value, str):
+                files.append(value)
+        return files
+
+    def _ensure_compact_capacity(self, needed: int) -> None:
+        """Grow the compact row arrays so at least *needed* rows fit."""
+        current = 0 if self._compact_chunk_ids is None else int(self._compact_chunk_ids.shape[0])
+        if current >= needed:
+            return
+        capacity = max(needed, current * 2 if current else _INITIAL_CAPACITY)
+        chunk_ids = np.full(capacity, -1, dtype=np.int32)
+        file_ids = np.full(capacity, -1, dtype=np.int32)
+        content = np.zeros(capacity, dtype=np.int8)
+        if current:
+            assert self._compact_chunk_ids is not None
+            assert self._compact_file_ids is not None
+            assert self._compact_content is not None
+            chunk_ids[:current] = self._compact_chunk_ids
+            file_ids[:current] = self._compact_file_ids
+            content[:current] = self._compact_content
+        self._compact_chunk_ids = chunk_ids
+        self._compact_file_ids = file_ids
+        self._compact_content = content
+
+    def _file_id_for(self, file_path: str) -> int:
+        """Return the stable dictionary id for *file_path*, adding it if new."""
+        existing = self._file_to_id.get(file_path)
+        if existing is not None:
+            return existing
+        file_id = len(self._files)
+        self._files.append(file_path)
+        self._file_to_id[file_path] = file_id
+        return file_id
+
+    def _resolve_compact_file_ids_bulk(self) -> None:
+        """Assign file ids to legacy rows from one bulk path mapping."""
+        if self._compact_file_ids is None or self._path_bulk_lookup is None:
+            return
+        try:
+            paths = self._path_bulk_lookup()
+        except Exception:
+            return
+        if not isinstance(paths, dict):
+            return
+        limit = min(self._n, len(self._metadata), self._compact_file_ids.shape[0])
+        for index in range(limit):
+            if self._compact_file_ids[index] >= 0:
+                continue
+            chunk_id = self._metadata[index].get("chunk_id")
+            if chunk_id is None:
+                continue
+            path = paths.get(int(chunk_id))
+            if isinstance(path, str) and path:
+                self._compact_file_ids[index] = self._file_id_for(path)
+
+    def _ensure_compact_file_ids(self) -> None:
+        """Resolve legacy rows lacking a dictionary id through the path lookup."""
+        if self._compact_file_ids is None:
+            return
+        self._resolve_compact_file_ids_bulk()
+        limit = min(self._n, self._compact_file_ids.shape[0])
+        for index in range(limit):
+            if self._compact_file_ids[index] >= 0:
+                continue
+            if index >= len(self._metadata):
+                continue
+            path = self._entry_path(self._metadata[index])
+            if path:
+                self._compact_file_ids[index] = self._file_id_for(path)
+
+    def _compact_rows(self, start: int, end: int) -> np.ndarray:
+        """Return packed row records for the half-open range ``[start, end)``."""
+        start = max(0, min(start, self._n))
+        end = max(start, min(end, self._n))
+        rows = np.empty(end - start, dtype=_COMPACT_ROW_DTYPE)
+        if end > start:
+            assert self._compact_chunk_ids is not None
+            assert self._compact_file_ids is not None
+            assert self._compact_content is not None
+            rows["chunk_id"] = self._compact_chunk_ids[start:end]
+            rows["file_id"] = self._compact_file_ids[start:end]
+            rows["content_type"] = self._compact_content[start:end]
+        return rows
+
+    def _write_compact_header(self) -> None:
+        """Rewrite the fixed header with the current row count."""
+        with self._meta_path.open("r+b") as f:
+            f.seek(0)
+            f.write(_COMPACT_META_HEADER.pack(_COMPACT_META_MAGIC, _COMPACT_META_VERSION, self._n))
+
+    def _append_compact_files(self) -> None:
+        """Append file paths added since the last save to the dictionary."""
+        if self._files_written >= len(self._files):
+            return
+        with self._files_path.open("a", encoding="utf-8") as f:
+            for path in self._files[self._files_written :]:
+                f.write(json.dumps(path) + "\n")
+        self._files_written = len(self._files)
+
+    def _rewrite_compact_meta(self) -> None:
+        """Write the compact sidecar from scratch (new file or legacy migration)."""
+        with self._files_path.open("w", encoding="utf-8") as f:
+            for path in self._files:
+                f.write(json.dumps(path) + "\n")
+        with self._meta_path.open("wb") as f:
+            f.write(_COMPACT_META_HEADER.pack(_COMPACT_META_MAGIC, _COMPACT_META_VERSION, self._n))
+            self._compact_rows(0, self._n).tofile(f)
+        self._meta_binary = True
+        self._meta_rows_written = self._n
+        self._files_written = len(self._files)
+
+    def _save_compact_meta(self) -> None:
+        """Persist the compact sidecar, appending rows when the format allows."""
+        self._ensure_compact_file_ids()
+        if not self._meta_binary or self._meta_rows_written > self._n:
+            self._rewrite_compact_meta()
+            return
+        self._append_compact_files()
+        if self._n <= self._meta_rows_written:
+            return
+        rows = self._compact_rows(self._meta_rows_written, self._n)
+        with self._meta_path.open("ab") as f:
+            rows.tofile(f)
+        self._meta_rows_written = self._n
+        self._write_compact_header()
+
     def _read_metadata(self) -> list[dict[str, Any]]:
         """Parse the metadata sidecar, accepting both legacy array and NDJSON."""
         if not self._meta_path.exists():
@@ -926,6 +1228,28 @@ class VectorIndex:
         if not text.strip():
             return []
         stripped = text.strip()
+        if stripped.startswith("{"):
+            try:
+                data = json.loads(stripped)
+            except Exception:
+                data = None
+            if (
+                isinstance(data, dict)
+                and data.get("v") == 2
+                and isinstance(data.get("chunk_id"), list)
+            ):
+                chunk_ids = data.get("chunk_id") or []
+                content_types = data.get("content_type") or []
+                return [
+                    {
+                        "vec_index": index,
+                        "chunk_id": chunk_id,
+                        "content_type": content_types[index]
+                        if index < len(content_types)
+                        else "code",
+                    }
+                    for index, chunk_id in enumerate(chunk_ids)
+                ]
         if stripped.startswith("["):
             try:
                 data = json.loads(stripped)
@@ -1003,12 +1327,21 @@ class VectorIndex:
             raise ValueError("VectorIndex.add requires non-empty metadata['file_path']")
         emb = np.asarray(embedding, dtype=EMBEDDING_DTYPE).reshape(EMBEDDING_DIM)
         self._ensure_capacity(self._n + 1)
+        if self._compact:
+            self._ensure_compact_capacity(self._n + 1)
         buffer_array = self._buffer
         assert buffer_array is not None
         buffer_array[self._n] = emb
         self._n += 1
         self._vectors = buffer_array[: self._n]
         vec_index = self._n - 1
+        if self._compact:
+            assert self._compact_chunk_ids is not None
+            assert self._compact_file_ids is not None
+            assert self._compact_content is not None
+            self._compact_chunk_ids[vec_index] = chunk_id
+            self._compact_file_ids[vec_index] = self._file_id_for(file_path)
+            self._compact_content[vec_index] = _content_type_code(metadata.get("content_type"))
         meta_entry = {"vec_index": vec_index, "chunk_id": chunk_id, **metadata}
         self._metadata.append(meta_entry)
         self._alive.append(True)
@@ -1040,6 +1373,68 @@ class VectorIndex:
             indices.append(idx)
         return indices
 
+    def _filter_paths(self, alive: np.ndarray, exclude_file_paths: set[str]) -> np.ndarray:
+        """Drop candidates whose file path is excluded, using numpy when possible."""
+        if not (self._compact and self._compact_file_ids is not None):
+            keep = np.asarray(
+                [
+                    self._entry_path(self._metadata[int(idx)]) not in exclude_file_paths
+                    for idx in alive
+                ],
+                dtype=bool,
+            )
+            return np.asarray(alive[keep])
+        file_ids = self._compact_file_ids[alive]
+        if (file_ids >= 0).all():
+            excluded = [
+                self._file_to_id[path] for path in exclude_file_paths if path in self._file_to_id
+            ]
+            if not excluded:
+                return alive
+            keep = ~np.isin(file_ids, np.asarray(excluded, dtype=np.int32))
+            return np.asarray(alive[keep])
+        # A legacy sidecar has no file ids until the next save; resolve only
+        # the rows it left unknown rather than issuing a lookup for every row.
+        kept: list[int] = []
+        for position, vec_index in enumerate(alive):
+            file_id = int(file_ids[position])
+            path: str | None
+            if 0 <= file_id < len(self._files):
+                path = self._files[file_id]
+            else:
+                path = self._entry_path(self._metadata[int(vec_index)])
+            if path not in exclude_file_paths:
+                kept.append(int(vec_index))
+        return np.asarray(kept, dtype=alive.dtype)
+
+    def _filter_content(self, alive: np.ndarray, content: str) -> np.ndarray:
+        """Drop candidates outside the requested content axis."""
+        if not (self._compact and self._compact_content is not None):
+            if content == "code_focused":
+                keep = np.asarray(
+                    [
+                        self._metadata[int(idx)].get("content_type", "code") != "docs"
+                        for idx in alive
+                    ],
+                    dtype=bool,
+                )
+            else:
+                keep = np.asarray(
+                    [
+                        self._metadata[int(idx)].get("content_type", "code") == content
+                        for idx in alive
+                    ],
+                    dtype=bool,
+                )
+            return np.asarray(alive[keep])
+        codes = self._compact_content[alive]
+        if content == "code_focused":
+            return np.asarray(alive[codes != _CONTENT_TYPE_CODES["docs"]])
+        wanted = _CONTENT_TYPE_CODES.get(content)
+        if wanted is None:
+            return np.asarray(alive[np.zeros(alive.shape, dtype=bool)])
+        return np.asarray(alive[codes == wanted])
+
     def search(
         self,
         query_embedding: np.ndarray,
@@ -1067,34 +1462,11 @@ class VectorIndex:
         if alive.size == 0:
             return []
         if exclude_file_paths:
-            keep = np.asarray(
-                [
-                    self._metadata[int(idx)].get("file_path") not in exclude_file_paths
-                    for idx in alive
-                ],
-                dtype=bool,
-            )
-            alive = alive[keep]
+            alive = self._filter_paths(alive, exclude_file_paths)
             if alive.size == 0:
                 return []
         if content != "all":
-            if content == "code_focused":
-                keep = np.asarray(
-                    [
-                        self._metadata[int(idx)].get("content_type", "code") != "docs"
-                        for idx in alive
-                    ],
-                    dtype=bool,
-                )
-            else:
-                keep = np.asarray(
-                    [
-                        self._metadata[int(idx)].get("content_type", "code") == content
-                        for idx in alive
-                    ],
-                    dtype=bool,
-                )
-            alive = alive[keep]
+            alive = self._filter_content(alive, content)
             if alive.size == 0:
                 return []
         q = np.asarray(query_embedding, dtype=EMBEDDING_DTYPE).reshape(-1)
@@ -1174,6 +1546,14 @@ class VectorIndex:
         self._rows_written = 0
         self._pending_removed = []
         self._dirty = False
+        self._compact_chunk_ids = None
+        self._compact_file_ids = None
+        self._compact_content = None
+        self._files = []
+        self._file_to_id = {}
+        self._files_written = 0
+        self._meta_rows_written = 0
+        self._meta_binary = False
 
     def clear(self) -> None:
         """Drop all vectors and metadata, truncating the on-disk files.
@@ -1181,6 +1561,11 @@ class VectorIndex:
         Call :meth:`save` afterwards to persist any remaining state.
         """
         self._reset_empty()
-        for file_path in (self._bin_path, self._meta_path, self._removed_path):
+        for file_path in (
+            self._bin_path,
+            self._meta_path,
+            self._files_path,
+            self._removed_path,
+        ):
             with suppress(Exception):
                 file_path.write_text("")

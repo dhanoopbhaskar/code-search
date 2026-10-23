@@ -40,6 +40,63 @@ _CONFIG_KEYWORDS: frozenset[str] = frozenset(
     }
 )
 
+# Tokens too generic to establish configuration intent on their own. They only
+# count alongside a config-shaped noun phrase or another independent token, so
+# a code query that happens to mention a ``key`` or ``secret`` is not hijacked.
+_GENERIC_CONFIG_TOKENS: frozenset[str] = frozenset(
+    {"key", "secret", "connection", "setting", "settings", "property", "properties"}
+)
+
+# Config-shaped nouns that establish intent without a second token.
+_CONFIG_NOUN_TOKENS: frozenset[str] = frozenset(
+    {
+        "config",
+        "configuration",
+        "datasource",
+        "properties",
+        "yaml",
+        "yml",
+        "toml",
+        "port",
+        "url",
+        "postgres",
+        "postgresql",
+        "mysql",
+        "mariadb",
+        "mongodb",
+        "redis",
+        "jdbc",
+    }
+)
+
+_CONFIG_PHRASES: tuple[str, ...] = ("connection pool", "config file", "configuration file")
+
+# Code vocabulary that suppresses a weak, token-only configuration signal.
+_CODE_CONTEXT_TOKENS: frozenset[str] = frozenset(
+    {
+        "array",
+        "algorithm",
+        "buffer",
+        "class",
+        "controller",
+        "file",
+        "function",
+        "handler",
+        "list",
+        "map",
+        "method",
+        "object",
+        "service",
+        "string",
+        "token",
+    }
+)
+
+_CONFIG_FILE_RE = re.compile(
+    r"\b(?:application|bootstrap|config|settings)[\w.-]*\.(?:properties|ya?ml|toml)\b|"
+    r"\b[\w-]+\.(?:properties|ya?ml|toml)\b"
+)
+
 _DDL_KEYWORDS: frozenset[str] = frozenset(
     {
         "schema",
@@ -131,14 +188,31 @@ def detect_config_ddl_scent(query: str) -> dict[str, Any]:
     q = query.lower()
     tokens = _query_tokens(query)
 
-    has_config_scent = "--content config" in q or bool(tokens & _CONFIG_KEYWORDS)
+    explicit_config = "--content config" in q
+    config_tokens = tokens & _CONFIG_KEYWORDS
+    non_generic_config = config_tokens - _GENERIC_CONFIG_TOKENS
+    noun_phrase = (
+        bool(tokens & _CONFIG_NOUN_TOKENS)
+        or any(phrase in q for phrase in _CONFIG_PHRASES)
+        or bool(_CONFIG_FILE_RE.search(q))
+    )
+    code_context = bool(tokens & _CODE_CONTEXT_TOKENS)
+    # A noun phrase (or an explicit flag/file name) is sufficient. Bare tokens
+    # need at least two independent config words, at least one of them
+    # non-generic, and no code vocabulary that suggests the query is about
+    # code rather than configuration.
+    has_config_scent = (
+        explicit_config
+        or noun_phrase
+        or (len(config_tokens) >= 2 and bool(non_generic_config) and not code_context)
+    )
     has_ddl_scent = (
         "--content ddl" in q
         or any(phrase in q for phrase in _DDL_PHRASES)
         or bool(tokens & _DDL_KEYWORDS)
     )
 
-    _config_phrase = "--content config" in q
+    _config_phrase = explicit_config
     _ddl_phrase = "--content ddl" in q
 
     if _config_phrase or (has_config_scent and not has_ddl_scent):
