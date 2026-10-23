@@ -1,20 +1,24 @@
-"""Local unix-socket query daemon.
+"""Local IPC query daemon.
 
 Holds the vector model + SQLite connections warm so repeated CLI invocations
 pay socket round-trip latency instead of a per-invocation model load (roughly
 0.5-2 s on CPU, depending on the model and disk). Requests and responses are
-newline-delimited JSON over a local unix socket under ``.context/`` (or a short
-runtime path when that location exceeds the ``AF_UNIX`` limit) — no network,
-air-gap preserved.
+newline-delimited JSON over a local ``AF_UNIX`` socket under ``.context/`` (or a
+short runtime path when that location exceeds the ``AF_UNIX`` limit) — no
+network, air-gap preserved. ``AF_UNIX`` is available on Linux, macOS, and
+Windows 10 1803+ / Server 2019+, so every supported platform uses the same
+transport.
 """
 
 from __future__ import annotations
 
+import getpass
 import hashlib
 import json
 import logging
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -60,9 +64,15 @@ def _daemon_freshness(comps: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-# ``sockaddr_un`` caps the socket path at 108 bytes including the NUL
-# terminator, so only 107 bytes of path are usable.
-_MAX_UNIX_SOCKET_PATH = 107
+# ``sockaddr_un.sun_path`` is 104 bytes including the NUL terminator on macOS
+# (103 usable) and 108 bytes on Linux and Windows (107 usable); use the
+# smallest supported limit so a path chosen on one platform also binds on
+# another.
+_MAX_UNIX_SOCKET_PATH = 103 if sys.platform == "darwin" else 107
+
+# typeshed omits ``AF_UNIX`` on Windows, so resolve it dynamically to keep the
+# module type-checking on every platform. Every supported platform provides it.
+_AF_UNIX = cast(int, getattr(socket, "AF_UNIX", None))
 
 
 def _unix_socket_path_fits(path: Path) -> bool:
@@ -82,13 +92,31 @@ def _unix_socket_path_fits(path: Path) -> bool:
     return len(os.fsencode(path)) <= _MAX_UNIX_SOCKET_PATH
 
 
+def _user_tag() -> str:
+    """Return a stable per-user tag for sockets in a shared temp directory.
+
+    POSIX exposes the numeric uid; Windows has no ``getuid``, so a hashed
+    account name keeps the name stable per user without leaking it.
+    """
+
+    getuid = getattr(os, "getuid", None)
+    if callable(getuid):
+        return str(getuid())
+    try:
+        identity = getpass.getuser()
+    except Exception:
+        identity = str(Path.home())
+    return hashlib.sha256(os.fsencode(identity)).hexdigest()[:8]
+
+
 def default_socket_path(context_dir: Path) -> Path:
-    """Return the unix-socket path the daemon binds for *context_dir*.
+    """Return the IPC socket path the daemon binds for *context_dir*.
 
     Prefers the conventional ``context_dir / "code-search.sock"``. When that
-    path exceeds the ``AF_UNIX`` limit (107 bytes on Linux), falls back to a
-    deterministic hashed name under ``$XDG_RUNTIME_DIR`` (or the system temp
-    directory) so a deep checkout path cannot stop the daemon from binding.
+    path exceeds the ``AF_UNIX`` limit (103 bytes on macOS, 107 elsewhere),
+    falls back to a deterministic hashed name under ``$XDG_RUNTIME_DIR`` (when
+    set) or the platform temp directory, so a deep checkout path cannot stop
+    the daemon from binding.
 
     Args:
         context_dir: The daemon's context directory (``.context/``).
@@ -103,7 +131,7 @@ def default_socket_path(context_dir: Path) -> Path:
         return conventional
 
     digest = hashlib.sha256(os.fsencode(str(context_dir.expanduser().resolve()))).hexdigest()[:16]
-    name = f"code-search-{os.getuid()}-{digest}.sock"
+    name = f"code-search-{_user_tag()}-{digest}.sock"
     candidates: list[Path] = []
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
     if runtime_dir:
@@ -111,12 +139,30 @@ def default_socket_path(context_dir: Path) -> Path:
         if runtime_path.is_dir() and os.access(runtime_path, os.W_OK):
             candidates.append(runtime_path)
     candidates.append(Path(tempfile.gettempdir()))
-    candidates.append(Path("/tmp"))
     for base in candidates:
         candidate = base / name
         if _unix_socket_path_fits(candidate):
             return candidate
-    return Path("/tmp") / name
+    return Path(tempfile.gettempdir()) / name
+
+
+def detached_spawn_kwargs() -> dict[str, Any]:
+    """Return ``Popen`` options that detach the daemon from the invoking CLI.
+
+    On POSIX a new session lets the daemon outlive the shell. On Windows
+    ``start_new_session`` is accepted but ignored, so ``DETACHED_PROCESS`` is
+    required to give the child no console of its own; ``CREATE_NEW_PROCESS_GROUP``
+    keeps a Ctrl+C in the parent's console from reaching it.
+
+    Returns:
+        Keyword arguments to pass to :class:`subprocess.Popen`.
+    """
+
+    if os.name == "nt":
+        detached = getattr(subprocess, "DETACHED_PROCESS", 0)
+        new_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        return {"creationflags": detached | new_group}
+    return {"start_new_session": True}
 
 
 def _state_path(context_dir: Path) -> Path:
@@ -146,7 +192,7 @@ def clear_state(context_dir: Path) -> None:
 
 
 class QueryDaemon:
-    """Serves ``search``/``symbol``/``graph``/``ping`` over a unix socket.
+    """Serves ``search``/``symbol``/``graph``/``ping`` over a local IPC socket.
 
     Each connection is handled in its own thread. Requests are JSON objects
     with an ``action`` and a ``params`` dict; responses are JSON objects with
@@ -162,7 +208,7 @@ class QueryDaemon:
         """Create a daemon that will serve on *socket_path*.
 
         Args:
-            socket_path: The unix-socket path to bind and serve on.
+            socket_path: The IPC socket path to bind and serve on.
             context_dir: The daemon's context directory (``.context/``);
                 components are initialised lazily in ``start``.
             verbose: When true, enable debug logging on ``stderr``.
@@ -175,11 +221,12 @@ class QueryDaemon:
         self._comps: dict[str, Any] | None = None
         self._lock = threading.Lock()
         self._ready = threading.Event()
+        self._stop_lock = threading.Lock()
 
     def start(self) -> None:
         """Initialise components, bind the socket, and serve connections forever.
 
-        The control socket is bound before the expensive component
+        The IPC socket is bound before the expensive component
         initialisation so a waiting client can observe ``starting``/``warming``
         instead of mistaking a slow start for a crashed daemon. Model warm-up
         runs in the background; ``ping`` reports readiness and the recorded
@@ -191,12 +238,13 @@ class QueryDaemon:
         write_state(self._context_dir, "starting")
 
         self._socket_path.parent.mkdir(parents=True, exist_ok=True)
-        with suppress(FileNotFoundError):
+        with suppress(OSError):
             self._socket_path.unlink()
 
-        self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._server.bind(str(self._socket_path))
-        self._server.listen(8)
+        server = socket.socket(_AF_UNIX, socket.SOCK_STREAM)
+        self._server = server
+        server.bind(str(self._socket_path))
+        server.listen(8)
         self._running.set()
         logger.info("Query daemon socket bound on %s", self._socket_path)
 
@@ -207,7 +255,7 @@ class QueryDaemon:
 
         while self._running.is_set():
             try:
-                conn, _addr = self._server.accept()
+                conn, _addr = server.accept()
             except OSError:
                 break
             threading.Thread(
@@ -247,12 +295,14 @@ class QueryDaemon:
         file so a stale path cannot block a later ``start``.
         """
         self._running.clear()
-        if self._server is not None:
-            with suppress(OSError):
-                self._server.shutdown(socket.SHUT_RDWR)
-            with suppress(OSError):
-                self._server.close()
-        with suppress(FileNotFoundError):
+        with self._stop_lock:
+            server, self._server = self._server, None
+            if server is not None:
+                with suppress(OSError):
+                    server.shutdown(socket.SHUT_RDWR)
+                with suppress(OSError):
+                    server.close()
+        with suppress(OSError):
             self._socket_path.unlink()
         write_state(self._context_dir, "stopped")
 
@@ -326,10 +376,10 @@ class QueryDaemon:
     def _dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         """Route a parsed request to its handler and wrap failures.
 
-        Recognises ``ping``, ``search``, ``symbol``, and ``graph`` actions.
-        Unknown actions and handler exceptions are returned as ``ok: false``
-        responses rather than being raised, so the client always gets a
-        well-formed reply.
+        Recognises ``ping``, ``search``, ``symbol``, ``graph``, and
+        ``shutdown`` actions. Unknown actions and handler exceptions are
+        returned as ``ok: false`` responses rather than being raised, so the
+        client always gets a well-formed reply.
 
         Args:
             request: The parsed request dict; ``action`` selects the handler
@@ -340,6 +390,12 @@ class QueryDaemon:
         """
         action = request.get("action")
         params = request.get("params") or {}
+        if action == "shutdown":
+            # Stop from a helper thread so the reply still reaches the client;
+            # ``stop`` closes the listening socket, which unblocks the accept
+            # loop on every platform.
+            threading.Thread(target=self.stop, daemon=True).start()
+            return {"ok": True, "payload": {"stopping": True}}
         if action == "ping":
             comps = self._comps
             warm = bool(comps is not None and self._is_warm(comps))
@@ -844,13 +900,13 @@ class QueryDaemon:
 
 
 class DaemonClient:
-    """Synchronous unix-socket client used by CLI forwarding and ``daemon status``."""
+    """Synchronous IPC client used by CLI forwarding and ``daemon status``."""
 
     def __init__(self, socket_path: Path, timeout: float = 30.0) -> None:
         """Create a client for the daemon listening on *socket_path*.
 
         Args:
-            socket_path: The unix-socket path of the running daemon.
+            socket_path: The IPC socket path of the running daemon.
             timeout: Connect/read timeout in seconds for each request.
         """
         self._socket_path = socket_path
@@ -861,7 +917,7 @@ class DaemonClient:
         """Return whether a daemon socket file currently exists at *socket_path*.
 
         Args:
-            socket_path: The unix-socket path to probe.
+            socket_path: The IPC socket path to probe.
 
         Returns:
             ``True`` when the socket file exists; note this is a liveness
@@ -877,7 +933,7 @@ class DaemonClient:
         stale socket file left behind by a crashed daemon.
 
         Args:
-            socket_path: The unix-socket path to probe.
+            socket_path: The IPC socket path to probe.
             timeout: Connect/read timeout in seconds.
 
         Returns:
@@ -910,7 +966,7 @@ class DaemonClient:
                 sending a response.
         """
         payload = {"action": action, "params": params or {}}
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        with socket.socket(_AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             sock.connect(str(self._socket_path))
             sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
@@ -992,24 +1048,43 @@ def _read_pidfile(context_dir: Path) -> int | None:
         return None
 
 
-def pid_is_alive(context_dir: Path) -> bool:
-    """Return whether the pidfile records a live process.
+def process_exists(pid: int) -> bool:
+    """Return whether *pid* names a live process without signalling it.
 
-    Used before removing a socket that does not answer yet: a daemon that has
-    bound its socket but is still initialising must not be mistaken for a
-    crashed one. ``os.kill(pid, 0)`` performs the existence check without
-    sending a signal; ``PermissionError`` means the process exists but belongs
-    to another user.
+    ``os.kill(pid, 0)`` is a harmless existence probe on POSIX, but on Windows
+    every signal other than the two console events unconditionally terminates
+    the target, so the existence check must go through ``OpenProcess`` there.
 
     Args:
-        context_dir: The daemon's context directory (``.context/``).
+        pid: The process id to probe.
 
     Returns:
-        ``True`` when a pid is recorded and the process exists.
+        ``True`` when the process exists (including when it belongs to another
+        user), ``False`` when it does not.
     """
-    pid = _read_pidfile(context_dir)
-    if pid is None or pid <= 0:
+    if pid <= 0:
         return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        win_dll = ctypes.WinDLL  # type: ignore[attr-defined]
+        get_last_error = ctypes.get_last_error  # type: ignore[attr-defined]
+        kernel32 = win_dll("kernel32", use_last_error=True)
+        access = 0x1000  # PROCESS_QUERY_LIMITED_INFORMATION
+        still_active = 259
+        handle = kernel32.OpenProcess(access, False, pid)
+        if not handle:
+            # ERROR_ACCESS_DENIED means the process exists but is not ours.
+            return int(get_last_error()) == 5
+        try:
+            exit_code = wintypes.DWORD()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return bool(exit_code.value == still_active)
+            return True
+        finally:
+            kernel32.CloseHandle(handle)
+
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -1019,6 +1094,25 @@ def pid_is_alive(context_dir: Path) -> bool:
     except OSError:
         return False
     return True
+
+
+def pid_is_alive(context_dir: Path) -> bool:
+    """Return whether the pidfile records a live process.
+
+    Used before removing a socket that does not answer yet: a daemon that has
+    bound its socket but is still initialising must not be mistaken for a
+    crashed one.
+
+    Args:
+        context_dir: The daemon's context directory (``.context/``).
+
+    Returns:
+        ``True`` when a pid is recorded and the process exists.
+    """
+    pid = _read_pidfile(context_dir)
+    if pid is None:
+        return False
+    return process_exists(pid)
 
 
 def clear_pidfile(context_dir: Path) -> None:

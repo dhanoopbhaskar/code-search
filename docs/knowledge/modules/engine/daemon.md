@@ -1,7 +1,7 @@
 ---
 type: Module
 title: "engine.daemon"
-description: "Local unix-socket query daemon holding the embedding model and SQLite connections warm across CLI invocations."
+description: "Local AF_UNIX socket query daemon holding the embedding model and SQLite connections warm across CLI invocations."
 resource: code_search/engine/daemon.py
 tags: [engine, daemon, ipc]
 generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
@@ -13,9 +13,9 @@ sources:
 
 # Overview
 
-Local unix-socket query daemon holding the embedding model and SQLite
+Local AF_UNIX socket query daemon holding the embedding model and SQLite
 connections warm for repeated CLI invocations, avoiding the per-invocation
-model load cost (0.5-2s on CPU). Handles JSON requests over a unix socket
+model load cost (0.5-2s on CPU). Handles JSON requests over an AF_UNIX socket
 (`.context/code-search.sock`, or a deterministic hashed runtime path when
 the conventional path exceeds the `AF_UNIX` limit) serving search, symbol
 resolution, implementations, graph traversal, and related-chunk queries;
@@ -31,8 +31,8 @@ as the in-process CLI. Implements both the server
 
 # Key Classes
 
-- [`QueryDaemon`](../../types/QueryDaemon.md) — serves `ping`, `search`, `symbol`, `implementations`, `graph`, and `find_related` over a unix socket, one thread per connection.
-- [`DaemonClient`](../../types/DaemonClient.md) — synchronous unix-socket client used by CLI forwarding and daemon status.
+- [`QueryDaemon`](../../types/QueryDaemon.md) — serves `ping`, `search`, `symbol`, `implementations`, `graph`, and `find_related` over an AF_UNIX socket, one thread per connection.
+- [`DaemonClient`](../../types/DaemonClient.md) — synchronous AF_UNIX socket client used by CLI forwarding and daemon status.
 
 # Key Functions
 

@@ -27,7 +27,7 @@ Defined in [`engine.daemon`](../modules/engine/daemon.md); invoked by
 | Name | Type | Description |
 |---|---|---|
 | `context_dir` | `Path` | The index/context directory to serve. |
-| `socket_path` | `Path` | The Unix socket path the daemon serves on. |
+| `socket_path` | `Path` | The AF_UNIX socket path the daemon serves on. |
 | `verbose` | `bool` | Whether to enable verbose logging. |
 
 # Returns

@@ -14,7 +14,7 @@ sources:
 # Overview
 
 Background daemon process that keeps the search index and embedding
-model warm in memory, serving queries over a local Unix socket to avoid
+model warm in memory, serving queries over a local AF_UNIX socket to avoid
 per-invocation cold-start cost. Dispatches `ping`, `search`, `symbol`,
 `implementations`, `graph`, and `find_related` actions. A forwarded search
 waits a bounded `warmup_wait_s` for the model, refuses to serve until the

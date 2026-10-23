@@ -1243,11 +1243,11 @@ class TestLanguageConfig:
 class TestCliEdgeCases:
     """Edge cases and error handling in CLI."""
 
-    def test_index_nonexistent_path(self) -> None:
+    def test_index_nonexistent_path(self, tmp_path: Path) -> None:
         result = _run_cs(
-            ["index", "--path", "/nonexistent/path/xyz"],
+            ["index", "--path", str(tmp_path / "nonexistent" / "path" / "xyz")],
             timeout=10,
-            extra_env={"CODE_SEARCH_CONTEXT_DIR": "/tmp/nonexistent/.context"},
+            extra_env={"CODE_SEARCH_CONTEXT_DIR": str(tmp_path / "missing" / ".context")},
         )
         assert result.returncode != 0
 

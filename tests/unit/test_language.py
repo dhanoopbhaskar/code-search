@@ -32,7 +32,7 @@ def _analyze(
 
     return analyze_query(
         query,
-        settings=Settings(context_dir="/tmp/unused"),
+        settings=Settings(context_dir="unused"),
         vocabulary=vocabulary,
         expansion_table=builtin_table,
         symbol_store=symbol_store,
@@ -79,7 +79,7 @@ class TestCoverage:
 
         analysis = analyze_query(
             "configure cross origin requests from a browser",
-            settings=Settings(context_dir="/tmp/unused"),
+            settings=Settings(context_dir="unused"),
             vocabulary={"cors"},
             expansion_table=None,
         )
@@ -107,7 +107,7 @@ class TestInferLanguage:
 
         analysis = analyze_query(
             "TokenService",
-            settings=Settings(context_dir="/tmp/unused"),
+            settings=Settings(context_dir="unused"),
             vocabulary={"token", "service"},
             expansion_table=builtin_table,
             explicit_language="java",

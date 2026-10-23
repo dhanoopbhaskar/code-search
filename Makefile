@@ -29,19 +29,19 @@ help:
 	@echo 'Bundle output:  $(DIST_DIR)/$(PACKAGE_NAME)-*-bundle.tar.gz'
 
 check:
-	scripts/check.sh
+	$(_PY) scripts/check.py
 
 lint:
-	scripts/check.sh --lint
+	$(_PY) scripts/check.py --lint
 
 format:
-	scripts/check.sh --format
+	$(_PY) scripts/check.py --format
 
 typecheck:
-	scripts/check.sh --typecheck
+	$(_PY) scripts/check.py --typecheck
 
 test:
-	scripts/check.sh --test
+	$(_PY) scripts/check.py --test
 
 eval-utility:
 	$(_PY) tests/evaluation/tool_utility_eval.py $(if $(REPO),--repo $(REPO))

@@ -15,7 +15,8 @@ An AI code context engine for air-gapped, CPU-only enterprise environments. Comb
 
 - Python 3.11+
 - 4+ cores, 8GB+ RAM
-- Linux (CPU-only, no GPU required); bundle build/install tooling also runs on Windows and macOS
+- Linux, macOS, or Windows 10 1803+ / Server 2019+ (CPU-only, no GPU required)
+- The background daemon uses local `AF_UNIX` sockets on every platform, so no network listener is opened
 - No network access required for search or serving when the embedding model is available locally (air-gap compliant)
 
 ## Installation
@@ -286,7 +287,7 @@ code-search map --output graph-report.md
 
 Every CLI invocation is a fresh process, and loading the vector model takes
 time. The CLI handles this transparently: with no daemon running, `search`
-starts the local unix-socket query daemon in the background and forwards to it
+starts the local `AF_UNIX` query daemon in the background and forwards to it
 once it answers `ping`; the daemon waits briefly for the shared model load
 (bounded by `CODE_SEARCH_WARMUP_WAIT_S`, default 5 seconds) so the first
 forwarded query is usually hybrid. If the model does not warm in time, the
@@ -428,7 +429,10 @@ mypy code_search/
 # Format
 ruff format code_search/ tests/
 
-# Run all quality checks
+# Run all quality checks on any OS
+python scripts/check.py
+
+# ...or through Make on Unix
 make check
 ```
 
@@ -440,6 +444,7 @@ make check
 ├── pyproject.toml     # Package metadata & build config
 ├── scripts/
 │   ├── bundle.py              # Cross-platform bundle builder (Windows/Mac/Linux)
+│   ├── check.py               # Cross-platform quality gate
 │   └── install-from-bundle.py # Cross-platform bundle installer
 ├── code_search/
 │   ├── engine/       # Core engine modules (selected)
