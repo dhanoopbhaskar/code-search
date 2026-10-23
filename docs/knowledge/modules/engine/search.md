@@ -1,10 +1,10 @@
 ---
 type: Module
 title: "engine.search"
-description: "Hybrid BM25 + vector search engine with RRF fusion, quality gates, rescue tiers, and match-boost reranking."
+description: "Hybrid BM25 + vector search engine with RRF fusion, persisted corpus statistics, quality/abstention gates, rescue tiers, and match-boost reranking."
 resource: code_search/engine/search.py
 tags: [engine, search, ranking, core]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/engine/search.py
@@ -35,6 +35,19 @@ source on shared vocabulary. The CLI, MCP, and daemon pass
 probabilities: each result carries `score_normalized` plus
 `token_savings` at the envelope level. Exhaustive mode accepts an optional
 regular expression (`regex=True`).
+
+Corpus document frequencies come from the persisted `subword_stats` and
+`prefix_stats` tables when the index provides them: `token_doc_counts` and
+`prefix_doc_counts` fetch only the queried rows, and `present_terms`
+answers vocabulary membership without loading every chunk's `subwords`.
+Indexes that predate the statistics (or hand-built test databases) fall
+back to the full `code_chunks.subwords` scan, so correctness never depends
+on the migration having run.
+
+The post-rank abstention gate compares concept coverage and top-vs-median
+score separation against `abstention_coverage_min` and
+`abstention_separation_min`; `allow_weak=True` (CLI `--allow-weak`) bypasses
+that gate for callers that prefer weak evidence over an empty answer.
 
 # Key Constants
 

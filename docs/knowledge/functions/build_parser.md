@@ -4,7 +4,7 @@ title: "build_parser"
 description: "Build the full argparse tree with all subcommands."
 resource: code_search/cli/main.py#build_parser
 tags: [cli, function]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/cli/main.py
@@ -14,9 +14,10 @@ sources:
 # Overview
 
 Builds the full `argparse.ArgumentParser` tree, registering every
-subcommand (index, search, symbol, graph, implementations, metrics,
-serve, list-languages, download-models, daemon). Defined in
-[`cli.main`](../modules/cli/main.md).
+subcommand (index, search, symbol, graph, implementations, find-related,
+query, path, explain, affected, map, metrics, stats, doctor, start, status,
+serve, list-languages, download-models, daemon) plus the shared runtime-profile
+flags. Defined in [`cli.main`](../modules/cli/main.md).
 
 # Signature
 

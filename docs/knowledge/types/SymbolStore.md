@@ -4,7 +4,7 @@ title: "SymbolStore"
 description: "SQLite-backed CRUD, resolution, and lookup for symbol records."
 resource: code_search/engine/symbols.py#SymbolStore
 tags: [symbols, storage, resolution]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/engine/symbols.py
@@ -14,8 +14,9 @@ sources:
 # Overview
 
 SQLite-backed CRUD operations for symbol records, providing resolution
-and lookup capabilities. Defined in
-[`engine.symbols`](../modules/engine/symbols.md).
+and lookup capabilities. Resolution envelopes are cached per
+`(query, max_candidates)` and invalidated after an index mutation. Defined
+in [`engine.symbols`](../modules/engine/symbols.md).
 
 # Methods
 
@@ -32,3 +33,4 @@ and lookup capabilities. Defined in
 | `methods_of(parent_symbol_id: int, name: str \| None = None) -> list[dict[str, Any]]` | Return the member declarations of type *parent_symbol_id*. |
 | `methods_of_many(parent_symbol_ids: list[int], name: str \| None = None) -> dict[int, list[dict[str, Any]]]` | Return member declarations for many parent types in one query. |
 | `build_symbol_catalog() -> dict[str, int]` | Query all symbols and build in-memory catalog: fqn/conventional_fqn → id. |
+| `invalidate_resolution_cache() -> None` | Drop cached resolution envelopes after an index mutation. |

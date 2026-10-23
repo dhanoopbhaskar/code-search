@@ -1,10 +1,10 @@
 ---
 type: Module
 title: "engine.classification"
-description: "Shared file-class classification (FileRole, ContentType, PathClass) used by all ranking passes."
+description: "Shared file-class classification (FileRole, ContentType, PathClass) and docs/config canonicality tiers used by ranking passes."
 resource: code_search/engine/classification.py
 tags: [engine, ranking, classification]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/engine/classification.py
@@ -19,6 +19,11 @@ adjusts a chunk by file shape resolves the file into one of the
 and behavior live in exactly one place. Shared by `file_role`,
 `content_type`, and barrel-file classification logic.
 
+Two canonicality classifiers feed the reranker's content-axis tints:
+`documentation_tier` separates project docs from nested, generated, and
+third-party prose, and `config_tier` separates primary application
+configuration from test, sample, and generated variants.
+
 # Key Classes
 
 - [`FileRole`](../../types/FileRole.md) — `StrEnum` for file-role classification (`CODE`, `MODEL`, `DTO`, `ASSEMBLER`, `EXCEPTION`, `INFRA`, `CONFIG`, `RESOURCE`, `DOCS`, `ANALYSIS`).
@@ -29,3 +34,5 @@ and behavior live in exactly one place. Shared by `file_role`,
 
 - [`content_type`](../../functions/content_type.md) — classify a file into the content axis.
 - [`file_role`](../../functions/file_role.md) — resolve a file's role from path/filename signals alone.
+- [`documentation_tier`](../../functions/documentation_tier.md) — classify prose canonicality for docs ranking.
+- [`config_tier`](../../functions/config_tier.md) — classify configuration canonicality for config ranking.

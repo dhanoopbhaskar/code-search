@@ -4,7 +4,7 @@ title: "Build System"
 description: "pyproject.toml dependencies, Makefile targets, and packaging scripts."
 resource: pyproject.toml
 tags: [config, build, packaging]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:45:38Z }
 status: draft
 sources:
   - resource: pyproject.toml
@@ -24,7 +24,7 @@ for air-gapped deployment.
 
 Core (`[project.dependencies]`): `tree-sitter` plus per-language grammars
 (`tree-sitter-python`, `-java`, `-javascript`, `-typescript`, `-c-sharp`,
-`-cpp`, `-bash`, `-yaml`), `model2vec` (embeddings), `rank-bm25`,
+`-cpp`, `-bash`, `-yaml`, `-go`, `-kotlin`, `-toml`), `model2vec` (embeddings), `rank-bm25`,
 `pathspec` (`.gitignore` matching), `fastmcp` (MCP server), `watchdog`
 (file watching).
 
@@ -67,6 +67,7 @@ script backed by [`main`](../functions/main.md).
 | `make bundle-deps` | Same as `bundle`, including offline dependency wheels. |
 | `make download-deps` | Download dependency wheels into `wheelhouse/` for offline install. |
 | `make check` / `lint` / `format` / `typecheck` / `test` | Run quality gates via `scripts/check.sh` (with the matching flag). |
+| `make eval-utility` | Run the cold/warm tool-utility harness (`tests/evaluation/tool_utility_eval.py`); needs a local corpus, optionally via `REPO=`. |
 | `make clean` | Remove build artifacts (`build/`, `*.egg-info`, `__pycache__`). |
 | `make distclean` | `clean` plus `dist/`, `wheelhouse/`, tox/nox and coverage caches. |
 
@@ -74,7 +75,9 @@ script backed by [`main`](../functions/main.md).
 
 - `scripts/check.sh` — runs lint/format/typecheck/test, invoked by the
   Makefile quality-gate targets.
-- `scripts/bundle.py` — builds the portable/offline install tarball.
+- `scripts/bundle.py` — builds the portable/offline install tarball;
+  `scripts/bundle.sh` is a thin wrapper that locates a Python interpreter
+  and execs it.
 - `scripts/install-from-bundle.py` / `.sh` — installs `code-search` from
   a pre-built bundle on an air-gapped machine.
 - `scripts/benchmark.sh` — offline search-robustness/transparency

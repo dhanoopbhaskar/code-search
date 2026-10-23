@@ -4,7 +4,7 @@ title: "IndexOrchestrator"
 description: "Coordinates full and incremental indexing: parsing, symbol/edge extraction, embedding, and FTS population."
 resource: code_search/engine/indexer.py#IndexOrchestrator
 tags: [indexer, orchestration, core]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/engine/indexer.py
@@ -23,7 +23,11 @@ Besides symbols, edges, and chunks it persists file-level import edges
 (ATX/AsciiDoc/setext, fence-aware) and package lockfiles become a single
 infra chunk so they cannot dominate keyword search. TypeScript/JavaScript
 imports resolve through `tsconfig` `baseUrl`/`paths` aliases and
-directory barrel `index` files. Defined in [`engine.indexer`](../modules/engine/indexer.md).
+directory barrel `index` files. Files larger than `max_file_bytes` are
+skipped and counted in `skipped_large_files`; graph persistence is gated by
+`index_graph`; and after persistence the orchestrator rebuilds the
+`subword_stats`/`prefix_stats` tables and records `corpus_chunk_count` and
+`index_layout`. Defined in [`engine.indexer`](../modules/engine/indexer.md).
 
 # Methods
 

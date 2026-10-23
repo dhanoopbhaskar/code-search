@@ -1,12 +1,3 @@
----
-type: Index
-title: "Functions"
-description: "Index of all public top-level function concepts extracted from code_search/, grouped by module."
-tags: [functions, index]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
-status: draft
----
-
 # Functions by Module
 
 ## cli/main.py
@@ -16,6 +7,7 @@ status: draft
 * [cmd_daemon](cmd_daemon.md) - Handler for the `daemon` subcommand: start/stop/status control of the QueryDaemon.
 * [cmd_daemon_run](cmd_daemon_run.md) - Handler that runs the daemon blocking in the foreground (used internally by `cmd_daemon start`).
 * [cmd_download_models](cmd_download_models.md) - Handler for the `download-models` subcommand: fetches the embedding model into the Hugging Face cache.
+* [cmd_doctor](cmd_doctor.md) - Handler for the `doctor` subcommand: reports index age, model availability, daemon state, and index size.
 * [cmd_explain](cmd_explain.md) - Handler for the `explain` subcommand: prints a symbol's metadata, relations, rationale, and linked docs.
 * [cmd_find_related](cmd_find_related.md) - Handler for the `find-related` subcommand: prints chunks semantically related to a file/line anchor.
 * [cmd_graph](cmd_graph.md) - Handler for the `graph` subcommand: prints callers/callees of a symbol.
@@ -28,12 +20,17 @@ status: draft
 * [cmd_query](cmd_query.md) - Handler for the `query` subcommand: answers a question by bounded graph traversal.
 * [cmd_search](cmd_search.md) - Handler for the `search` subcommand: runs a hybrid search query and prints results.
 * [cmd_serve](cmd_serve.md) - Handler for the `serve` subcommand: starts the MCP stdio server.
+* [cmd_start](cmd_start.md) - Handler for the `start` subcommand: alias for `daemon start`.
+* [cmd_stats](cmd_stats.md) - Handler for the `stats` subcommand: prints the runtime profile, index layout, and disk footprint.
+* [cmd_status](cmd_status.md) - Handler for the `status` subcommand: alias for `daemon status`.
 * [cmd_symbol](cmd_symbol.md) - Handler for the `symbol` subcommand: resolves and prints a symbol's definition.
 * [main](main.md) - Parse arguments and dispatch to the selected subcommand handler.
 
 ## engine/classification.py
 
+* [config_tier](config_tier.md) - Classify a configuration file's canonicality for config ranking.
 * [content_type](content_type.md) - Classify a file into the content axis (code, docs, config).
+* [documentation_tier](documentation_tier.md) - Classify a prose file's canonicality for documentation ranking.
 * [file_role](file_role.md) - Resolve a file's role from path/filename signals alone.
 
 ## engine/confidence.py
@@ -56,11 +53,14 @@ status: draft
 ## engine/daemon.py
 
 * [clear_pidfile](clear_pidfile.md) - Remove the daemon's pidfile on clean shutdown.
+* [clear_state](clear_state.md) - Remove the daemon lifecycle-state file, ignoring a missing file.
 * [daemon_status](daemon_status.md) - Report {running, warm, socket, pid} for a context directory's daemon.
 * [default_socket_path](default_socket_path.md) - The daemon's socket path convention for a context directory.
 * [pid_is_alive](pid_is_alive.md) - Whether the daemon pidfile records a live process.
+* [read_state](read_state.md) - Return the recorded daemon lifecycle state, or None when absent.
 * [run_daemon_foreground](run_daemon_foreground.md) - Run the daemon blocking in the foreground.
 * [write_pidfile](write_pidfile.md) - Write the daemon's pidfile for lifecycle tracking.
+* [write_state](write_state.md) - Record the daemon lifecycle state (starting/warming/ready).
 
 ## engine/embed_representation.py
 
@@ -78,6 +78,11 @@ status: draft
 ## engine/file_role.py
 
 * [classify_file_role](classify_file_role.md) - Classify a file's role for ranking adjustment, with evidence-based overrides.
+
+## engine/find_related.py
+
+* [find_related](find_related.md) - Rank the chunks most related to a file/line anchor via the vector index.
+* [resolve_anchor_chunk](resolve_anchor_chunk.md) - Resolve a file path and select the smallest indexed chunk containing a line.
 
 ## engine/graph.py
 
@@ -118,6 +123,7 @@ status: draft
 * [embedded_symbols](embedded_symbols.md) - Resolved symbol short names embedded in a natural-language query.
 * [infer_query_language](infer_query_language.md) - Infer a query's language.
 * [language_vocabularies](language_vocabularies.md) - Map each indexed language to its exact sub-word set.
+* [language_vocabularies_for_tokens](language_vocabularies_for_tokens.md) - Map languages to the queried tokens they contain, reading only the requested stats rows.
 
 ## engine/match_boost.py
 

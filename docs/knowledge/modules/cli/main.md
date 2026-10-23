@@ -1,10 +1,10 @@
 ---
 type: Module
 title: "cli.main"
-description: "CLI entry point: subcommands for indexing, searching, graph traversal, symbol lookup, metrics, serving, and the daemon."
+description: "CLI entry point: subcommands for indexing, searching, graph traversal, symbol lookup, diagnostics, metrics, serving, and the daemon."
 resource: code_search/cli/main.py
 tags: [cli, entry-point]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/cli/main.py
@@ -35,6 +35,9 @@ queries.
 | `affected` | Symbols impacted by changed files (explicit paths or `--since <git-ref>`) |
 | `map` | Deterministic architecture report (god nodes, communities, import cycles) |
 | `metrics` | Print index health and usage metrics (human, JSON, or Prometheus) |
+| `stats` | Print the runtime profile, index layout, freshness mode, and disk footprint |
+| `doctor` | Report index age, model availability, daemon state, and index size as JSON |
+| `start` / `status` | Aliases for `daemon start` / `daemon status` |
 | `serve` | Start the MCP server over stdio |
 | `list-languages` | List supported languages with extensions and grammar mappings |
 | `download-models` | Download embedding models to the Hugging Face cache |
@@ -44,21 +47,36 @@ queries.
 
 - [`build_parser`](../../functions/build_parser.md) — build the full argparse tree with all subcommands.
 - [`main`](../../functions/main.md) — parse arguments and dispatch to the selected subcommand handler.
-- [`cmd_index`](../../functions/cmd_index.md), [`cmd_search`](../../functions/cmd_search.md), [`cmd_symbol`](../../functions/cmd_symbol.md), [`cmd_graph`](../../functions/cmd_graph.md), [`cmd_implementations`](../../functions/cmd_implementations.md), [`cmd_find_related`](../../functions/cmd_find_related.md), [`cmd_query`](../../functions/cmd_query.md), [`cmd_path`](../../functions/cmd_path.md), [`cmd_explain`](../../functions/cmd_explain.md), [`cmd_affected`](../../functions/cmd_affected.md), [`cmd_map`](../../functions/cmd_map.md), [`cmd_metrics`](../../functions/cmd_metrics.md), [`cmd_serve`](../../functions/cmd_serve.md), [`cmd_list_languages`](../../functions/cmd_list_languages.md), [`cmd_daemon`](../../functions/cmd_daemon.md), [`cmd_daemon_run`](../../functions/cmd_daemon_run.md), [`cmd_download_models`](../../functions/cmd_download_models.md) — one handler per subcommand.
+- [`cmd_index`](../../functions/cmd_index.md), [`cmd_search`](../../functions/cmd_search.md), [`cmd_symbol`](../../functions/cmd_symbol.md), [`cmd_graph`](../../functions/cmd_graph.md), [`cmd_implementations`](../../functions/cmd_implementations.md), [`cmd_find_related`](../../functions/cmd_find_related.md), [`cmd_query`](../../functions/cmd_query.md), [`cmd_path`](../../functions/cmd_path.md), [`cmd_explain`](../../functions/cmd_explain.md), [`cmd_affected`](../../functions/cmd_affected.md), [`cmd_map`](../../functions/cmd_map.md), [`cmd_metrics`](../../functions/cmd_metrics.md), [`cmd_stats`](../../functions/cmd_stats.md), [`cmd_doctor`](../../functions/cmd_doctor.md), [`cmd_start`](../../functions/cmd_start.md), [`cmd_status`](../../functions/cmd_status.md), [`cmd_serve`](../../functions/cmd_serve.md), [`cmd_list_languages`](../../functions/cmd_list_languages.md), [`cmd_daemon`](../../functions/cmd_daemon.md), [`cmd_daemon_run`](../../functions/cmd_daemon_run.md), [`cmd_download_models`](../../functions/cmd_download_models.md) — one handler per subcommand.
 
 # Output and Startup Options
 
 `search` accepts `--regex` (exhaustive mode only), `--explain-ranking`
 (per-result score components), `--compact`/`--no-compact` (agent-sized JSON
-is the default), and `--max-snippet-lines`. JSON output is compact by
-default and reports paths/FQNs relative to the index root. The global
+is the default), `--pretty`, `--max-snippet-lines`, `--paths-only`
+(location and classification fields only), and `--allow-weak` (bypass the
+post-rank abstention gate). JSON output is compact by default and reports
+paths/FQNs relative to the index root.
+
+`index` accepts `--runtime-profile` (`standard`/`small`),
+`--index-layout` (`legacy`/`compact`), and `--no-graph`; the query commands
+accept `--runtime-profile` and `--freshness-mode`
+(`blocking`/`deferred`). The flags replace the profile-derived defaults for
+that invocation. The global
 `--no-startup-check` skips transparent daemon auto-start for a single
-invocation.
+invocation. `symbol`, `graph`, `implementations`, and `find-related`
+forward to the resident daemon by default. `graph` reports edge-resolution
+coverage and accepts `--explain-unresolved`; a `--no-graph` index is
+reported as `graph_not_indexed`.
 
 # Internal Helpers
 
 Private (underscore-prefixed) helpers handle component wiring
-(`_initialize_components`), graph-service construction
+(`_initialize_components`, with `settings`, `load_vectors`, and
+`for_index` parameters so symbol-only commands skip the vector sidecar),
+profile/flag resolution (`_settings_for_args`), graph availability
+reporting (`_graph_not_indexed_message`), byte/age formatting
+(`_human_bytes`, `_index_age_seconds`), graph-service construction
 (`_graph_query_service`), edge-type parsing (`_parse_edge_types`), the git
 diff used by `affected` (`_git_changed_files`), daemon forwarding (`_try_forward_to_daemon`,
 `_ensure_resident_service`), and human-readable output formatting

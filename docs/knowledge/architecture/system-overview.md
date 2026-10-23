@@ -4,7 +4,7 @@ title: "System Overview"
 description: "How code-search's indexing, hybrid search, and serving surfaces (CLI, MCP, daemon) fit together."
 resource: code_search/
 tags: [architecture, overview]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/
@@ -76,7 +76,9 @@ orchestrator:
 4. Quality gate — before fusion, a multi-signal gate (informative-token
    coverage, concept signal, exact-token coverage, and top-vector floors)
    evaluated against the raw BM25 hit count and raw vector results decides
-   whether the retrieval evidence is trustworthy enough to proceed.
+   whether the retrieval evidence is trustworthy enough to proceed. Corpus
+   document frequencies come from the persisted `subword_stats` and
+   `prefix_stats` tables when present, falling back to a full chunk scan.
 5. Fusion — [`rrf_fusion`](../functions/rrf_fusion.md) (Reciprocal Rank Fusion)
    merges both result lists.
 6. Rescue ladder — when the ranked path yields nothing, progressively
@@ -91,11 +93,15 @@ orchestrator:
    pass (controller methods annotated for the query's HTTP verb), a
    constant-intent pass (constant/config declarations for default-shaped
    queries), and [`Reranker`](../types/Reranker.md) (definition and
-   identifier-definition boosts, config-key boost, test-file penalty,
+   identifier-definition boosts, config-key boost, docs/config canonicality
+   tiers, module cohesion, minified/vendor demotion, test-file penalty,
    session weighting, file-role penalties) refine the final order.
-8. Output — results are treated as ordered evidence: each carries
+8. Abstention — a post-rank gate compares concept coverage and top-vs-median
+   score separation; weak evidence yields `no_match` unless `--allow-weak`
+   is set.
+9. Output — results are treated as ordered evidence: each carries
    `score_normalized`, the envelope reports `token_savings`, and compact
-   root-relative JSON is the default.
+   root-relative JSON (or `--paths-only`) is the default.
 
 ## Graph Query Layer
 
@@ -113,7 +119,7 @@ It provides `query`, `shortest_path`, `explain`, `impact`, and
 ## Serving Surfaces
 
 - **CLI** ([`cli.main`](../modules/cli/main.md)) — direct one-shot
-  `index`/`search`/`symbol`/`graph`/`implementations`/`find-related`/`query`/`path`/`explain`/`affected`/`map`/`metrics`
+  `index`/`search`/`symbol`/`graph`/`implementations`/`find-related`/`query`/`path`/`explain`/`affected`/`map`/`metrics`/`stats`/`doctor`/`start`/`status`
   commands.
 - **MCP server** ([`MCPServer`](../types/MCPServer.md)) — exposes `search`,
   `get_symbol_definition`, `get_call_neighbors`, `get_implementations`,
@@ -122,7 +128,15 @@ It provides `query`, `shortest_path`, `explain`, `impact`, and
 - **Daemon** ([`QueryDaemon`](../types/QueryDaemon.md)) — keeps the index and
   embedding model warm in memory, served over a local Unix socket via
   [`DaemonClient`](../types/DaemonClient.md), avoiding per-invocation
-  cold-start cost.
+  cold-start cost. A lifecycle-state file reports `starting`/`warming`/
+  `ready`.
+- **Related-chunk ranking** ([`engine.find_related`](../modules/engine/find_related.md))
+  — one implementation shared by the CLI, daemon, and MCP tool.
+
+Index storage has two layouts: the legacy `vectors.bin` + JSON sidecar, and
+the compact `vectors.v2.bin` + `CSVMETA1` binary sidecar with an append-only
+`.files` dictionary. The `small` runtime profile selects compact storage and
+deferred freshness; `standard` keeps legacy storage and blocking freshness.
 
 ## Compliance and Observability
 

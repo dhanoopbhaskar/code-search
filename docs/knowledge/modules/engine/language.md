@@ -1,10 +1,10 @@
 ---
 type: Module
 title: "engine.language"
-description: "Query-time language inference and definition-intent detection."
+description: "Query-time language inference and definition-intent detection, backed by per-token corpus statistics."
 resource: code_search/engine/language.py
 tags: [engine, query-analysis, language]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/engine/language.py
@@ -27,6 +27,7 @@ corpus-vocabulary sub-words only), `coverage` computed after expansion,
 # Key Functions
 
 - [`language_vocabularies`](../../functions/language_vocabularies.md) — map each indexed language to its exact sub-word set.
+- [`language_vocabularies_for_tokens`](../../functions/language_vocabularies_for_tokens.md) — answer the same question from only the requested `subword_stats` rows, falling back to the full scan.
 - [`infer_query_language`](../../functions/infer_query_language.md) — infer a query's language.
 - [`detect_definition_intent`](../../functions/detect_definition_intent.md) — detect definition phrasing and resolve its target.
 - [`embedded_symbols`](../../functions/embedded_symbols.md) — resolved symbol short names embedded in a natural-language query.

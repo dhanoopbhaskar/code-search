@@ -1,10 +1,10 @@
 ---
 type: Module
 title: "engine.indexer"
-description: "Orchestrates full and incremental codebase indexing: discovery, AST parsing, symbol/edge/chunk persistence, embedding generation."
+description: "Orchestrates full and incremental codebase indexing: discovery, AST parsing, symbol/edge/chunk persistence, corpus statistics, and embedding generation."
 resource: code_search/engine/indexer.py
 tags: [engine, indexing, pipeline]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/engine/indexer.py
@@ -29,6 +29,15 @@ files are split by heading (ATX/AsciiDoc/setext, fence-aware) and package
 lockfiles are stored as a single bounded infra chunk so a lockfile cannot
 dominate keyword search. TypeScript/JavaScript imports resolve through
 `tsconfig` `baseUrl`/`paths` aliases and directory barrel `index` files.
+
+Files larger than `max_file_bytes` (default 1 MB) are skipped before
+parsing and counted in `skipped_large_files`; the skip is visible in index
+metadata because exhaustive search only sees indexed files. Graph
+persistence (call/import edges, rationale, doc links) is gated by
+`index_graph`, and the run records `graph_indexed`. Once persistence
+finishes, the orchestrator rebuilds the `subword_stats`/`prefix_stats`
+document-frequency tables, records `corpus_chunk_count` and `index_layout`,
+then asks the graph database to compact storage.
 
 # Key Constants
 
@@ -66,4 +75,7 @@ specifiers (including `.js`→`.ts` and directory barrels).
 `_resolve_chunk_fqn` stamps each chunk with its enclosing symbol's FQN.
 `_module_fallback_chunk` and `_fallback_chunk_file` guarantee at least one
 chunk per file when AST parsing yields nothing (resource/unparseable
-files).
+files). `_rebuild_corpus_stats` counts each token and 3-character prefix
+once per `(language, chunk)` pair and persists the rows the query path
+reads; every chunk row also carries an `is_test` flag derived from
+`_is_test_file`.

@@ -1,10 +1,10 @@
 ---
 type: Class
 title: "Reranker"
-description: "Adjusts raw search scores using definition/identifier/config-key boosts, file-role and test-file penalties, and session weighting."
+description: "Adjusts raw search scores using definition/identifier/config-key boosts, canonicality tiers, corpus-hygiene penalties, and session weighting."
 resource: code_search/engine/reranking.py#Reranker
 tags: [ranking, reranking]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/engine/reranking.py
@@ -29,9 +29,16 @@ dotted/`::` config key) is boosted, and chunks that merely mention that
 identifier are demoted — but only when the definition is present in the
 candidate pool, so a usage-only answer is never penalised into nothing.
 
+Two content-axis tints apply the canonicality classifiers: docs-intent
+queries use `documentation_tier` (project boost, third-party/generated
+penalties) and config-intent queries use `config_tier` (primary boost,
+non-primary penalty). Corpus-hygiene multipliers demote minified bundles
+and vendored web assets, and a module-cohesion boost prefers results whose
+path segment exactly matches a query term.
+
 # Methods
 
 | Method | Description |
 |---|---|
 | `__init__(db: GraphDatabase, session_db: SessionDatabase \| None = None, settings: Settings \| None = None) -> None` | Create a reranker wired to the graph and session databases. |
-| `rerank(results: list[dict[str, Any]], query_terms: list[str] \| None = None, query: str \| None = None) -> list[dict[str, Any]]` | Reorder *results* in place by applying the definition, definition-owner, identifier-definition, config-key, docs-content, file-role, and authorization boosts; the usage, test-file, DTS/barrel, and non-canonical penalties; and session weighting. Each result gains `session_weight`. |
+| `rerank(results: list[dict[str, Any]], query_terms: list[str] \| None = None, query: str \| None = None) -> list[dict[str, Any]]` | Reorder *results* in place by applying the definition, definition-owner, identifier-definition, config-key, docs-content, canonicality-tier, module-cohesion, file-role, and authorization boosts; the usage, test-file, DTS/barrel, non-canonical, minified, and vendor penalties; and session weighting. Each result gains `session_weight`. |

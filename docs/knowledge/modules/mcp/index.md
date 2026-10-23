@@ -1,12 +1,3 @@
----
-type: Index
-title: "MCP Modules"
-description: "Index of mcp package module concepts."
-tags: [modules, mcp, index]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
-status: draft
----
-
 # MCP Modules
 
 * [__init__](__init__.md) - package marker module.
