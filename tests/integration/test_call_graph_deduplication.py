@@ -216,6 +216,8 @@ def _cli_payload(
     from code_search.cli import main as cli_main
 
     monkeypatch.setattr(cli_main, "_initialize_components", lambda _ctx, **_kwargs: comps)
+    monkeypatch.setattr(cli_main, "_ensure_resident_service", lambda _args: False)
+    monkeypatch.setattr(cli_main, "_try_forward_to_daemon", lambda _args: None)
     args = argparse.Namespace(
         command="graph",
         fqn=symbol,
@@ -315,6 +317,8 @@ def test_audit_result_count_matches_deduplicated_count(
     from code_search.cli import main as cli_main
 
     monkeypatch.setattr(cli_main, "_initialize_components", lambda _ctx, **_kwargs: dedup_comps)
+    monkeypatch.setattr(cli_main, "_ensure_resident_service", lambda _args: False)
+    monkeypatch.setattr(cli_main, "_try_forward_to_daemon", lambda _args: None)
     args = argparse.Namespace(
         command="graph",
         fqn="root",

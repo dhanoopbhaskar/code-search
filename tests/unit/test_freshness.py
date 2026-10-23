@@ -30,6 +30,8 @@ def _git_init_commit(repo: Path) -> None:
             "user.email=test@example.com",
             "-c",
             "user.name=Test",
+            "-c",
+            "commit.gpgsign=false",
             "commit",
             "-qm",
             "initial",

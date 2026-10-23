@@ -179,8 +179,9 @@ def daemon_search_index(tmp_path: Path) -> dict[str, Any]:
     cold_search = HybridSearch(db, vector_index, embedding_gen, settings)
     no_model_search = HybridSearch(db, vector_index, embedding_gen, settings, no_model=True)
 
-    socket_path = context_dir / "bench.sock"
-    from code_search.engine.daemon import QueryDaemon
+    from code_search.engine.daemon import QueryDaemon, default_socket_path
+
+    socket_path = default_socket_path(context_dir)
 
     daemon = QueryDaemon(socket_path, context_dir, verbose=False)
     thread = threading.Thread(target=daemon.start, daemon=True)

@@ -20,9 +20,10 @@ def normalize_indexed_path(path: str, index_root: Path) -> Path | None:
 
     Absolute paths are kept; relative paths are joined to *index_root* (never
     the caller's CWD). ``.``/``..`` segments and symlinks are collapsed via
-    ``Path.resolve()``. Returns ``None`` when the resolved path escapes the
-    index root — the caller treats that as the normal not-found outcome, never
-    an error.
+    ``Path.resolve()``. On a case-insensitive filesystem a case-variant input
+    is rewritten to the on-disk spelling so it matches the stored path.
+    Returns ``None`` when the resolved path escapes the index root — the
+    caller treats that as the normal not-found outcome, never an error.
     """
     index_root_resolved = index_root.resolve()
     candidate = Path(path)
@@ -32,7 +33,42 @@ def normalize_indexed_path(path: str, index_root: Path) -> Path | None:
         resolved = (index_root_resolved / candidate).resolve()
     if not _is_within(resolved, index_root_resolved):
         return None
-    return resolved
+    return _canonical_case(resolved)
+
+
+def _canonical_case(path: Path) -> Path:
+    """Return *path* spelled as the filesystem reports it.
+
+    ``Path.resolve()`` collapses symlinks but preserves the case supplied by
+    the caller, even on a case-insensitive filesystem. Walking the existing
+    directory entries and replacing each component with its on-disk spelling
+    makes a case-variant input (``src/authservice.java``) equal the indexed
+    path (``src/AuthService.java``). Components absent from the filesystem
+    are left untouched, and an ambiguous case-insensitive match (two entries
+    differing only by case) keeps the caller's spelling.
+
+    Args:
+        path: An absolute, symlink-resolved path.
+
+    Returns:
+        The path with each resolvable component in its on-disk case.
+    """
+    if not path.is_absolute():
+        return path
+    parts = path.parts
+    current = Path(parts[0])
+    for part in parts[1:]:
+        try:
+            entries = [entry.name for entry in current.iterdir()]
+        except OSError:
+            return path
+        if part in entries:
+            current = current / part
+            continue
+        folded = part.casefold()
+        matches = [entry for entry in entries if entry.casefold() == folded]
+        current = current / (matches[0] if len(matches) == 1 else part)
+    return current
 
 
 def resolve_stored_path(candidate: Path, conn: IndexConnection) -> str | None:

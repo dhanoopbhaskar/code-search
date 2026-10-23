@@ -120,9 +120,11 @@ def test_compact_layout_uses_v2_files_and_same_ranking(tmp_path: Path) -> None:
 
 def test_output_bytes_are_compact(tmp_path: Path) -> None:
     """Ten compact results stay under the agent output budget."""
-    from code_search.engine.response_service import compact_results
+    from code_search.engine.response_service import compact_results, relativize_results
 
     comps = _fixture("relevance", tmp_path)
     results = comps["search"].search("article comment service", limit=10)["results"]
-    compact = compact_results(results)
+    # Agents receive repo-relative paths (the MCP/CLI envelope relativizes
+    # them), so measure that shape rather than the absolute indexed spelling.
+    compact = compact_results(relativize_results(results, comps["repo"]))
     assert len(json.dumps(compact, separators=(",", ":")).encode()) <= 6500
