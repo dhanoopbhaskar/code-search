@@ -119,6 +119,32 @@ def default_socket_path(context_dir: Path) -> Path:
     return Path("/tmp") / name
 
 
+def _state_path(context_dir: Path) -> Path:
+    """Return the daemon lifecycle-state file path for *context_dir*."""
+    return context_dir / "code-search.state"
+
+
+def write_state(context_dir: Path, state: str) -> None:
+    """Record the daemon lifecycle state (``starting``/``warming``/``ready``)."""
+    with suppress(OSError):
+        context_dir.mkdir(parents=True, exist_ok=True)
+        _state_path(context_dir).write_text(state)
+
+
+def read_state(context_dir: Path) -> str | None:
+    """Return the recorded daemon lifecycle state, or ``None`` when absent."""
+    try:
+        return _state_path(context_dir).read_text().strip() or None
+    except OSError:
+        return None
+
+
+def clear_state(context_dir: Path) -> None:
+    """Remove the lifecycle-state file, ignoring a missing file."""
+    with suppress(FileNotFoundError):
+        _state_path(context_dir).unlink()
+
+
 class QueryDaemon:
     """Serves ``search``/``symbol``/``graph``/``ping`` over a unix socket.
 
@@ -148,23 +174,21 @@ class QueryDaemon:
         self._running = threading.Event()
         self._comps: dict[str, Any] | None = None
         self._lock = threading.Lock()
+        self._ready = threading.Event()
 
     def start(self) -> None:
         """Initialise components, bind the socket, and serve connections forever.
 
-        Initialises components via ``_initialize_components``, binds the unix
-        socket (removing any stale socket file first), starts the embedding
-        model warming in the background, and blocks in an accept loop — each
-        connection is serviced on its own daemon thread. Binding first means
-        ``ping`` and ``search`` are answerable while the model is still warming;
-        a forwarded query during warmup is served from the reduced cold path.
-        Returns or raises only after ``stop()`` unblocks the loop.
+        The control socket is bound before the expensive component
+        initialisation so a waiting client can observe ``starting``/``warming``
+        instead of mistaking a slow start for a crashed daemon. Model warm-up
+        runs in the background; ``ping`` reports readiness and the recorded
+        lifecycle state. Returns or raises only after ``stop()`` unblocks the
+        loop.
         """
-        from code_search.cli.main import _initialize_components
-
         if self._verbose:
             logging.basicConfig(level=logging.DEBUG, stream=sys.stderr)
-        self._comps = _initialize_components(self._context_dir)
+        write_state(self._context_dir, "starting")
 
         self._socket_path.parent.mkdir(parents=True, exist_ok=True)
         with suppress(FileNotFoundError):
@@ -174,18 +198,12 @@ class QueryDaemon:
         self._server.bind(str(self._socket_path))
         self._server.listen(8)
         self._running.set()
-        logger.info("Query daemon listening on %s", self._socket_path)
+        logger.info("Query daemon socket bound on %s", self._socket_path)
 
-        # Warm the model in the background after binding so readiness probes and
-        # searches are answered while the load is in flight.
-        try:
-            begin_warmup = getattr(self._comps["embedding_gen"], "begin_warmup", None)
-            if callable(begin_warmup):
-                begin_warmup()
-            else:
-                self._comps["embedding_gen"].warm_start()
-        except Exception as exc:
-            logger.warning("Daemon model warm-up failed: %s", exc)
+        init_thread = threading.Thread(
+            target=self._initialize, name="code-search-daemon-init", daemon=True
+        )
+        init_thread.start()
 
         while self._running.is_set():
             try:
@@ -197,6 +215,29 @@ class QueryDaemon:
                 args=(conn,),
                 daemon=True,
             ).start()
+
+    def _initialize(self) -> None:
+        """Initialise components and warm the model on a background thread."""
+        from code_search.cli.main import _initialize_components
+
+        try:
+            self._comps = _initialize_components(self._context_dir)
+        except Exception as exc:
+            logger.exception("Daemon component initialisation failed: %s", exc)
+            write_state(self._context_dir, "failed")
+            return
+        self._ready.set()
+        write_state(self._context_dir, "warming")
+        try:
+            begin_warmup = getattr(self._comps["embedding_gen"], "begin_warmup", None)
+            if callable(begin_warmup):
+                begin_warmup()
+            else:
+                self._comps["embedding_gen"].warm_start()
+        except Exception as exc:
+            logger.warning("Daemon model warm-up failed: %s", exc)
+        if self._is_warm(self._comps):
+            write_state(self._context_dir, "ready")
 
     def stop(self) -> None:
         """Stop servicing requests, close the socket, and remove its path.
@@ -213,6 +254,7 @@ class QueryDaemon:
                 self._server.close()
         with suppress(FileNotFoundError):
             self._socket_path.unlink()
+        write_state(self._context_dir, "stopped")
 
     @property
     def is_running(self) -> bool:
@@ -298,12 +340,26 @@ class QueryDaemon:
         """
         action = request.get("action")
         params = request.get("params") or {}
+        if action == "ping":
+            comps = self._comps
+            warm = bool(comps is not None and self._is_warm(comps))
+            state = read_state(self._context_dir) or ("warming" if comps else "starting")
+            if warm:
+                state = "ready"
+                write_state(self._context_dir, "ready")
+            return {"ok": True, "payload": {"pong": True, "warm": warm, "state": state}}
+        wait_s = float(params.get("startup_wait_s") or 10.0)
+        if self._comps is None and wait_s > 0:
+            self._ready.wait(timeout=wait_s)
         comps = self._comps
         if comps is None:
-            return {"ok": False, "error": "daemon components not initialised"}
+            return {
+                "ok": False,
+                "error": "daemon is starting",
+                "state": read_state(self._context_dir) or "starting",
+                "retry_after_ms": 250,
+            }
         try:
-            if action == "ping":
-                return {"ok": True, "payload": {"pong": True, "warm": self._is_warm(comps)}}
             if action == "search":
                 return self._do_search(comps, params)
             if action == "symbol":
@@ -368,7 +424,8 @@ class QueryDaemon:
         wait_warm = getattr(warm_gen, "wait_warm", None)
         if callable(wait_warm):
             settings = comps.get("settings")
-            wait_s = float(getattr(settings, "warmup_wait_s", 0.0))
+            requested = float(params.get("wait_for_warm") or 0.0)
+            wait_s = max(float(getattr(settings, "warmup_wait_s", 0.0)), requested)
             if wait_s > 0:
                 with suppress(Exception):
                     wait_warm(wait_s)
@@ -383,6 +440,7 @@ class QueryDaemon:
             content=params.get("content"),
             matching=params.get("matching"),
             regex=bool(params.get("regex", False)),
+            allow_weak=bool(params.get("allow_weak", False)),
         )
         results = envelope["results"]
         reranked = comps["reranker"].rerank(
@@ -397,7 +455,12 @@ class QueryDaemon:
         if params.get("compact", True):
             from code_search.engine.response_service import compact_results
 
-            redacted = compact_results(redacted, int(params.get("max_snippet_lines") or 20))
+            max_lines = params.get("max_snippet_lines")
+            redacted = compact_results(
+                redacted,
+                10 if max_lines is None else int(max_lines),
+                paths_only=bool(params.get("paths_only", False)),
+            )
         from code_search.engine.response_service import relativize_results
 
         result_root = comps["metadata"].get("index_root") or str(Path(comps["context_dir"]).parent)
@@ -504,6 +567,9 @@ class QueryDaemon:
             payload["ranked_path"] = envelope["ranked_path"]
         if envelope.get("warmup_state") is not None:
             payload["warmup_state"] = envelope["warmup_state"]
+        if not QueryDaemon._is_warm(comps):
+            payload["warming"] = True
+            payload["retry_after_ms"] = 250
         if "degraded_reason" in envelope:
             payload["degraded_reason"] = envelope["degraded_reason"]
         if envelope.get("no_match") is not None:
@@ -640,6 +706,21 @@ class QueryDaemon:
         payload["found"] = outcome != "not_found"
         payload["ambiguous"] = outcome == "ambiguous"
         payload["freshness"] = _daemon_freshness(comps)
+        payload["query_time_ms"] = 0.0
+        audit_db = comps.get("audit_db")
+        if audit_db is not None:
+            try:
+                audit_db.write_entry(
+                    query_type="get_implementations",
+                    query_summary=str(params.get("fqn", ""))[
+                        : comps["settings"].query_summary_length
+                    ],
+                    result_count=len(payload.get("implementations") or []),
+                    duration_ms=0,
+                    redacted_count=0,
+                )
+            except Exception as exc:
+                logger.warning("Daemon audit write failed: %s", exc)
         return {"ok": True, "payload": payload}
 
     @staticmethod
@@ -689,6 +770,7 @@ class QueryDaemon:
                 depth,
                 comps.get("freshness"),
                 bool(params.get("transitive", False)),
+                comps.get("db"),
             )
         )
         if data.get("symbol") is None and data.get("candidates"):
@@ -733,376 +815,32 @@ class QueryDaemon:
     def _do_find_related(comps: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
         """Find semantically related chunks for a given file and line.
 
-        Mirrors the MCP server's find_related logic so daemon and MCP
-        replies agree on boilerplate exclusion and file_role biasing.
+        Delegates anchor resolution and neighbour ranking to the shared
+        :func:`code_search.engine.find_related.find_related` rule so daemon
+        replies agree with the MCP tool; the daemon adds only the freshness
+        signal carried by every forwarded reply.
 
         Args:
             comps: The shared component registry (see ``_initialize_components``).
-            params: Request parameters; ``file_path``, ``line_number``, and ``limit``
-                are honoured.
+            params: Request parameters; ``file_path``, ``line_number``, and
+                ``limit`` are honoured.
 
         Returns:
-            A success payload with ``results``, ``vector_health``, ``status``,
-            ``query_time_ms``, and ``freshness`` — or an ``error`` payload when no
-            indexed chunk is found.
+            A success envelope whose ``payload`` is the shared find-related
+            payload plus ``freshness``.
         """
-        import time as _time
-        from pathlib import Path
-
-        from code_search.engine.classification import FileRole, file_role
         from code_search.engine.config import Settings
-        from code_search.engine.paths import normalize_indexed_path, resolve_stored_path
-        from code_search.engine.redactor import Redactor
+        from code_search.engine.find_related import find_related
 
-        start = _time.monotonic()
-        embedding_gen: EmbeddingGenerator = comps["embedding_gen"]
-        vector_index: VectorIndex = comps["vector_index"]
         settings = comps.get("settings") or Settings.from_env()
-        redactor = comps.get("redactor") or Redactor()
-
-        index_root = Path(comps["context_dir"]).parent
-        stored_root = comps["metadata"].get("index_root")
-        if stored_root:
-            index_root = Path(stored_root)
-
-        file_path = str(params.get("file_path", ""))
-        line_number = int(params.get("line_number", 0))
-        limit = int(params.get("limit", settings.find_related_limit))
-
-        stored_path: str | None = None
-        normalized = normalize_indexed_path(file_path, index_root)
-        if normalized is not None:
-            with comps["db"].connect() as conn:
-                stored_path = resolve_stored_path(normalized, conn)
-
-        if stored_path is None:
-            return {
-                "ok": True,
-                "payload": {
-                    "error": f"No indexed chunk found at '{file_path}:{line_number}'",
-                    "query_time_ms": round((_time.monotonic() - start) * 1000, 1),
-                    "freshness": _daemon_freshness(comps),
-                },
-            }
-
-        with comps["db"].connect() as conn:
-            row = conn.execute(
-                "SELECT id, fqn, content, language FROM code_chunks "
-                "WHERE file_path = ? AND line_start <= ? AND line_end >= ? "
-                "LIMIT 1;",
-                (stored_path, line_number, line_number),
-            ).fetchone()
-            if row is None:
-                return {
-                    "ok": True,
-                    "payload": {
-                        "error": f"No indexed chunk found at '{file_path}:{line_number}'",
-                        "query_time_ms": round((_time.monotonic() - start) * 1000, 1),
-                        "freshness": _daemon_freshness(comps),
-                    },
-                }
-            anchor_id = row["id"]
-            chunk_content = row["content"] or ""
-
-        anchor_symbol_id = None
-        anchor_fqn = None
-        anchor_kind = None
-        with comps["db"].connect() as conn:
-            row = conn.execute(
-                "SELECT s.id, s.fqn, s.kind FROM code_chunks c "
-                "JOIN symbols s ON c.fqn = s.fqn "
-                "WHERE c.id = ? LIMIT 1;",
-                (anchor_id,),
-            ).fetchone()
-            if row:
-                anchor_symbol_id = row["id"]
-                anchor_fqn = row["fqn"]
-                anchor_kind = row["kind"]
-
-        query_vec = embedding_gen.encode(chunk_content)
-        if query_vec is None:
-            return {
-                "ok": True,
-                "payload": {
-                    "results": [],
-                    "vector_health": False,
-                    "status": "empty",
-                    "explanation": (
-                        "vector layer unavailable; find_related requires the embedding model"
-                    ),
-                    "query_time_ms": round((_time.monotonic() - start) * 1000, 1),
-                    "freshness": _daemon_freshness(comps),
-                },
-            }
-
-        limit = min(limit, settings.find_related_limit)
-        if vector_index.size <= 1:
-            explanation = (
-                "no related chunks found; the index holds only the anchor chunk"
-                if vector_index.size == 1
-                else "no related chunks found; the vector index is empty"
-            )
-            return {
-                "ok": True,
-                "payload": {
-                    "results": [],
-                    "vector_health": vector_index.size == 1,
-                    "status": "empty",
-                    "explanation": explanation,
-                    "query_time_ms": round((_time.monotonic() - start) * 1000, 1),
-                    "freshness": _daemon_freshness(comps),
-                },
-            }
-
-        # Directional boilerplate suppression — a non-boilerplate
-        # anchor excludes boilerplate-shape neighbors (MODEL/DTO/ASSEMBLER/
-        # EXCEPTION) by default; a genuine DTO/model anchor still finds its
-        # scaffolding peers when the anchor is itself boilerplate.
-        boilerplate_roles = {
-            FileRole.MODEL,
-            FileRole.DTO,
-            FileRole.ASSEMBLER,
-            FileRole.EXCEPTION,
-        }
-        analysis_paths = set(settings.analysis_artifact_paths)
-        anchor_role = file_role(stored_path, analysis_paths=analysis_paths)
-        anchor_is_boilerplate = anchor_role in boilerplate_roles
-        boilerplate_on = bool(settings.find_related_exclude_boilerplate)
-        exclude_boilerplate = boilerplate_on and not anchor_is_boilerplate
-        downweight_boilerplate = (not boilerplate_on) and not anchor_is_boilerplate
-
-        exclude_file = bool(settings.find_related_exclude_file)
-        # Fetch limit + 1 candidates before filtering (the limit-1 fix): an anchor
-        # that is its own cosine top-1 must still yield a full limit of neighbours.
-        # A wider pool when semantic reranking is enabled leaves room for
-        # structurally-close neighbours sitting just outside the vector top-k.
-        candidate_k = limit + 1
-        if settings.find_related_semantic_blend > 0:
-            candidate_k = max(candidate_k, limit + 50)
-        search_results = vector_index.search(
-            query_vec,
-            top_k=candidate_k,
-            exclude_file_paths={stored_path} if exclude_file else None,
+        payload = find_related(
+            comps,
+            str(params.get("file_path", "")),
+            int(params.get("line_number", 0)),
+            int(params.get("limit", settings.find_related_limit)),
         )
-
-        # Blend embeddings with structural proximity (package, type, call graph)
-        # exactly as the MCP surface does, so daemon replies agree with MCP.
-        if settings.find_related_semantic_blend > 0 and anchor_symbol_id:
-            from code_search.engine.semantic_signals import rerank_with_semantic
-
-            anchor_info = {
-                "chunk_id": anchor_id,
-                "fqn": anchor_fqn,
-                "file_path": stored_path,
-                "symbol_id": anchor_symbol_id,
-                "kind": anchor_kind,
-            }
-            semantic_reranked = rerank_with_semantic(
-                search_results,
-                anchor_info,
-                comps["db"],
-                settings,
-                limit + 1,
-            )
-            search_results = [(r["chunk_id"], r["final_score"]) for r in semantic_reranked]
-
-        def _build_results(
-            scored: list[tuple[int, float]], same_file_flag: bool
-        ) -> tuple[list[dict[str, Any]], bool, list[dict[str, Any]]]:
-            """Return ``(kept_results, boilerplate_only, raw_results)``.
-
-            Applies the directional boilerplate exclusion/down-weight; ``kept`` is
-            the neighbour set after the filter, ``raw`` is the unfiltered set
-            (used for the ``best_effort`` label), and ``boilerplate_only``
-            reports whether the only similar content was boilerplate-shape.
-            """
-            chunk_ids = [cid for cid, _ in scored if cid != anchor_id]
-            if not chunk_ids:
-                return [], False, []
-            score_map = {cid: sc for cid, sc in scored}
-            placeholders = ",".join("?" for _ in chunk_ids)
-            with comps["db"].connect() as conn:
-                chunk_rows = conn.execute(
-                    f"SELECT id, fqn, file_path, line_start, line_end, content, "
-                    f"language FROM code_chunks "
-                    f"WHERE id IN ({placeholders});",
-                    chunk_ids,
-                ).fetchall()
-
-            rows: list[dict[str, Any]] = []
-            had_boilerplate = False
-            for cr in chunk_rows:
-                role = file_role(cr["file_path"], analysis_paths=analysis_paths)
-                if role in boilerplate_roles:
-                    had_boilerplate = True
-                content = cr["content"] or ""
-                redacted_content, _redacted_count = redactor.redact(content)
-                rows.append(
-                    {
-                        "chunk_id": cr["id"],
-                        "file_path": cr["file_path"],
-                        "line_start": cr["line_start"],
-                        "line_end": cr["line_end"],
-                        "content": redacted_content,
-                        "fqn": cr["fqn"],
-                        "language": cr["language"],
-                        "similarity": score_map.get(cr["id"], 0.0),
-                        "same_file": same_file_flag,
-                        "file_role": role,
-                    }
-                )
-            if downweight_boilerplate:
-                penalty = settings.find_related_same_file_penalty
-                for r in rows:
-                    if r["file_role"] in boilerplate_roles:
-                        r["similarity"] = r["similarity"] * penalty
-                rows.sort(key=lambda r: r["similarity"], reverse=True)
-            if exclude_boilerplate:
-                kept = [r for r in rows if r["file_role"] not in boilerplate_roles]
-                boilerplate_only = (not kept) and had_boilerplate
-                return kept[:limit], boilerplate_only, rows[:limit]
-            all_boilerplate = bool(rows) and all(r["file_role"] in boilerplate_roles for r in rows)
-            return rows[:limit], all_boilerplate, rows[:limit]
-
-        def _best_effort(rows: list[dict[str, Any]], same_file: bool) -> dict[str, Any]:
-            return {
-                "ok": True,
-                "payload": {
-                    "results": rows,
-                    "vector_health": True,
-                    "status": "best_effort",
-                    "explanation": (
-                        "only boilerplate-shape content is similar to this anchor; "
-                        "returning the best-effort match"
-                    ),
-                    "same_file": same_file,
-                    "query_time_ms": round((_time.monotonic() - start) * 1000, 1),
-                    "freshness": _daemon_freshness(comps),
-                },
-            }
-
-        if exclude_file:
-            cross_results, cross_boilerplate_only, cross_raw = _build_results(
-                search_results, same_file_flag=False
-            )
-            if cross_results:
-                return {
-                    "ok": True,
-                    "payload": {
-                        "results": cross_results,
-                        "vector_health": True,
-                        "status": "cross_file",
-                        "query_time_ms": round((_time.monotonic() - start) * 1000, 1),
-                        "freshness": _daemon_freshness(comps),
-                    },
-                }
-            if cross_boilerplate_only:
-                return _best_effort(cross_raw, same_file=False)
-            # Exclusion left no cross-file neighbour: search the full index again
-            # (anchor file included) for the best-effort same-file result.
-            fallback = vector_index.search(query_vec, top_k=limit + 1)
-            same_file_results, same_boilerplate_only, _same_file_raw = _build_results(
-                fallback, same_file_flag=True
-            )
-            if same_file_results:
-                if same_boilerplate_only:
-                    return _best_effort(same_file_results, same_file=True)
-                return {
-                    "ok": True,
-                    "payload": {
-                        "results": same_file_results,
-                        "vector_health": True,
-                        "status": "same_file_only",
-                        "explanation": (
-                            "no cross-file neighbours; returning the best same-file result"
-                        ),
-                        "query_time_ms": round((_time.monotonic() - start) * 1000, 1),
-                        "freshness": _daemon_freshness(comps),
-                    },
-                }
-            return {
-                "ok": True,
-                "payload": {
-                    "results": [],
-                    "vector_health": True,
-                    "status": "empty",
-                    "explanation": (
-                        "no related chunks found; the anchor file holds the only similar content"
-                    ),
-                    "query_time_ms": round((_time.monotonic() - start) * 1000, 1),
-                    "freshness": _daemon_freshness(comps),
-                },
-            }
-
-        # Down-weighting mode (CODE_SEARCH_FIND_RELATED_EXCLUDE_FILE=false): the
-        # anchor file is kept, but same-file chunks are down-weighted so cross-file
-        # neighbours always outrank them. Cross-file candidates are
-        # ranked first by score, then same-file candidates by their penalized score.
-        penalty = settings.find_related_same_file_penalty
-        chunk_ids = [cid for cid, _ in search_results]
-        placeholders = ",".join("?" for _ in chunk_ids)
-        with comps["db"].connect() as conn:
-            file_rows = conn.execute(
-                f"SELECT id, file_path FROM code_chunks WHERE id IN ({placeholders});",
-                chunk_ids,
-            ).fetchall()
-        file_by_id = {r["id"]: r["file_path"] for r in file_rows}
-        anchor_file = stored_path
-        cross_scored: list[tuple[int, float]] = []
-        same_scored: list[tuple[int, float]] = []
-        for cid, score in search_results:
-            if cid == anchor_id:
-                continue
-            if file_by_id.get(cid, "") == anchor_file:
-                same_scored.append((cid, score * penalty))
-            else:
-                cross_scored.append((cid, score))
-        cross_scored.sort(key=lambda item: item[1], reverse=True)
-        same_scored.sort(key=lambda item: item[1], reverse=True)
-        scored = (cross_scored + same_scored)[:limit]
-
-        cross_results, cross_boilerplate_only, _cross_raw = _build_results(
-            cross_scored[:limit], same_file_flag=False
-        )
-        if cross_results:
-            return {
-                "ok": True,
-                "payload": {
-                    "results": cross_results,
-                    "vector_health": True,
-                    "status": "cross_file",
-                    "query_time_ms": round((_time.monotonic() - start) * 1000, 1),
-                    "freshness": _daemon_freshness(comps),
-                },
-            }
-        same_file_results, same_boilerplate_only, _same_file_raw = _build_results(
-            scored, same_file_flag=True
-        )
-        if same_file_results:
-            if same_boilerplate_only or cross_boilerplate_only:
-                return _best_effort(same_file_results, same_file=True)
-            return {
-                "ok": True,
-                "payload": {
-                    "results": same_file_results,
-                    "vector_health": True,
-                    "status": "same_file_only",
-                    "explanation": "no cross-file neighbours; returning the best same-file result",
-                    "query_time_ms": round((_time.monotonic() - start) * 1000, 1),
-                    "freshness": _daemon_freshness(comps),
-                },
-            }
-        return {
-            "ok": True,
-            "payload": {
-                "results": [],
-                "vector_health": True,
-                "status": "empty",
-                "explanation": "no related chunks found",
-                "query_time_ms": round((_time.monotonic() - start) * 1000, 1),
-                "freshness": _daemon_freshness(comps),
-            },
-        }
+        payload["freshness"] = _daemon_freshness(comps)
+        return {"ok": True, "payload": payload}
 
 
 class DaemonClient:
@@ -1206,11 +944,18 @@ def daemon_status(context_dir: Path) -> dict[str, Any]:
         return {
             "running": True,
             "warm": bool(payload.get("warm")),
+            "state": payload.get("state") or read_state(context_dir),
             "socket": str(sock),
             "pid": _read_pidfile(context_dir),
         }
     except Exception:
-        return {"running": False, "warm": False, "socket": str(sock), "pid": None}
+        return {
+            "running": False,
+            "warm": False,
+            "state": read_state(context_dir),
+            "socket": str(sock),
+            "pid": _read_pidfile(context_dir),
+        }
 
 
 def _pidfile_path(context_dir: Path) -> Path:
@@ -1298,4 +1043,5 @@ def run_daemon_foreground(context_dir: Path, socket_path: Path, verbose: bool) -
     finally:
         daemon.stop()
         clear_pidfile(context_dir)
+        clear_state(context_dir)
     return 0

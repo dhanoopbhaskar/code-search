@@ -337,3 +337,79 @@ class PathClass(StrEnum):
             logger.error("Barrel classification failed for %s: %s", file_path, exc)
             raise RuntimeError(f"Barrel classification failed for {file_path}: {exc}") from exc
         return (row["n"] if row else 0) == 0
+
+
+_DOCS_THIRD_PARTY_SEGMENTS = frozenset(
+    {
+        "fitnesseroot",
+        "vendor",
+        "vendors",
+        "node_modules",
+        "third_party",
+        "third-party",
+        "thirdparty",
+        "samples",
+        "sample",
+        "examples",
+    }
+)
+_DOCS_GENERATED_NAMES = frozenset({"help.md", "changelog.md"})
+_DOCS_GENERATED_SEGMENTS = frozenset({"generated", "target", "build", "dist"})
+_DOCS_ROOT_NAMES = frozenset({"readme.md", "readme.rst", "readme.txt"})
+
+
+def documentation_tier(file_path: str | Path) -> str:
+    """Classify a prose file's canonicality for documentation ranking.
+
+    Args:
+        file_path: The stored file path of a documentation chunk.
+
+    Returns:
+        ``project`` for root README/docs, ``nested`` for prose under
+        ``src/main``, ``generated`` for generated help/API pages,
+        ``third_party`` for vendored/sample trees, and ``other`` otherwise.
+    """
+    parts = [part.lower() for part in Path(file_path).parts]
+    name = parts[-1] if parts else ""
+    if any(segment in _DOCS_THIRD_PARTY_SEGMENTS for segment in parts):
+        return "third_party"
+    if name in _DOCS_GENERATED_NAMES or any(
+        segment in _DOCS_GENERATED_SEGMENTS for segment in parts
+    ):
+        return "generated"
+    under_source = "src" in parts
+    if under_source:
+        return "nested"
+    if name in _DOCS_ROOT_NAMES or "docs" in parts or "doc" in parts:
+        return "project"
+    return "other"
+
+
+def config_tier(file_path: str | Path) -> str:
+    """Classify a configuration file's canonicality for config ranking.
+
+    Args:
+        file_path: The stored file path of a configuration chunk.
+
+    Returns:
+        ``primary`` for module-level ``application*``/``bootstrap*`` files and
+        module ``config/`` resources, ``test`` for ``src/test/resources``,
+        ``sample`` for sample/example/demo trees, ``generated`` for build
+        output, and ``other`` otherwise.
+    """
+    parts = [part.lower() for part in Path(file_path).parts]
+    name = parts[-1] if parts else ""
+    if any(segment in {"target", "build", "dist", "out"} for segment in parts):
+        return "generated"
+    joined = "/".join(parts)
+    if "/src/test/resources/" in f"/{joined}" or "test/resources" in joined:
+        return "test"
+    if any(segment in {"sample", "samples", "example", "examples", "demo"} for segment in parts):
+        return "sample"
+    if "/src/main/resources/" in f"/{joined}" and (
+        name.startswith(("application", "bootstrap")) or "/config/" in f"/{joined}/"
+    ):
+        return "primary"
+    if name.startswith(("application", "bootstrap")):
+        return "primary"
+    return "other"

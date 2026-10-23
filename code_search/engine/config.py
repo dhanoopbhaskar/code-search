@@ -343,6 +343,14 @@ class Settings:
     warmup_wait_s: float = field(
         default_factory=lambda: max(0.0, float(os.environ.get("CODE_SEARCH_WARMUP_WAIT_S", "5.0")))
     )
+    # How long a client waits for a freshly spawned daemon to answer ``ping``
+    # before falling back to an in-process invocation. The socket binds first,
+    # so this only covers process spawn and component wiring.
+    startup_wait_s: float = field(
+        default_factory=lambda: max(
+            0.0, float(os.environ.get("CODE_SEARCH_STARTUP_WAIT_S", "10.0"))
+        )
+    )
 
     # --- Embedding representation budget ---
     # Maximum characters of the chunk representation (enclosing-context prefix
@@ -364,6 +372,14 @@ class Settings:
     # ranked mode returns the honest no-match envelope instead of a fake top-10
     # Aligned with the ``relevance_threshold`` default so a
     # score exactly at the floor uses the low-confidence tier, never no-match.
+    abstention_coverage_min: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_ABSTENTION_COVERAGE_MIN", "0.5"))
+    )
+    abstention_separation_min: float = field(
+        default_factory=lambda: float(
+            os.environ.get("CODE_SEARCH_ABSTENTION_SEPARATION_MIN", "1.05")
+        )
+    )
     ranked_score_floor: float = field(
         default_factory=lambda: max(
             0.0,
@@ -418,6 +434,40 @@ class Settings:
     )
     docs_content_boost: float = field(
         default_factory=lambda: float(os.environ.get("CODE_SEARCH_DOCS_CONTENT_BOOST", "1.2"))
+    )
+    # Canonicality tiers inside the docs/config content axes. Project docs and
+    # primary application configuration outrank vendored, generated, sample,
+    # and test-page variants.
+    docs_project_boost: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_DOCS_PROJECT_BOOST", "1.35"))
+    )
+    docs_third_party_penalty: float = field(
+        default_factory=lambda: float(
+            os.environ.get("CODE_SEARCH_DOCS_THIRD_PARTY_PENALTY", "0.35")
+        )
+    )
+    docs_inject_boost: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_DOCS_INJECT_BOOST", "0.3"))
+    )
+    docs_generated_penalty: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_DOCS_GENERATED_PENALTY", "0.6"))
+    )
+    config_primary_boost: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_CONFIG_PRIMARY_BOOST", "1.35"))
+    )
+    config_nonprimary_penalty: float = field(
+        default_factory=lambda: float(
+            os.environ.get("CODE_SEARCH_CONFIG_NONPRIMARY_PENALTY", "0.7")
+        )
+    )
+    minified_penalty: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_MINIFIED_PENALTY", "0.2"))
+    )
+    vendor_penalty: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_VENDOR_PENALTY", "0.5"))
+    )
+    module_cohesion_boost: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_MODULE_COHESION_BOOST", "1.15"))
     )
     non_code_language_demote: float = field(
         default_factory=lambda: float(os.environ.get("CODE_SEARCH_NON_CODE_LANGUAGE_DEMOTE", "0.7"))
@@ -683,6 +733,11 @@ class Settings:
     lock_timeout: float = field(
         default_factory=lambda: float(os.environ.get("CODE_SEARCH_LOCK_TIMEOUT", "30.0"))
     )
+    index_graph: bool = field(
+        default_factory=lambda: (
+            os.environ.get("CODE_SEARCH_INDEX_GRAPH", "true").lower() in ("true", "1", "yes")
+        )
+    )
     max_chunk_lines: int = field(
         default_factory=lambda: int(os.environ.get("CODE_SEARCH_MAX_CHUNK_LINES", "100"))
     )
@@ -695,11 +750,33 @@ class Settings:
         default_factory=lambda: float(os.environ.get("CODE_SEARCH_WATCH_POLL_INTERVAL", "1.0"))
     )
 
+    # --- Runtime profile ---
+    # ``standard`` is today's behaviour and the compiled default. ``small``
+    # selects the compact layout and deferred freshness.
+    runtime_profile: str = field(
+        default_factory=lambda: os.environ.get("CODE_SEARCH_RUNTIME_PROFILE", "standard")
+    )
+    # Empty values mean "derive from runtime_profile"; an explicit environment
+    # variable (or CLI flag) always wins over the preset.
+    index_layout: str = field(
+        default_factory=lambda: os.environ.get("CODE_SEARCH_INDEX_LAYOUT", "")
+    )
+    freshness_mode: str = field(
+        default_factory=lambda: os.environ.get("CODE_SEARCH_FRESHNESS_MODE", "")
+    )
+
+    # Largest file accepted by the indexer. Oversized generated bundles and
+    # vendored minified assets are skipped rather than indexed; exhaustive
+    # search only sees indexed files, so the skip is visible in index stats.
+    max_file_bytes: int = field(
+        default_factory=lambda: int(os.environ.get("CODE_SEARCH_MAX_FILE_BYTES", "1000000"))
+    )
+
     # --- Index freshness ---
     # How long a computed freshness signal is cached before the next query
     # recomputes it. ``0`` disables the cache and recomputes on every query.
     freshness_ttl_seconds: float = field(
-        default_factory=lambda: float(os.environ.get("CODE_SEARCH_FRESHNESS_TTL_SECONDS", "5.0"))
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_FRESHNESS_TTL_SECONDS", "60.0"))
     )
 
     # --- Graph fidelity ---
@@ -1153,6 +1230,8 @@ class Settings:
         for name, lower, upper in (
             ("relevance_threshold", 0.0, 1.0),
             ("ranked_score_floor", 0.0, 1.0),
+            ("abstention_coverage_min", 0.0, 1.0),
+            ("abstention_separation_min", 0.0, float("inf")),
             ("alpha_symbol", 0.0, 1.0),
             ("alpha_nl", 0.0, 1.0),
             ("dts_penalty", _MIN_PENALTY, 1.0),
@@ -1182,6 +1261,15 @@ class Settings:
             ("infra_deboost_relaxed", _MIN_PENALTY, 1.0),
             ("config_content_boost", 0.0, float("inf")),
             ("docs_content_boost", 0.0, float("inf")),
+            ("docs_project_boost", 0.0, float("inf")),
+            ("docs_inject_boost", 0.0, float("inf")),
+            ("docs_third_party_penalty", _MIN_PENALTY, 1.0),
+            ("docs_generated_penalty", _MIN_PENALTY, 1.0),
+            ("config_primary_boost", 0.0, float("inf")),
+            ("config_nonprimary_penalty", _MIN_PENALTY, 1.0),
+            ("module_cohesion_boost", 0.0, float("inf")),
+            ("minified_penalty", _MIN_PENALTY, 1.0),
+            ("vendor_penalty", _MIN_PENALTY, 1.0),
             ("non_code_language_demote", _MIN_PENALTY, 1.0),
             ("find_related_same_file_penalty", _MIN_PENALTY, 1.0),
             ("find_related_weight_package", 0.0, 1.0),
@@ -1235,6 +1323,18 @@ class Settings:
         if self.exhaustive_matching_mode not in ("all_tokens", "any_token", "literal"):
             object.__setattr__(self, "exhaustive_matching_mode", "all_tokens")
 
+        # Resolve the runtime profile presets. Individual environment
+        # variables (and CLI flag replacements) still win over the profile.
+        if self.runtime_profile not in ("standard", "small"):
+            object.__setattr__(self, "runtime_profile", "standard")
+        preset_small = self.runtime_profile == "small"
+        if self.index_layout not in ("legacy", "compact"):
+            object.__setattr__(self, "index_layout", "compact" if preset_small else "legacy")
+        if self.freshness_mode not in ("blocking", "deferred"):
+            object.__setattr__(self, "freshness_mode", "deferred" if preset_small else "blocking")
+        if self.max_file_bytes < 1:
+            object.__setattr__(self, "max_file_bytes", 1)
+
         # Validate find-related semantic weights sum to 1.0
         weight_sum = (
             self.find_related_weight_package
@@ -1254,6 +1354,27 @@ class Settings:
                 "find_related_weight_call_graph",
                 self.find_related_weight_call_graph / weight_sum,
             )
+
+    def profile_reason(self) -> str:
+        """Explain how the effective layout and freshness mode were chosen.
+
+        Returns:
+            A short human-readable explanation naming the profile and any
+            explicit overrides, suitable for ``code-search stats``.
+        """
+        parts = [f"profile={self.runtime_profile}"]
+        for name, env in (
+            ("layout", "CODE_SEARCH_INDEX_LAYOUT"),
+            ("freshness", "CODE_SEARCH_FRESHNESS_MODE"),
+        ):
+            if os.environ.get(env):
+                parts.append(f"{name}=explicit ({env})")
+        if len(parts) == 1:
+            if self.runtime_profile == "small":
+                parts.append("layout=compact freshness=deferred from small preset")
+            else:
+                parts.append("layout=legacy freshness=blocking from standard preset")
+        return "; ".join(parts)
 
     @classmethod
     def from_env(cls) -> Settings:

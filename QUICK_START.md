@@ -33,8 +33,7 @@ pip install dist/code_search-*.whl
 If you need to build the wheel first, install the `build` package and run
 `make build`.
 
-For extra language grammars (Go, Rust, Ruby, Swift, Kotlin, PHP, TOML), add the
-`lang` extra:
+For extra language grammars (Rust, Ruby, Swift, PHP), add the `lang` extra:
 
 ```bash
 pip install "dist/code_search-0.1.0-py3-none-any.whl[lang]"
@@ -680,6 +679,64 @@ The default (`include_tests=false`) removes test files from the result set, so a
 - Don't use `code` scope for config-shaped queries — use `--content config` or `--content all` instead
 
 ---
+
+## Runtime profiles and output controls
+
+`standard` is the default: legacy index layout and blocking freshness. `small`
+enables the compact layout and deferred freshness. Existing indexes are never
+migrated implicitly.
+
+```bash
+# Write a compact index for a small/medium repository
+code-search index --runtime-profile small --index-layout compact --path .
+
+# Search-only index without call-graph edges
+code-search index --no-graph --force --path .
+code-search graph SomeSymbol --explain-unresolved   # explains missing callers
+```
+
+Per-query overrides mirror the environment variables:
+
+```bash
+code-search search "validate token" \
+  --freshness-mode deferred \
+  --paths-only --pretty --allow-weak --wait-for-warm 30
+```
+
+`--paths-only` returns only `file_path`, line range, the short symbol name, and
+classification fields. `--max-snippet-lines 0` omits content entirely;
+`--pretty` restores indented JSON. `--allow-weak` bypasses the extra
+abstention gate. `--no-daemon` (formerly `--no-startup-check`) serves one
+invocation in-process.
+
+`code-search stats --format json` reports the effective profile, layout,
+freshness mode, index age, and per-store sizes. `code-search start`,
+`code-search status`, and `code-search doctor` are one-word aliases for the
+daemon lifecycle and a combined index/model/daemon diagnosis. `daemon wait
+--timeout 30` waits for the model to become warm.
+
+## Evaluation harness
+
+The utility harness reproduces the cold/warm retrieval benchmark on a local
+corpus. It is never part of CI: when the corpus is absent it prints `SKIP` and
+exits successfully.
+
+```bash
+# Index once, then run cold and warm passes and write JSONL
+make eval-utility REPO=~/git/baeldung-tutorials
+
+# Equivalent direct invocation
+python tests/evaluation/tool_utility_eval.py \
+  --repo ~/git/baeldung-tutorials --json-out /tmp/utility.jsonl
+
+# Attribute a warm query's cost to functions and SQLite statements
+python tests/evaluation/query_profile.py --repo ~/git/baeldung-tutorials \
+  --query ExponentialBackoffRetryFactory --no-model
+```
+
+`CODE_SEARCH_EVAL_REPO` sets the default corpus. The JSONL records rank,
+hit@1/3/5/10, abstention, latency, output bytes, `ranked_path`, `model_status`,
+`warmup_state`, scope, and engine `query_time_ms` per case.
 
 ## Configuration
 

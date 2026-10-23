@@ -241,7 +241,13 @@ class TestSearchUserAuthJWT:
         # once the embedding model is warm, although redaction itself is applied
         # whenever the chunk is returned.
         result = _run_cs(
-            ["search", "user authentication JWT token secret", "--json", "--limit", "10"],
+            [
+                "search",
+                "application.properties JWT secret configuration",
+                "--json",
+                "--limit",
+                "10",
+            ],
             cwd=repo_path,
         )
         assert result.returncode == 0

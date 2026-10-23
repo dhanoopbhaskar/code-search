@@ -15,7 +15,35 @@ from code_search.engine.config import Settings
 from code_search.engine.freshness import FreshnessChecker
 
 
-def _build_env(tmp_path: Path, ttl: float = 0.0) -> dict[str, Any]:
+def _git_init_commit(repo: Path) -> None:
+    """Initialise a Git repository at *repo* and commit its current files."""
+    import subprocess
+
+    commands = (
+        ["git", "-C", str(repo), "init", "-q"],
+        ["git", "-C", str(repo), "add", "-A"],
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+    )
+    for command in commands:
+        subprocess.run(command, check=True, capture_output=True, text=True)
+
+
+def _build_env(
+    tmp_path: Path, ttl: float = 0.0, git: bool = False, **settings_kwargs: Any
+) -> dict[str, Any]:
     from code_search.context import ContextManager
     from code_search.engine.audit import AuditDatabase
     from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
@@ -30,9 +58,11 @@ def _build_env(tmp_path: Path, ttl: float = 0.0) -> dict[str, Any]:
     (repo / "src" / "mod.py").write_text("def foo(): return 1\n")
     (repo / "src" / "bar.py").write_text("def bar(): return 2\n")
     (repo / "src" / "baz.py").write_text("def baz(): return 3\n")
+    if git:
+        _git_init_commit(repo)
 
     context_dir = repo / ".context"
-    settings = Settings(context_dir=context_dir, freshness_ttl_seconds=ttl)
+    settings = Settings(context_dir=context_dir, freshness_ttl_seconds=ttl, **settings_kwargs)
     ctx = ContextManager(settings)
     ctx.ensure()
     paths = ctx.paths
@@ -173,6 +203,28 @@ def test_new_file_detected(tmp_path: Path) -> None:
     assert signal["new_files"] >= 1
 
 
+def test_new_untracked_file_detected_in_git_repo(tmp_path: Path) -> None:
+    """An untracked file is new even when HEAD matches the indexed commit."""
+    env = _build_env(tmp_path, git=True)
+    env["checker"].mark_clean()
+    (env["repo"] / "src" / "qux.py").write_text("def qux(): return 4\n")
+
+    signal = env["checker"].signal()
+    assert signal["stale"] is True
+    assert signal["new_files"] >= 1
+
+
+def test_new_file_detected_in_non_git_directory(tmp_path: Path) -> None:
+    """The same signal works without Git when the cache was seeded clean."""
+    env = _build_env(tmp_path)
+    env["checker"].mark_clean()
+    (env["repo"] / "src" / "qux.py").write_text("def qux(): return 4\n")
+
+    signal = env["checker"].signal()
+    assert signal["stale"] is True
+    assert signal["new_files"] >= 1
+
+
 def test_ttl_cache_hit_returns_cached_signal(tmp_path: Path) -> None:
     env = _build_env(tmp_path, ttl=60.0)
     first = env["checker"].signal()
@@ -229,3 +281,27 @@ def test_missing_stat_baseline_self_heals(tmp_path: Path) -> None:
     st = (env["repo"] / "src" / "mod.py").stat()
     assert row["size"] == st.st_size
     assert row["file_mtime_ns"] == st.st_mtime_ns
+
+
+def test_deferred_mode_never_blocks_on_scan(tmp_path: Path) -> None:
+    """A deferred check returns the cached signal immediately and refreshes."""
+    import time
+
+    env = _build_env(tmp_path, ttl=0.0, freshness_mode="deferred")
+    env["checker"].mark_clean()
+    (tmp_path / "repo" / "src" / "mod.py").write_text("def foo(): return 99\n")
+
+    started = time.monotonic()
+    first = env["checker"].signal()
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.1
+    assert first["refreshing"] is True
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        refreshed = env["checker"].signal()
+        if not refreshed["refreshing"]:
+            break
+        time.sleep(0.02)
+    assert refreshed["stale"] is True
+    assert refreshed["stale_change_count"] >= 1

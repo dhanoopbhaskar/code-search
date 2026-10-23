@@ -1103,3 +1103,54 @@ def test_typescript_duplicate_fqns_are_qualified(
     symbols = extractor.extract_symbols(source_file, source_file.read_bytes())
     fqns = [s["fqn"] for s in symbols]
     assert len(fqns) == len(set(fqns)), f"FQNs must be unique: {fqns}"
+
+
+def test_extract_go_type_declarations(extractor: SymbolExtractor, tmp_path: Path) -> None:
+    """Go structs, interfaces, methods, and aliases become symbols."""
+    source_file = tmp_path / "types.go"
+    source_file.write_text(
+        "package main\n"
+        "\n"
+        "type Greeter struct { Name string }\n"
+        "\n"
+        "type Speaker interface { Speak() string }\n"
+        "\n"
+        "type ID = string\n"
+        "\n"
+        'func (g Greeter) Greet() string { return "hi" }\n'
+    )
+
+    symbols = extractor.extract_symbols(source_file, source_file.read_bytes())
+    by_name = {s["name"]: s for s in symbols}
+
+    assert by_name["Greeter"]["kind"] == "class"
+    assert by_name["Speaker"]["kind"] == "interface"
+    assert by_name["Speak"]["kind"] == "method"
+    assert by_name["Speak"]["parent_fqn"] == by_name["Speaker"]["fqn"]
+    assert by_name["ID"]["kind"] == "type_alias"
+    assert by_name["Greet"]["kind"] == "method"
+
+
+def test_extract_kotlin_objects_and_properties(extractor: SymbolExtractor, tmp_path: Path) -> None:
+    """Kotlin objects, interface declarations, and properties become symbols."""
+    source_file = tmp_path / "Types.kt"
+    source_file.write_text(
+        "package demo\n"
+        "\n"
+        "interface Speaker { fun speak(): String }\n"
+        "\n"
+        "object Singleton {\n"
+        "    val count = 1\n"
+        "    fun hello() {}\n"
+        "}\n"
+    )
+
+    symbols = extractor.extract_symbols(source_file, source_file.read_bytes())
+    by_name = {s["name"]: s for s in symbols}
+
+    assert by_name["Speaker"]["kind"] == "interface"
+    assert by_name["Singleton"]["kind"] == "class"
+    assert by_name["count"]["kind"] == "field"
+    assert by_name["count"]["parent_fqn"] == by_name["Singleton"]["fqn"]
+    assert by_name["hello"]["kind"] == "method"
+    assert by_name["hello"]["parent_fqn"] == by_name["Singleton"]["fqn"]

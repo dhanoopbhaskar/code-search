@@ -15,6 +15,7 @@ import posixpath
 import re
 import sqlite3
 import time
+from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from datetime import UTC, datetime
@@ -776,6 +777,20 @@ class IndexOrchestrator:
             )
             if not include_tests:
                 all_files = [f for f in all_files if not _is_test_file(f)]
+            max_bytes = max(1, self._settings.max_file_bytes)
+            oversized: list[Path] = []
+            within_limits: list[Path] = []
+            for candidate in all_files:
+                try:
+                    if candidate.stat().st_size > max_bytes:
+                        oversized.append(candidate)
+                        continue
+                except OSError:
+                    continue
+                within_limits.append(candidate)
+            all_files = within_limits
+            if oversized:
+                logger.info("Skipping %d files larger than %d bytes", len(oversized), max_bytes)
 
             if not incremental:
                 self._vector_index.clear()
@@ -1038,7 +1053,7 @@ class IndexOrchestrator:
                                 )
                             else:
                                 unresolved_edges.append(edge)
-                        if resolved_edges:
+                        if resolved_edges and self._settings.index_graph:
                             self._edge_store.insert_edges_batch(resolved_edges, conn=wconn)
 
                         rationale_rows: list[dict[str, Any]] = []
@@ -1047,7 +1062,7 @@ class IndexOrchestrator:
                             if symbol_id is None:
                                 continue
                             rationale_rows.append({**item, "symbol_id": symbol_id})
-                        if rationale_rows:
+                        if rationale_rows and self._settings.index_graph:
                             self._rationale_store.insert_batch(rationale_rows, conn=wconn)
 
                         for chunk in chunks:
@@ -1173,10 +1188,10 @@ class IndexOrchestrator:
                                 continue
                             edge_dict["recursive"] = True
                         batch_edges.append(edge_dict)
-                    if batch_edges:
+                    if batch_edges and self._settings.index_graph:
                         self._edge_store.insert_edges_batch(batch_edges)
 
-            if import_edges:
+            if import_edges and self._settings.index_graph:
                 try:
                     self._persist_module_edges(Path(root_path), import_edges)
                 except Exception as exc:
@@ -1222,9 +1237,14 @@ class IndexOrchestrator:
                                 embedding,
                                 {"file_path": file_path, "fqn": fqn, "content_type": content_type},
                             )
-                            if self._settings.index_doc_links and content_type in (
-                                "docs",
-                                "config",
+                            if (
+                                self._settings.index_graph
+                                and self._settings.index_doc_links
+                                and content_type
+                                in (
+                                    "docs",
+                                    "config",
+                                )
                             ):
                                 doc_embeddings.append((chunk_id, file_path, embedding))
                     if progress_callback is not None:
@@ -1273,6 +1293,14 @@ class IndexOrchestrator:
             fts_count = self._ensure_fts_parity()
             self._metadata.set_fts_chunks(fts_count)
 
+            if status_callback is not None:
+                status_callback("Persisting corpus statistics")
+            try:
+                corpus_chunks = self._rebuild_corpus_stats()
+                self._metadata.set_int("corpus_chunk_count", corpus_chunks)
+            except Exception as exc:
+                logger.warning("Corpus statistics rebuild failed: %s", exc)
+
             # Post-index edge validation sweep: remove spurious self-edges,
             # same-name mis-resolutions, and out-of-range
             # attachments while preserving genuine recursive self-calls.
@@ -1301,6 +1329,9 @@ class IndexOrchestrator:
                 self._metadata.set_json("resource_extensions", list(res_exts) if res_exts else [])
                 self._metadata.set("has_resource_files", str(has_resource_files).lower())
             self._metadata.set("index_root", str(root_path.resolve()))
+            self._metadata.set("index_layout", self._settings.index_layout)
+            self._metadata.set_int("skipped_large_files", len(oversized))
+            self._metadata.set("graph_indexed", str(self._settings.index_graph).lower())
             self._metadata.set("index_include_tests", str(include_tests).lower())
             self._metadata.set("index_include_resources", str(include_resources).lower())
             self._metadata.set_json("index_resource_extensions", list(res_exts) if res_exts else [])
@@ -1309,6 +1340,9 @@ class IndexOrchestrator:
             )
             self._metadata.set("index_prose", str(self._settings.index_prose).lower())
             self._metadata.set_index_status("ready")
+            if status_callback is not None:
+                status_callback("Optimizing index storage")
+            self._db.run_post_index_maintenance(full_rebuild=not incremental)
             self._metadata.set(
                 "search_modes_enabled",
                 ",".join(
@@ -1426,13 +1460,28 @@ class IndexOrchestrator:
         content_type = (
             chunk.get("content_type") or classify_content_type(chunk.get("file_path", "")).value
         )
+        is_test = 1 if _is_test_file(chunk.get("file_path", "")) else 0
         if conn is not None:
             return self._insert_chunk_row(
-                conn, chunk, content, subwords, declared_rules, tokens_hash, content_type
+                conn,
+                chunk,
+                content,
+                subwords,
+                declared_rules,
+                tokens_hash,
+                content_type,
+                is_test,
             )
         with self._db.write_transaction() as owned:
             return self._insert_chunk_row(
-                owned, chunk, content, subwords, declared_rules, tokens_hash, content_type
+                owned,
+                chunk,
+                content,
+                subwords,
+                declared_rules,
+                tokens_hash,
+                content_type,
+                is_test,
             )
 
     def _insert_chunk_row(
@@ -1444,6 +1493,7 @@ class IndexOrchestrator:
         declared_rules: str,
         tokens_hash: str,
         content_type: str,
+        is_test: int = 0,
     ) -> int | None:
         """Upsert one ``code_chunks`` row over *conn* and return its row id."""
         try:
@@ -1452,8 +1502,8 @@ class IndexOrchestrator:
                 "(fqn, file_path, line_start, line_end, "
                 "content, language, is_definition, chunk_type, "
                 "chunk_node_type, subwords, declared_rules, tokens_checksum, "
-                "content_type) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                "content_type, is_test) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
                 (
                     chunk.get("fqn", ""),
                     chunk["file_path"],
@@ -1468,6 +1518,7 @@ class IndexOrchestrator:
                     declared_rules,
                     tokens_hash,
                     content_type,
+                    is_test,
                 ),
             )
             # chunks_fts is kept in sync by the FTS5 maintenance triggers; a
@@ -1513,6 +1564,38 @@ class IndexOrchestrator:
             conn.execute("DELETE FROM file_checksums WHERE file_path = ?;", (file_path,))
             removed = len(chunk_ids) + len(sym_ids)
         return removed
+
+    def _rebuild_corpus_stats(self) -> int:
+        """Rebuild the persisted sub-word and prefix document frequencies.
+
+        A full scan runs once per index build, never per query. Each token and
+        3-character prefix is counted per ``(language, chunk)`` pair so a
+        language-scoped lookup reads only the rows it needs.
+
+        Returns:
+            The number of chunks counted.
+        """
+        subword_counts: Counter[tuple[str, str]] = Counter()
+        prefix_counts: Counter[tuple[str, str]] = Counter()
+        with self._db.write_transaction() as conn:
+            conn.execute("DELETE FROM subword_stats;")
+            conn.execute("DELETE FROM prefix_stats;")
+            rows = conn.execute("SELECT language, subwords FROM code_chunks;").fetchall()
+            for row in rows:
+                language = row["language"] or "unknown"
+                tokens = set((row["subwords"] or "").split())
+                prefixes = {token[:3] for token in tokens if len(token) >= 3}
+                subword_counts.update((token, language) for token in tokens)
+                prefix_counts.update((prefix, language) for prefix in prefixes)
+            conn.executemany(
+                "INSERT INTO subword_stats (token, language, doc_count) VALUES (?, ?, ?);",
+                [(token, language, count) for (token, language), count in subword_counts.items()],
+            )
+            conn.executemany(
+                "INSERT INTO prefix_stats (prefix, language, doc_count) VALUES (?, ?, ?);",
+                [(prefix, language, count) for (prefix, language), count in prefix_counts.items()],
+            )
+        return len(rows)
 
     def _sweep_stale_files(self, root_path: Path) -> int:
         """Prune rows for files that no longer exist or now fall under exclusions."""

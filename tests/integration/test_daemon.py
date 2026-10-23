@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import threading
 import time
@@ -17,6 +18,7 @@ from typing import Any
 import pytest
 
 from code_search.engine.daemon import (
+    _MAX_UNIX_SOCKET_PATH,
     DaemonClient,
     QueryDaemon,
     default_socket_path,
@@ -204,7 +206,15 @@ def test_daemon_status_running(daemon_env: dict[str, Any]) -> None:
 
 
 def test_default_socket_path_under_context(tmp_path: Path) -> None:
-    assert str(default_socket_path(tmp_path)) == str(tmp_path / "code-search.sock")
+    """The default socket sits under the context dir unless that path is too long."""
+    socket_path = default_socket_path(tmp_path)
+    conventional = tmp_path / "code-search.sock"
+    assert socket_path == default_socket_path(tmp_path), "socket path must be deterministic"
+    assert len(os.fsencode(socket_path)) <= _MAX_UNIX_SOCKET_PATH
+    if len(os.fsencode(conventional)) <= _MAX_UNIX_SOCKET_PATH:
+        assert socket_path == conventional
+    else:
+        assert socket_path.name.startswith("code-search-")
 
 
 def test_daemon_implementations_action(indexed_implementations: dict[str, Any]) -> None:

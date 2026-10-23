@@ -79,8 +79,12 @@ class ContextManager:
         for name, rel_path in self.SUB_DATABASES.items():
             self._paths[name] = context_dir / rel_path
 
-        self._paths["vectors_bin"] = context_dir / "vectors.bin"
-        self._paths["vectors_meta"] = context_dir / "vectors.meta.json"
+        if self._settings.index_layout == "compact":
+            self._paths["vectors_bin"] = context_dir / "vectors.v2.bin"
+            self._paths["vectors_meta"] = context_dir / "vectors.v2.meta"
+        else:
+            self._paths["vectors_bin"] = context_dir / "vectors.bin"
+            self._paths["vectors_meta"] = context_dir / "vectors.meta.json"
         self._paths["lock"] = context_dir / "index.lock"
 
         logger.debug("Context directory ensured at %s", context_dir)

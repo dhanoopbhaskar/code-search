@@ -72,6 +72,7 @@ def _indexed_components(
     vector_index = VectorIndex(
         paths.get("vectors_bin", context_dir / "vectors.bin"),
         paths.get("vectors_meta", context_dir / "vectors.meta.json"),
+        compact=settings.index_layout == "compact",
     )
     vector_index.load()
 
@@ -470,6 +471,7 @@ def indexed_trust_defects(trust_defects_repo: Path) -> dict[str, Any]:
     vector_index = VectorIndex(
         paths.get("vectors_bin", context_dir / "vectors.bin"),
         paths.get("vectors_meta", context_dir / "vectors.meta.json"),
+        compact=settings.index_layout == "compact",
     )
     vector_index.load()
 
@@ -560,6 +562,7 @@ def quality_defects_components(quality_defects_repo: Path) -> dict[str, Any]:
     vector_index = VectorIndex(
         paths.get("vectors_bin", context_dir / "vectors.bin"),
         paths.get("vectors_meta", context_dir / "vectors.meta.json"),
+        compact=settings.index_layout == "compact",
     )
     vector_index.load()
 
@@ -639,6 +642,7 @@ def scratch_index_components(scratch_java_repo: Path) -> dict[str, Any]:
     vector_index = VectorIndex(
         paths.get("vectors_bin", context_dir / "vectors.bin"),
         paths.get("vectors_meta", context_dir / "vectors.meta.json"),
+        compact=settings.index_layout == "compact",
     )
     vector_index.load()
 

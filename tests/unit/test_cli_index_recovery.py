@@ -55,7 +55,11 @@ def _components(context_dir: Path) -> tuple[dict[str, Any], Mock, Mock]:
 
 def _patch(monkeypatch: pytest.MonkeyPatch, comps: dict[str, Any]) -> None:
     """Replace component wiring and model-profile validation."""
-    monkeypatch.setattr(main, "_initialize_components", lambda _: comps)
+
+    def _components_for(_context: Path, **_kwargs: Any) -> dict[str, Any]:
+        return comps
+
+    monkeypatch.setattr(main, "_initialize_components", _components_for)
     monkeypatch.setattr(main, "_check_model_profile", lambda _: None)
 
 

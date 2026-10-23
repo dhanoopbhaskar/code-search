@@ -54,6 +54,25 @@ pipx install --force "git+https://github.com/dhanoopbhaskar/code-search"
 
 ## Quick Start
 
+### When to use code-search vs grep
+
+Use `code-search` when you do not know the exact identifier yet, when you need
+ranked definitions rather than every textual occurrence, or when the question is
+structural ("who calls this", "what implements this interface"). Use `grep`/`rg`
+when you already know the literal string, need an exact mechanical inventory, or
+want line-oriented enumeration. Inside code-search, `--mode exhaustive --regex`
+covers that exact-enumeration case without leaving the tool.
+
+### Recommended warm invocation
+
+```bash
+code-search start                                  # once per machine/session
+code-search search "<query>" --json --paths-only   # discovery
+code-search search "<regex>" --mode exhaustive --regex  # enumeration
+code-search symbol <Fqn>                           # definitions
+code-search graph <Fqn> --explain-unresolved       # structural answers
+```
+
 ### Index a codebase
 
 ```bash
