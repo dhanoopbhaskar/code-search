@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -294,6 +295,87 @@ def test_vector_index_clear(tmp_path: Path) -> None:
     idx.add(1, np.ones(EMBEDDING_DIM, dtype=np.float32), {"file_path": "f1.py"})
     idx.clear()
     assert idx.size == 0
+
+
+def test_compact_sidecar_roundtrip_filters_without_path_lookup(tmp_path: Path) -> None:
+    bin_path = tmp_path / "vectors.v2.bin"
+    meta_path = tmp_path / "vectors.v2.meta"
+    idx = VectorIndex(bin_path, meta_path, compact=True)
+    idx.add(
+        1,
+        np.array([1.0, 0.0] + [0.0] * (EMBEDDING_DIM - 2), dtype=np.float32),
+        {"file_path": "a.py", "content_type": "code"},
+    )
+    idx.add(
+        2,
+        np.array([1.0, 0.0] + [0.0] * (EMBEDDING_DIM - 2), dtype=np.float32),
+        {"file_path": "b.md", "content_type": "docs"},
+    )
+    idx.save()
+
+    assert meta_path.read_bytes().startswith(b"CSVMETA1")
+    files_text = (tmp_path / "vectors.v2.meta.files").read_text().splitlines()
+    assert [json.loads(line) for line in files_text] == ["a.py", "b.md"]
+
+    loaded = VectorIndex(bin_path, meta_path, compact=True)
+    loaded.load()
+
+    def _no_sql(_chunk_id: int) -> str | None:
+        raise AssertionError("compact search must not resolve paths through SQL")
+
+    loaded.set_path_lookup(_no_sql)
+    query = np.array([1.0, 0.0] + [0.0] * (EMBEDDING_DIM - 2), dtype=np.float32)
+    assert [cid for cid, _ in loaded.search(query, top_k=5, exclude_file_paths={"a.py"})] == [2]
+    assert [cid for cid, _ in loaded.search(query, top_k=5, content="docs")] == [2]
+    assert [cid for cid, _ in loaded.search(query, top_k=5, content="code_focused")] == [1]
+
+
+def test_compact_sidecar_appends_incremental_rows_only(tmp_path: Path) -> None:
+    bin_path = tmp_path / "vectors.v2.bin"
+    meta_path = tmp_path / "vectors.v2.meta"
+    files_path = tmp_path / "vectors.v2.meta.files"
+    idx = VectorIndex(bin_path, meta_path, compact=True)
+    vec = np.ones(EMBEDDING_DIM, dtype=np.float32)
+    idx.add(1, vec, {"file_path": "a.py", "content_type": "code"})
+    idx.add(2, vec, {"file_path": "b.py", "content_type": "code"})
+    idx.save()
+    meta_size = meta_path.stat().st_size
+    files_size = files_path.stat().st_size
+
+    idx.add(3, vec, {"file_path": "a.py", "content_type": "code"})
+    idx.save()
+
+    expected_row = np.dtype([("chunk_id", "<i4"), ("file_id", "<i4"), ("content_type", "<i1")])
+    assert meta_path.stat().st_size == meta_size + expected_row.itemsize
+    assert files_path.stat().st_size == files_size
+
+
+def test_compact_sidecar_migrates_legacy_json_on_save(tmp_path: Path) -> None:
+    bin_path = tmp_path / "vectors.v2.bin"
+    meta_path = tmp_path / "vectors.v2.meta"
+    legacy = {"v": 2, "chunk_id": [7], "content_type": ["config"]}
+    meta_path.write_text(json.dumps(legacy), encoding="utf-8")
+    np.ones(EMBEDDING_DIM, dtype=np.float32).tofile(bin_path)
+
+    def _per_chunk_lookup(_chunk_id: int) -> str | None:
+        raise AssertionError("legacy migration must use the bulk lookup")
+
+    idx = VectorIndex(bin_path, meta_path, compact=True)
+    idx.set_path_lookup(_per_chunk_lookup, bulk_lookup=lambda: {7: "config.yaml"})
+    idx.load()
+    assert idx.size == 1
+    query = np.ones(EMBEDDING_DIM, dtype=np.float32)
+    assert [cid for cid, _ in idx.search(query, exclude_file_paths={"other.py"})] == [7]
+
+    assert idx.remove(7) is True
+    idx.save()
+
+    assert meta_path.read_bytes().startswith(b"CSVMETA1")
+    files_text = (tmp_path / "vectors.v2.meta.files").read_text().splitlines()
+    assert [json.loads(line) for line in files_text] == ["config.yaml"]
+    reloaded = VectorIndex(bin_path, meta_path, compact=True)
+    reloaded.load()
+    assert reloaded.size == 0
 
 
 def test_is_available_returns_bool(generator: EmbeddingGenerator) -> None:

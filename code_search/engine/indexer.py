@@ -1340,6 +1340,9 @@ class IndexOrchestrator:
             )
             self._metadata.set("index_prose", str(self._settings.index_prose).lower())
             self._metadata.set_index_status("ready")
+            if status_callback is not None:
+                status_callback("Optimizing index storage")
+            self._db.run_post_index_maintenance(full_rebuild=not incremental)
             self._metadata.set(
                 "search_modes_enabled",
                 ",".join(

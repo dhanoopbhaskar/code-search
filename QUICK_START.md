@@ -682,10 +682,9 @@ The default (`include_tests=false`) removes test files from the result set, so a
 
 ## Runtime profiles and output controls
 
-`standard` is the default: legacy index layout, SQLite query path, and blocking
-freshness. `small` enables the compact layout, the in-memory-oriented preset,
-and deferred freshness; `auto` picks `small` on a new index only when the corpus
-is under both thresholds. Existing indexes are never migrated implicitly.
+`standard` is the default: legacy index layout and blocking freshness. `small`
+enables the compact layout and deferred freshness. Existing indexes are never
+migrated implicitly.
 
 ```bash
 # Write a compact index for a small/medium repository
@@ -700,7 +699,7 @@ Per-query overrides mirror the environment variables:
 
 ```bash
 code-search search "validate token" \
-  --search-backend sqlite --freshness-mode deferred \
+  --freshness-mode deferred \
   --paths-only --pretty --allow-weak --wait-for-warm 30
 ```
 
@@ -711,7 +710,7 @@ abstention gate. `--no-daemon` (formerly `--no-startup-check`) serves one
 invocation in-process.
 
 `code-search stats --format json` reports the effective profile, layout,
-backend, freshness mode, index age, and per-store sizes. `code-search start`,
+freshness mode, index age, and per-store sizes. `code-search start`,
 `code-search status`, and `code-search doctor` are one-word aliases for the
 daemon lifecycle and a combined index/model/daemon diagnosis. `daemon wait
 --timeout 30` waits for the model to become warm.

@@ -126,7 +126,15 @@ def _initialize_components(
             path_cache[chunk_id] = resolved
             return resolved
 
-        vector_index.set_path_lookup(_chunk_path)
+        def _all_chunk_paths() -> dict[int, str]:
+            try:
+                with db.connect() as conn:
+                    rows = conn.execute("SELECT id, file_path FROM code_chunks;").fetchall()
+                return {int(row["id"]): str(row["file_path"]) for row in rows}
+            except Exception:
+                return {}
+
+        vector_index.set_path_lookup(_chunk_path, bulk_lookup=_all_chunk_paths)
     if load_vectors:
         vector_index.load()
 
@@ -521,7 +529,7 @@ def _settings_for_args(args: argparse.Namespace) -> Settings:
 
     Args:
         args: Parsed arguments that may carry ``runtime_profile``,
-            ``index_layout``, ``search_backend``, or ``freshness_mode``.
+            ``index_layout``, or ``freshness_mode``.
 
     Returns:
         The environment-derived settings with any explicit flags replacing the
@@ -531,7 +539,7 @@ def _settings_for_args(args: argparse.Namespace) -> Settings:
 
     settings = Settings.with_context_dir(_resolve_context_dir(args))
     overrides: dict[str, Any] = {}
-    for attr in ("runtime_profile", "index_layout", "search_backend", "freshness_mode"):
+    for attr in ("runtime_profile", "index_layout", "freshness_mode"):
         value = getattr(args, attr, None)
         if value is not None:
             overrides[attr] = value
@@ -1751,9 +1759,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 def cmd_stats(args: argparse.Namespace) -> int:
     """Print the effective runtime profile, index layout, and disk footprint.
 
-    Reports the profile selection reason, the recorded layout/backend, index
-    age, database and vector sizes, and the largest content tables so the
-    storage experiments have a reproducible measurement surface.
+    Reports the profile selection reason, the recorded layout, index age,
+    database and vector sizes, and the largest content tables so the storage
+    experiments have a reproducible measurement surface.
 
     Args:
         args: Parsed arguments; ``format`` selects ``text`` or ``json``.
@@ -1778,6 +1786,7 @@ def cmd_stats(args: argparse.Namespace) -> int:
     vector_meta = context_dir / "vectors.v2.meta"
     if not vector_meta.is_file():
         vector_meta = context_dir / "vectors.meta.json"
+    vector_files = vector_meta.with_name(vector_meta.name + ".files")
 
     counts: dict[str, int] = {}
     try:
@@ -1793,19 +1802,16 @@ def cmd_stats(args: argparse.Namespace) -> int:
         "profile": settings.runtime_profile,
         "profile_reason": settings.profile_reason(),
         "layout": recorded_layout,
-        "backend": settings.search_backend,
         "freshness_mode": settings.freshness_mode,
         "index_status": metadata.get_index_status(),
         "index_age_s": round(age, 1) if age is not None else None,
         "graph_db_bytes": graph_path.stat().st_size if graph_path.is_file() else 0,
         "vectors_bin_bytes": vector_bin.stat().st_size if vector_bin.is_file() else 0,
-        "vectors_meta_bytes": vector_meta.stat().st_size if vector_meta.is_file() else 0,
+        "vectors_meta_bytes": (
+            (vector_meta.stat().st_size if vector_meta.is_file() else 0)
+            + (vector_files.stat().st_size if vector_files.is_file() else 0)
+        ),
         "counts": counts,
-        "thresholds": {
-            "compact_max_chunks": settings.compact_max_chunks,
-            "compact_max_index_mb": settings.compact_max_index_mb,
-            "memory_budget_mb": settings.memory_budget_mb,
-        },
     }
     payload["total_bytes"] = (
         payload["graph_db_bytes"] + payload["vectors_bin_bytes"] + payload["vectors_meta_bytes"]
@@ -1817,7 +1823,6 @@ def cmd_stats(args: argparse.Namespace) -> int:
 
     print(f"Profile:        {payload['profile']} ({payload['profile_reason']})")
     print(f"Layout:         {payload['layout']}")
-    print(f"Backend:        {payload['backend']}")
     print(f"Freshness:      {payload['freshness_mode']}")
     print(f"Index status:   {payload['index_status']}")
     if age is not None:
@@ -2787,9 +2792,9 @@ def build_parser() -> argparse.ArgumentParser:
     index_parser.add_argument("--force", action="store_true", help="Force re-index")
     index_parser.add_argument(
         "--runtime-profile",
-        choices=["standard", "small", "auto"],
+        choices=["standard", "small"],
         default=None,
-        help="Runtime preset: standard (default), small, or auto",
+        help="Runtime preset: standard (default) or small",
     )
     index_parser.add_argument(
         "--index-layout",
@@ -2854,15 +2859,9 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument("query", help="Search query")
     search_parser.add_argument(
         "--runtime-profile",
-        choices=["standard", "small", "auto"],
+        choices=["standard", "small"],
         default=None,
-        help="Runtime preset: standard (default), small, or auto",
-    )
-    search_parser.add_argument(
-        "--search-backend",
-        choices=["sqlite", "memory"],
-        default=None,
-        help="Warm query backend (default: derived from the runtime profile)",
+        help="Runtime preset: standard (default) or small",
     )
     search_parser.add_argument(
         "--freshness-mode",

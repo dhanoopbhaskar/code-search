@@ -750,12 +750,9 @@ class Settings:
         default_factory=lambda: float(os.environ.get("CODE_SEARCH_WATCH_POLL_INTERVAL", "1.0"))
     )
 
-    # --- Runtime profile and storage contract ---
+    # --- Runtime profile ---
     # ``standard`` is today's behaviour and the compiled default. ``small``
-    # selects the compact layout, in-memory query backend, and deferred
-    # freshness for repositories that fit the configured budgets. ``auto``
-    # chooses ``small`` only on ``index`` when the corpus is under both
-    # thresholds, and never migrates an existing index on ``search``.
+    # selects the compact layout and deferred freshness.
     runtime_profile: str = field(
         default_factory=lambda: os.environ.get("CODE_SEARCH_RUNTIME_PROFILE", "standard")
     )
@@ -764,20 +761,8 @@ class Settings:
     index_layout: str = field(
         default_factory=lambda: os.environ.get("CODE_SEARCH_INDEX_LAYOUT", "")
     )
-    search_backend: str = field(
-        default_factory=lambda: os.environ.get("CODE_SEARCH_SEARCH_BACKEND", "")
-    )
     freshness_mode: str = field(
         default_factory=lambda: os.environ.get("CODE_SEARCH_FRESHNESS_MODE", "")
-    )
-    compact_max_chunks: int = field(
-        default_factory=lambda: int(os.environ.get("CODE_SEARCH_COMPACT_MAX_CHUNKS", "50000"))
-    )
-    compact_max_index_mb: int = field(
-        default_factory=lambda: int(os.environ.get("CODE_SEARCH_COMPACT_MAX_INDEX_MB", "500"))
-    )
-    memory_budget_mb: int = field(
-        default_factory=lambda: int(os.environ.get("CODE_SEARCH_MEMORY_BUDGET_MB", "512"))
     )
 
     # Largest file accepted by the indexer. Oversized generated bundles and
@@ -1340,21 +1325,13 @@ class Settings:
 
         # Resolve the runtime profile presets. Individual environment
         # variables (and CLI flag replacements) still win over the profile.
-        if self.runtime_profile not in ("standard", "small", "auto"):
+        if self.runtime_profile not in ("standard", "small"):
             object.__setattr__(self, "runtime_profile", "standard")
         preset_small = self.runtime_profile == "small"
         if self.index_layout not in ("legacy", "compact"):
             object.__setattr__(self, "index_layout", "compact" if preset_small else "legacy")
-        if self.search_backend not in ("sqlite", "memory"):
-            object.__setattr__(self, "search_backend", "memory" if preset_small else "sqlite")
         if self.freshness_mode not in ("blocking", "deferred"):
             object.__setattr__(self, "freshness_mode", "deferred" if preset_small else "blocking")
-        if self.compact_max_chunks < 1:
-            object.__setattr__(self, "compact_max_chunks", 1)
-        if self.compact_max_index_mb < 1:
-            object.__setattr__(self, "compact_max_index_mb", 1)
-        if self.memory_budget_mb < 1:
-            object.__setattr__(self, "memory_budget_mb", 1)
         if self.max_file_bytes < 1:
             object.__setattr__(self, "max_file_bytes", 1)
 
@@ -1379,7 +1356,7 @@ class Settings:
             )
 
     def profile_reason(self) -> str:
-        """Explain how the effective layout, backend, and freshness were chosen.
+        """Explain how the effective layout and freshness mode were chosen.
 
         Returns:
             A short human-readable explanation naming the profile and any
@@ -1388,34 +1365,16 @@ class Settings:
         parts = [f"profile={self.runtime_profile}"]
         for name, env in (
             ("layout", "CODE_SEARCH_INDEX_LAYOUT"),
-            ("backend", "CODE_SEARCH_SEARCH_BACKEND"),
             ("freshness", "CODE_SEARCH_FRESHNESS_MODE"),
         ):
             if os.environ.get(env):
                 parts.append(f"{name}=explicit ({env})")
         if len(parts) == 1:
             if self.runtime_profile == "small":
-                parts.append("layout=compact backend=memory freshness=deferred from small preset")
-            elif self.runtime_profile == "auto":
-                parts.append("layout/backend/freshness chosen per index from auto thresholds")
+                parts.append("layout=compact freshness=deferred from small preset")
             else:
-                parts.append("layout=legacy backend=sqlite freshness=blocking from standard preset")
+                parts.append("layout=legacy freshness=blocking from standard preset")
         return "; ".join(parts)
-
-    def auto_selects_small(self, chunk_count: int, index_bytes: int) -> bool:
-        """Return whether the ``auto`` profile should select the small preset.
-
-        Args:
-            chunk_count: Number of chunks the index will contain.
-            index_bytes: Current on-disk index size in bytes.
-
-        Returns:
-            ``True`` when the corpus is under both configured thresholds.
-        """
-        return (
-            chunk_count <= self.compact_max_chunks
-            and index_bytes <= self.compact_max_index_mb * 1024 * 1024
-        )
 
     @classmethod
     def from_env(cls) -> Settings:

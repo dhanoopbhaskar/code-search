@@ -1093,6 +1093,38 @@ class GraphDatabase:
                 conn.close()
                 self._local.conn = None
 
+    def run_post_index_maintenance(self, *, full_rebuild: bool) -> None:
+        """Compact SQLite storage after a build completes.
+
+        Merges the FTS5 segments (``optimize``), refreshes planner statistics
+        (``ANALYZE``), and truncates the WAL so it cannot keep growing while
+        long-lived readers hold snapshots. ``VACUUM`` runs only after a full
+        rebuild; an incremental run adds little free space, so paying the
+        rewrite cost every time is not worthwhile.
+
+        Failures are logged rather than raised: the index is already committed
+        and usable, and maintenance is a best-effort storage optimisation.
+
+        Args:
+            full_rebuild: Whether this build replaced the whole corpus.
+        """
+        with self._write_lock:
+            conn = self._create_connection()
+            try:
+                conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('optimize');")
+                conn.execute("ANALYZE;")
+                conn.commit()
+                if full_rebuild:
+                    conn.execute("VACUUM;")
+                row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE);").fetchone()
+                if row is not None and int(row["busy"]) != 0:
+                    logger.warning("WAL checkpoint left readers active: %s", tuple(row))
+            except Exception:
+                logger.warning("Post-index maintenance failed", exc_info=True)
+            finally:
+                conn.close()
+                self._local.conn = None
+
     def fts_count(self) -> int:
         """Return the number of rows currently in ``chunks_fts``."""
         with self.connect() as conn:
