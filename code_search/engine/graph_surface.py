@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from code_search.engine.config import _is_test_file
+from code_search.engine.cypher import DEAD_CODE_CYPHER, DEAD_CODE_EDGE_TYPES
 from code_search.engine.graph import GRAPH_EDGE_TYPES, SCHEMA_VERSION, GraphDatabase
 from code_search.engine.graph_metrics import collect_graph_metrics
 from code_search.engine.paths import normalize_indexed_path
@@ -704,14 +705,7 @@ def search_symbols(
     }
 
 
-_DEAD_CODE_EDGE_TYPES: tuple[str, ...] = (
-    "CALLS",
-    "USAGE",
-    "CALL_REFERENCE",
-    "REFERENCES",
-    "IMPLEMENTS",
-    "INHERITS",
-)
+_DEAD_CODE_EDGE_TYPES: tuple[str, ...] = DEAD_CODE_EDGE_TYPES
 _DEAD_CODE_KINDS: tuple[str, ...] = ("function", "method", "constructor")
 _LOW_CONFIDENCE_TIERS: frozenset[str] = frozenset({"fallback", "ambiguous"})
 _MAX_DEAD_CODE_ROWS = 200
@@ -886,10 +880,12 @@ def find_dead_code(
         "include_entry_points": include_entry_points,
         "include_tests": include_tests,
         "index_generation": generation,
+        "canonical_query": DEAD_CODE_CYPHER,
         "note": (
             "candidates have no proven production reference in this index; "
             "absence is not proof of completeness, so verify unresolved and "
-            "dynamic call sites before changing code"
+            "dynamic call sites before changing code. canonical_query is the "
+            "equivalent Cypher query for the current schema"
         ),
     }
 

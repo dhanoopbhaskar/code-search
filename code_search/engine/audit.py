@@ -36,6 +36,7 @@ AUDIT_QUERY_TYPES = frozenset(
         "get_architecture",
         "check_index_coverage",
         "detect_changes",
+        "cypher_query",
     }
 )
 

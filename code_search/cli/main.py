@@ -2046,6 +2046,75 @@ def cmd_coverage(args: argparse.Namespace) -> int:
     return 0 if payload.get("outcome") == "resolved" else 2
 
 
+def cmd_cypher(args: argparse.Namespace) -> int:
+    """Run a read-only Cypher query over the indexed graph.
+
+    Shares the compiler, executor, and payload with the MCP ``cypher_query``
+    tool. The query is read-only, bounded by ``--limit``/``--timeout-ms``, and
+    paged with the generation-keyed cursor returned in the payload.
+
+    Args:
+        args: Parsed arguments; ``query``, ``limit``, ``offset``, ``cursor``,
+            ``timeout_ms``, and ``json`` are honoured.
+
+    Returns:
+        ``0`` when the query ran (including an empty result), ``2`` for an
+        invalid, unsupported, timed-out, or failed query, or ``1`` when the
+        index is not initialized.
+    """
+    start = time.monotonic()
+    _setup_logging(args.verbose)
+    context_dir = _resolve_context_dir(args)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args), load_vectors=False
+    )
+    settings = comps["settings"]
+    if comps["metadata"].get_index_status() != "ready":
+        print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
+        return 1
+
+    graph_missing = _graph_not_indexed_message(comps)
+    if graph_missing is not None:
+        if getattr(args, "json", False):
+            print(json.dumps({"error": "graph_not_indexed", "message": graph_missing}))
+        else:
+            print(graph_missing, file=sys.stderr)
+        return 1
+
+    from code_search.engine.cypher import execute_cypher, render_cypher_text
+    from code_search.mcp.server import _freshness_signal
+
+    payload = execute_cypher(
+        comps["db"],
+        args.query,
+        limit=getattr(args, "limit", 100),
+        offset=getattr(args, "offset", 0),
+        cursor=getattr(args, "cursor", "") or "",
+        timeout_ms=getattr(args, "timeout_ms", 5000),
+    )
+    payload["index_status"] = comps["metadata"].get_index_status()
+    if getattr(args, "json", False):
+        payload["freshness"] = _freshness_signal(comps)
+        payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        print(render_cypher_text(payload))
+        _emit_stale_notice(_freshness_signal(comps))
+
+    duration_ms = int((time.monotonic() - start) * 1000)
+    comps["audit_db"].write_entry(
+        query_type="cypher_query",
+        query_summary=args.query[: settings.query_summary_length],
+        result_count=int(payload.get("row_count", 0)),
+        duration_ms=duration_ms,
+        redacted_count=0,
+    )
+    mc = comps.get("metrics_collector")
+    if mc:
+        mc.record_query(duration_ms)
+    return 0 if payload.get("outcome") in ("resolved", "no_match") else 2
+
+
 def cmd_metrics(args: argparse.Namespace) -> int:
     """Print index health and usage metrics in the requested format.
 
@@ -3635,6 +3704,23 @@ def build_parser() -> argparse.ArgumentParser:
     coverage_parser.add_argument("--max-rows", type=int, default=500, help="Row cap (1000 max)")
     coverage_parser.add_argument("--json", action="store_true", help="JSON output")
     coverage_parser.set_defaults(func=cmd_coverage)
+
+    cypher_parser = subparsers.add_parser(
+        "cypher",
+        parents=[global_args],
+        help="Run a read-only Cypher subset query over the indexed graph",
+    )
+    cypher_parser.add_argument("query", help="Cypher query text (read-only)")
+    cypher_parser.add_argument("--limit", type=int, default=100, help="Max rows (500 max)")
+    cypher_parser.add_argument("--offset", type=int, default=0, help="Row offset")
+    cypher_parser.add_argument(
+        "--cursor", default="", help="Generation-keyed cursor from the previous page"
+    )
+    cypher_parser.add_argument(
+        "--timeout-ms", type=int, default=5000, help="Wall-clock deadline in ms (30000 max)"
+    )
+    cypher_parser.add_argument("--json", action="store_true", help="JSON output")
+    cypher_parser.set_defaults(func=cmd_cypher)
 
     metrics_parser = subparsers.add_parser("metrics", parents=[global_args], help="Query metrics")
     metrics_parser.add_argument(

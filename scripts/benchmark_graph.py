@@ -25,6 +25,7 @@ from typing import Any
 
 from code_search.context import ContextManager
 from code_search.engine.config import Settings
+from code_search.engine.cypher import DEAD_CODE_CYPHER, execute_cypher
 from code_search.engine.embeddings import EmbeddingGenerator, VectorIndex
 from code_search.engine.graph import EdgeStore, GraphDatabase, IndexMetadataStore
 from code_search.engine.graph_metrics import collect_graph_metrics
@@ -179,6 +180,27 @@ def main() -> int:
                 args.repeats,
             ),
             "architecture": _measure(lambda: service.architecture_report(top_n=15), args.repeats),
+            "cypher_count": _measure(
+                lambda: execute_cypher(db, "MATCH (f) RETURN count(*) AS n"),
+                args.repeats,
+            ),
+            "cypher_one_hop": _measure(
+                lambda: execute_cypher(
+                    db,
+                    "MATCH (a:Method)-[:CALLS]->(b:Method) RETURN count(*) AS n",
+                ),
+                args.repeats,
+            ),
+            "cypher_two_hops": _measure(
+                lambda: execute_cypher(
+                    db,
+                    "MATCH (a:Method)-[:CALLS*1..2]->(b:Method) RETURN count(*) AS n",
+                ),
+                args.repeats,
+            ),
+            "cypher_dead_code": _measure(
+                lambda: execute_cypher(db, DEAD_CODE_CYPHER), args.repeats
+            ),
         },
     }
     print(json.dumps(report, indent=2, default=str))

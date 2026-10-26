@@ -17,6 +17,7 @@ Registers these tools:
   - ``get_architecture`` — bounded architecture aspects.
   - ``check_index_coverage`` — distinguish "not found" from "not indexed".
   - ``detect_changes`` — git/explicit changes → files, impact, or tests.
+  - ``cypher_query`` — read-only Cypher subset for multi-hop/aggregate questions.
 """
 
 from __future__ import annotations
@@ -296,7 +297,8 @@ class MCPServer:
     ``get_call_neighbors``, ``get_implementations``, ``find_related``,
     ``query_graph``, ``shortest_path``, ``explain_symbol``, ``get_impact``,
     ``get_graph_schema``, ``get_file_outline``, ``search_symbols``,
-    ``get_architecture``, ``check_index_coverage``, and ``detect_changes``.
+    ``get_architecture``, ``check_index_coverage``, ``detect_changes``, and
+    ``cypher_query``.
     """
 
     def __init__(self, components: dict[str, Any]) -> None:
@@ -1356,6 +1358,84 @@ class MCPServer:
                 if mc:
                     mc.record_query(duration_ms)
                 return json.dumps(result, default=str)
+
+            @mcp.tool()
+            async def cypher_query(
+                query: str,
+                limit: int = 100,
+                offset: int = 0,
+                cursor: str = "",
+                timeout_ms: int = 5000,
+            ) -> str:
+                """Run a read-only Cypher subset over the indexed code graph.
+
+                Use this for precise multi-hop and aggregate questions that the
+                fixed graph tools do not cover, for example callers/callees,
+                inheritance chains, unresolved targets, and dead-code
+                predicates with ``EXISTS``.
+
+                This is not ``query_graph``: ``query_graph`` takes a
+                natural-language question and returns a bounded, search-seeded
+                neighbourhood. ``cypher_query`` takes an explicit graph query
+                and returns tabular rows.
+
+                Supported: ``MATCH``/``OPTIONAL MATCH``, ``WHERE``, ``WITH``,
+                ``UNWIND``, ``RETURN``, ``ORDER BY``/``SKIP``/``LIMIT``,
+                ``DISTINCT``, ``UNION``, ``CASE``, labelled nodes, directed
+                relationships, ``[*1..5]`` paths, inline property maps,
+                ``EXISTS { ... }``, aggregates (``count``/``sum``/``avg``/
+                ``min``/``max``/``collect``), and string/scalar functions.
+                Labels: ``Function``, ``Method``, ``Class``, ``Interface``,
+                ``Enum``, ``Constructor``, ``Field``, ``Variable``, ``Import``,
+                ``TypeAlias``, plus synthetic ``File``, ``Module``,
+                ``Unresolved``, and structural ``CONTAINS`` edges. A
+                ``UNION`` applies the final ``RETURN``'s ``ORDER BY``/``LIMIT``.
+
+                The statement is read-only, parameterized, and bounded by
+                ``limit``, ``timeout_ms``, and a byte cap. Page with the
+                ``next_cursor`` value; a cursor is valid only for the same index
+                generation and query text. An empty result is not proof that
+                the code is absent — check ``check_index_coverage``.
+
+                Args:
+                    query: Cypher query text.
+                    limit: Maximum rows returned (clipped to 500).
+                    offset: Row offset; ignored when ``cursor`` is set.
+                    cursor: Cursor from the previous page (generation-keyed).
+                    timeout_ms: Wall-clock deadline (clipped to 1..30000).
+
+                Returns:
+                    A JSON payload with ``columns``, ``rows``, paging,
+                    generation, digest, timing, and a trust note. Invalid or
+                    unsupported syntax returns ``outcome: invalid_argument``
+                    with an ``error_kind`` and a message; an expired deadline
+                    returns ``outcome: timeout``.
+                """
+                start = time.monotonic()
+                from code_search.engine.cypher import execute_cypher
+
+                payload = execute_cypher(
+                    comps["db"],
+                    query,
+                    limit=limit,
+                    offset=offset,
+                    cursor=cursor,
+                    timeout_ms=timeout_ms,
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["index_status"] = comps["metadata"].get_index_status()
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="cypher_query",
+                    query_summary=query[: settings.query_summary_length],
+                    result_count=int(payload.get("row_count", 0)),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
 
             @mcp.tool()
             async def find_related(

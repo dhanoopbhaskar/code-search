@@ -303,12 +303,62 @@ code-search coverage --scope src --json
 
 `schema`, `outline`, `symbols`, `dead-code`, and `coverage` have matching MCP
 tools (`get_graph_schema`, `get_file_outline`, `search_symbols`,
-`find_dead_code`, `check_index_coverage`). `get_architecture` and
-`detect_changes` complete the MCP-side discovery set. Dead-code results are
-candidates with evidence, never permission to delete code: per-row
-`incoming.unresolved_same_name` and `used_only_by_tests` show where a dynamic
-caller may keep a symbol alive. A clean coverage result means no gap was
-recorded for the current generation — not that every reference resolved.
+`find_dead_code`, `check_index_coverage`). `get_architecture`,
+`detect_changes`, and `cypher_query` complete the MCP-side discovery set.
+Dead-code results are candidates with evidence, never permission to delete
+code: per-row `incoming.unresolved_same_name` and `used_only_by_tests` show
+where a dynamic caller may keep a symbol alive. A clean coverage result means
+no gap was recorded for the current generation — not that every reference
+resolved.
+
+### Query the graph with the read-only Cypher subset
+
+The fixed graph commands cover common questions. For precise multi-hop and
+aggregate questions, `cypher` accepts a deliberately small, read-only Cypher
+subset over the same index:
+
+```bash
+code-search cypher 'MATCH (f:Function) WHERE NOT EXISTS { (f)<-[:CALLS]-(src) WHERE src.is_test = 0 } RETURN f.name, f.file_path ORDER BY f.name LIMIT 50'
+code-search cypher 'MATCH (c:Class)-[:IMPLEMENTS]->(i:Interface) RETURN i.name AS interface, count(c) AS implementations ORDER BY implementations DESC'
+code-search cypher 'MATCH (a:Function)-[:CALLS*1..3]->(b:Function) RETURN a.name AS source, b.name AS target ORDER BY source, target'
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--limit N` | `100` | Maximum rows returned (max: 500) |
+| `--offset N` | `0` | Row offset; ignored when `--cursor` is set |
+| `--cursor C` | — | Generation-keyed cursor from the previous page (`next_cursor`) |
+| `--timeout-ms N` | `5000` | Wall-clock deadline (max: 30000) |
+| `--json` | — | Structured JSON output |
+
+Supported clauses are `MATCH`, `OPTIONAL MATCH`, `WHERE`, `WITH`, `UNWIND`,
+`RETURN`, `ORDER BY`, `SKIP`, `LIMIT`, `DISTINCT`, `UNION [ALL]`, and `CASE`.
+Patterns support labelled nodes (`Function`, `Method`, `Class`, `Interface`,
+`Enum`, `Constructor`, `Field`, `Variable`, `Import`, `TypeAlias`), synthetic
+`File`, `Module`, and `Unresolved` nodes, directed relationships, inline
+property maps, and bounded `[*1..5]` paths. `CONTAINS` is a synthetic structural
+edge from `parent_symbol_id`; `IMPORTS` between `File` nodes comes from
+`module_edges`. `WHERE` supports comparisons, `AND`/`OR`/`NOT`/`XOR`, `IN`,
+`CONTAINS`, `STARTS WITH`, `ENDS WITH`, `IS [NOT] NULL`, `=~` (full match), label
+tests, and `EXISTS { ... }`. Aggregates are `count`, `sum`, `avg`, `min`, `max`,
+and `collect`; scalar functions are `labels`, `type`, `id`, `coalesce`,
+`toLower`, `toUpper`, `toString`, `size`/`length`, `substring`, `replace`, and
+`trim`.
+
+The query is read-only and parameterized: caller literals never become SQL.
+Unsupported syntax returns an explicit `unsupported ...` error instead of an
+empty result. Results are bounded by the row, byte, and time caps, and ordered
+deterministically. `MATCH (f) RETURN f` returns a JSON object for a whole node;
+`labels()` returns the single canonical label string, and
+`size()`/`length()` measure string length (use `collect` and `UNWIND` for list
+work). `find_dead_code` also reports its equivalent Cypher query as
+`canonical_query`. A `UNION` applies the final `RETURN`'s `ORDER BY`/`LIMIT`.
+`OPTIONAL MATCH ... WHERE`, `WITH *`, `$parameters`, aggregates in `UNWIND`, and
+variable-length paths inside `OPTIONAL MATCH` or `EXISTS` are intentionally
+unsupported. The `=~` operator is a Python regular expression (full match,
+capped at 500 characters); Python's regex engine cannot be interrupted by the
+SQLite deadline, so keep patterns simple. Empty results are not proof of
+completeness: run `code-search coverage` before trusting a negative answer.
 
 ### Repeatable queries with the query daemon
 
@@ -367,7 +417,7 @@ sqlite3 .context/audit.db \
    FROM audit_log_entries ORDER BY id DESC LIMIT 20;"
 ```
 
-Filter by query type (`search`, `get_symbol_definition`, `get_call_neighbors`, `find_related`, `get_implementations`, `query_graph`, `shortest_path`, `explain_symbol`, `get_impact`, `map`, `get_graph_schema`, `get_file_outline`, `search_symbols`, `find_dead_code`, `get_architecture`, `check_index_coverage`, `detect_changes`):
+Filter by query type (`search`, `get_symbol_definition`, `get_call_neighbors`, `find_related`, `get_implementations`, `query_graph`, `shortest_path`, `explain_symbol`, `get_impact`, `map`, `get_graph_schema`, `get_file_outline`, `search_symbols`, `find_dead_code`, `get_architecture`, `check_index_coverage`, `detect_changes`, `cypher_query`):
 
 ```bash
 sqlite3 .context/audit.db \

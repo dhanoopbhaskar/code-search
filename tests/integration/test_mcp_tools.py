@@ -838,6 +838,7 @@ async def test_mcp_all_tools_work(mcp_components: dict[str, Any], indexed_repo: 
         "get_architecture",
         "check_index_coverage",
         "detect_changes",
+        "cypher_query",
     }
 
     for tool_name, args in [
@@ -852,6 +853,10 @@ async def test_mcp_all_tools_work(mcp_components: dict[str, Any], indexed_repo: 
         (
             "get_impact",
             {"changed_paths": [str(indexed_repo / "src" / "auth.py")], "depth": 2},
+        ),
+        (
+            "cypher_query",
+            {"query": "MATCH (f:Function) RETURN f.name AS name ORDER BY name LIMIT 3"},
         ),
     ]:
         result = await mcp.call_tool(tool_name, args)

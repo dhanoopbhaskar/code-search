@@ -27,6 +27,7 @@ _NEW_TOOLS = {
     "get_architecture",
     "check_index_coverage",
     "detect_changes",
+    "cypher_query",
 }
 _EXISTING_TOOLS = {
     "search",
@@ -115,6 +116,12 @@ def test_new_tool_schemas_and_defaults(real_mcp: FastMCP) -> None:
     assert changes["fixpoint"]["default"] is False
     assert changes["seed_filter"]["default"] == "all"
 
+    cypher = tools["cypher_query"].parameters["properties"]
+    assert cypher["limit"]["default"] == 100
+    assert cypher["offset"]["default"] == 0
+    assert cypher["cursor"]["default"] == ""
+    assert cypher["timeout_ms"]["default"] == 5000
+
     # Parity additions on pre-existing tools.
     assert tools["query_graph"].parameters["properties"]["direction"]["default"] == "both"
     assert (
@@ -192,6 +199,8 @@ def test_find_dead_code_real_payload(real_mcp: FastMCP) -> None:
     }
     assert "absence is not proof of completeness" in payload["note"]
     assert payload["limit"] == 50
+    assert "NOT EXISTS" in payload["canonical_query"]
+    assert "MATCH (f:Function|Method|Constructor)" in payload["canonical_query"]
 
 
 @pytest.mark.contract
@@ -235,6 +244,35 @@ def test_detect_changes_scope_files_real_payload(
     assert payload["outcome"] == "resolved"
     assert payload["changed_files"] == ["src/main/java/com/example/article/ArticleService.java"]
     assert "impacted" not in payload
+
+
+@pytest.mark.contract
+def test_cypher_query_real_payload(real_mcp: FastMCP) -> None:
+    """The Cypher tool runs a bounded read-only query and reports its contract."""
+    payload = _call(
+        real_mcp,
+        "cypher_query",
+        {
+            "query": "MATCH (f:Function) RETURN f.name AS name ORDER BY name LIMIT 3",
+        },
+    )
+
+    assert payload["outcome"] in {"resolved", "no_match"}
+    assert payload["columns"] == ["name"]
+    assert "index_generation" in payload
+    assert "query_digest" in payload
+    assert "absence is not proof of completeness" in payload["note"]
+    assert "freshness" in payload
+
+
+@pytest.mark.contract
+def test_cypher_query_unsupported_is_explicit(real_mcp: FastMCP) -> None:
+    """Unsupported syntax is a named error, never an empty success."""
+    payload = _call(real_mcp, "cypher_query", {"query": "CREATE (n:Function) RETURN n"})
+
+    assert payload["outcome"] == "invalid_argument"
+    assert payload["error_kind"] == "unsupported"
+    assert payload["error"].startswith("unsupported")
 
 
 @pytest.mark.contract
@@ -287,6 +325,13 @@ def test_cli_new_commands_emit_json(
         ],
         ["dead-code", "--context-dir", context, "--json"],
         ["coverage", "--scope", "src", "--context-dir", context, "--json"],
+        [
+            "cypher",
+            "MATCH (f:Function) RETURN count(*) AS n",
+            "--context-dir",
+            context,
+            "--json",
+        ],
         ["map", "--aspects", "overview", "--context-dir", context, "--json"],
         ["affected", article, "--scope", "files", "--context-dir", context, "--json"],
     ]
