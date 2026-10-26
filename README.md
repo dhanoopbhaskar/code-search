@@ -283,6 +283,36 @@ code-search map --output graph-report.md
 | `affected` | `--since REF`, `--base-branch REF`, `--scope MODE`, `--direction DIR`, `--depth N`, `--fixpoint`, `--edge-types LIST`, `--no-imports`, `--seed-filter MODE`, `--json` | Report changed files and their blast radius, with production/test buckets and per-symbol risk labels |
 | `map` | `--output FILE`, `--top N`, `--max-communities N`, `--aspects LIST`, `--json` | Write a deterministic architecture report (god nodes, communities, import cycles); `--aspects` returns a bounded section instead |
 
+Impact results also carry `parents` (the parent FQN and edge type that first
+reached each impacted symbol) so a blast-radius answer is reproducible and
+auditable. When the in-memory adjacency snapshot is warm, affected answers
+report `summary.adjacency = "cache"`; the SQL fallback reports `"sql"`.
+
+### Graph performance and the adjacency cache
+
+`path`, `impact`, and the Cypher recursive walks read the graph through a
+process-wide, generation-keyed adjacency snapshot. The snapshot is a compact
+CSR copy of resolved symbol edges, built with one sequential scan and keyed by
+`(database path, index_generation)`. A reindex changes the generation, and any
+committed write drops the entry eagerly, so a query never serves an edge the
+index no longer has.
+
+The cache is bounded and best-effort: it defaults to
+`min(256 MB, 25% of available memory)`, refuses a snapshot that would exceed
+the budget, expires idle entries, and falls back to the SQL path on any build
+failure. `CODE_SEARCH_GRAPH_CACHE_MAX_BYTES=0` or
+`CODE_SEARCH_GRAPH_CACHE_ENABLED=false` disables it.
+
+Measure the current index (or a generated graph) with:
+
+```bash
+.venv/bin/python scripts/benchmark_graph.py --repo test-repo --context test-repo/.context --reuse
+.venv/bin/python scripts/benchmark_graph.py --synthetic-symbols 100000 --synthetic-fanout 4
+```
+
+The report includes `path_6_hops`, `path_6_hops_sql`, `impact_depth_3`,
+`impact_depth_3_sql`, Cypher baselines, and the cache's size/hit/build counters.
+
 ### Graph discovery and coverage
 
 ```bash
@@ -625,4 +655,10 @@ The install script detects the `deps/` directory and uses `pip --no-index --find
 | `CODE_SEARCH_SESSION_TTL_HOURS` | `24` | Session entry TTL in hours |
 | `CODE_SEARCH_RRF_K` | `60` | RRF ranking constant |
 | `CODE_SEARCH_MAX_RESULTS` | `50` | Maximum results per search |
+| `CODE_SEARCH_GRAPH_CACHE_ENABLED` | `true` | Enable the generation-keyed in-memory adjacency cache |
+| `CODE_SEARCH_GRAPH_CACHE_MAX_BYTES` | `min(256 MB, 25% RAM)` | Cache byte budget; `0` disables the cache and forces the SQL path |
+| `CODE_SEARCH_GRAPH_CACHE_IDLE_SECONDS` | `900` | Drop snapshots unused for this long; `0` disables idle expiry |
+| `CODE_SEARCH_SQLITE_CACHE_KIB` | `65536` | Per-connection SQLite page cache in KiB; `0` keeps SQLite's default |
+| `CODE_SEARCH_SQLITE_MMAP_BYTES` | `268435456` | SQLite memory-mapped I/O window; `0` disables memory mapping |
+| `CODE_SEARCH_SQLITE_TEMP_STORE_MEMORY` | `true` | Keep temporary SQLite tables in memory |
 

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from code_search.engine.config import Settings
+from code_search.engine.graph_cache import invalidate_adjacency_cache
 from code_search.engine.symbol_resolution import (
     parse_reference,
     resolve_reference,
@@ -132,8 +133,6 @@ CREATE TABLE IF NOT EXISTS graph_edges (
 """
 
 GRAPH_EDGES_INDEXES = [
-    "CREATE INDEX IF NOT EXISTS idx_edges_source ON graph_edges(source_symbol_id);",
-    "CREATE INDEX IF NOT EXISTS idx_edges_target ON graph_edges(target_symbol_id);",
     "CREATE INDEX IF NOT EXISTS idx_edges_type ON graph_edges(edge_type);",
     "CREATE INDEX IF NOT EXISTS idx_edges_source_type ON graph_edges(source_symbol_id, edge_type);",
     "CREATE INDEX IF NOT EXISTS idx_edges_target_type ON graph_edges(target_symbol_id, edge_type);",
@@ -759,6 +758,11 @@ class GraphDatabase:
         only the durability of the last in-flight transaction is traded away,
         which is acceptable for a rebuildable index.
 
+        The connection also receives the graph workload's pragmas: a bounded
+        page cache, a memory-mapped read window, in-memory temporary tables,
+        and a busy timeout. All are configurable so a constrained deployment
+        can lower the memory footprint.
+
         Returns:
             A configured ``sqlite3.Connection`` usable from any thread
             (``check_same_thread=False``).
@@ -767,8 +771,20 @@ class GraphDatabase:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
+        conn.execute(f"PRAGMA busy_timeout = {int(self._settings.lock_timeout * 1000)};")
+        if self._settings.sqlite_cache_kib > 0:
+            conn.execute(f"PRAGMA cache_size = -{int(self._settings.sqlite_cache_kib)};")
+        if self._settings.sqlite_mmap_bytes > 0:
+            conn.execute(f"PRAGMA mmap_size = {int(self._settings.sqlite_mmap_bytes)};")
+        if self._settings.sqlite_temp_store_memory:
+            conn.execute("PRAGMA temp_store = MEMORY;")
         conn.row_factory = sqlite3.Row
         return conn
+
+    @property
+    def db_path(self) -> Path:
+        """Return the database file path (the adjacency-cache key component)."""
+        return self._db_path
 
     def initialize(self) -> None:
         """Create all tables, indexes, and triggers; record or validate schema version."""
@@ -878,10 +894,25 @@ class GraphDatabase:
                         )
                 self._ensure_unresolved_edge_index(conn)
                 self._ensure_v18_indexes(conn)
+                self._drop_redundant_edge_indexes(conn)
                 conn.commit()
             finally:
                 conn.close()
             self._local.conn = None
+            invalidate_adjacency_cache(self._db_path)
+
+    def _drop_redundant_edge_indexes(self, conn: sqlite3.Connection) -> None:
+        """Drop edge indexes whose columns are a prefix of a composite index.
+
+        ``idx_edges_source`` is covered by ``idx_edges_source_type`` (and by
+        the unique ``(source_symbol_id, target_symbol_id, edge_type)`` index),
+        and ``idx_edges_target`` is covered by ``idx_edges_target_type``.
+        Keeping the single-column indexes only adds write amplification and
+        disk use. Queries that used to name them now name the composite index
+        explicitly, so the planner does not fall back to a table scan.
+        """
+        for name in ("idx_edges_source", "idx_edges_target"):
+            conn.execute(f"DROP INDEX IF EXISTS {name};")
 
     @contextmanager
     def connect(self) -> Generator[sqlite3.Connection, Any, None]:
@@ -908,6 +939,7 @@ class GraphDatabase:
             try:
                 yield conn
                 conn.commit()
+                invalidate_adjacency_cache(self._db_path)
             except Exception:
                 conn.rollback()
                 raise
@@ -935,6 +967,7 @@ class GraphDatabase:
             try:
                 yield conn
                 conn.commit()
+                invalidate_adjacency_cache(self._db_path)
             except Exception:
                 conn.rollback()
                 raise

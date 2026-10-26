@@ -1447,12 +1447,22 @@ class _Compiler:
             placeholders = ", ".join(self._param(edge_type) for edge_type in types)
             type_clause = f" AND e.edge_type IN ({placeholders})"
         seed_where = self._label_clause(start_pattern, "nodes")
-        if not seed_where:
-            seed_where = " WHERE nodes.label NOT IN ('File', 'Module', 'Unresolved')"
+        seed_conditions: list[str] = []
+        if seed_where:
+            seed_conditions.append(seed_where.removeprefix(" WHERE "))
+        else:
+            seed_conditions.append("nodes.label NOT IN ('File', 'Module', 'Unresolved')")
+        # Anchor the recursive CTE on the start pattern's inline properties.
+        # Without this the CTE walks from every node of the label and the outer
+        # join discards the unreachable rows afterwards; on a 100k-symbol index
+        # a name-filtered two-hop query paid for all 100k seeds.
+        for key, value in start_pattern.props:
+            seed_conditions.append(self._node_property_condition("nodes", key, value))
+        seed_where = " WHERE " + " AND ".join(seed_conditions)
         if rel.direction == "out":
             recursive = (
                 f"SELECT {path_cte}.start, e.target_symbol_id, {path_cte}.hops + 1 "
-                f"FROM {path_cte} JOIN graph_edges e INDEXED BY idx_edges_source "
+                f"FROM {path_cte} JOIN graph_edges e INDEXED BY idx_edges_source_type "
                 f"ON e.source_symbol_id = {path_cte}.node "
                 f"AND e.target_symbol_id IS NOT NULL "
                 f"WHERE {path_cte}.hops < {upper}{type_clause}"
@@ -1460,19 +1470,19 @@ class _Compiler:
         elif rel.direction == "in":
             recursive = (
                 f"SELECT {path_cte}.start, e.source_symbol_id, {path_cte}.hops + 1 "
-                f"FROM {path_cte} JOIN graph_edges e INDEXED BY idx_edges_target "
+                f"FROM {path_cte} JOIN graph_edges e INDEXED BY idx_edges_target_type "
                 f"ON e.target_symbol_id = {path_cte}.node "
                 f"WHERE {path_cte}.hops < {upper}{type_clause}"
             )
         else:
             recursive = (
                 f"SELECT {path_cte}.start, e.target_symbol_id, {path_cte}.hops + 1 "
-                f"FROM {path_cte} JOIN graph_edges e INDEXED BY idx_edges_source "
+                f"FROM {path_cte} JOIN graph_edges e INDEXED BY idx_edges_source_type "
                 f"ON e.source_symbol_id = {path_cte}.node "
                 f"AND e.target_symbol_id IS NOT NULL "
                 f"WHERE {path_cte}.hops < {upper}{type_clause} "
                 f"UNION SELECT {path_cte}.start, e.source_symbol_id, {path_cte}.hops + 1 "
-                f"FROM {path_cte} JOIN graph_edges e INDEXED BY idx_edges_target "
+                f"FROM {path_cte} JOIN graph_edges e INDEXED BY idx_edges_target_type "
                 f"ON e.target_symbol_id = {path_cte}.node "
                 f"WHERE {path_cte}.hops < {upper}{type_clause}"
             )
@@ -1580,9 +1590,9 @@ class _Compiler:
         if direct:
             edge_table = "graph_edges"
             if rel.direction == "out":
-                edge_table += f" {edge_alias} INDEXED BY idx_edges_source"
+                edge_table += f" {edge_alias} INDEXED BY idx_edges_source_type"
             elif rel.direction == "in":
-                edge_table += f" {edge_alias} INDEXED BY idx_edges_target"
+                edge_table += f" {edge_alias} INDEXED BY idx_edges_target_type"
             else:
                 edge_table += f" {edge_alias}"
         else:

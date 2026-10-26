@@ -37,6 +37,11 @@ from code_search.engine.graph import (
     RationaleStore,
     read_source_slice,
 )
+from code_search.engine.graph_cache import (
+    CachedSymbol,
+    GraphSnapshot,
+    adjacency_snapshot,
+)
 from code_search.engine.query_terms import morphological_variants
 from code_search.engine.symbols import SymbolStore
 
@@ -277,6 +282,7 @@ class GraphNode:
     signature: str | None = None
     docstring: str | None = None
     reason: str | None = None
+    symbol_id: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable node payload."""
@@ -426,11 +432,12 @@ class ImpactAnswer:
     files: list[str] = field(default_factory=list)
     production_files: list[str] = field(default_factory=list)
     test_files: list[str] = field(default_factory=list)
-    summary: dict[str, int] = field(default_factory=dict)
+    summary: dict[str, Any] = field(default_factory=dict)
     test_symbols: list[GraphNode] = field(default_factory=list)
     production_symbols: list[GraphNode] = field(default_factory=list)
     risks: dict[str, str] = field(default_factory=dict)
     risk_summary: dict[str, int] = field(default_factory=dict)
+    parents: dict[str, dict[str, str]] = field(default_factory=dict)
     direction: str = "inbound"
     via: list[str] = field(default_factory=list)
     fixpoint: bool = False
@@ -449,6 +456,7 @@ class ImpactAnswer:
             "production_symbols": [n.as_dict() for n in self.production_symbols],
             "risks": self.risks,
             "risk_summary": self.risk_summary,
+            "parents": self.parents,
             "direction": self.direction,
             "via": self.via,
             "fixpoint": self.fixpoint,
@@ -857,6 +865,7 @@ class GraphQueryService:
     @staticmethod
     def _node_from_symbol(symbol: dict[str, Any]) -> GraphNode:
         """Shape a symbol row into a graph node."""
+        symbol_id = symbol.get("id")
         return GraphNode(
             key=str(symbol.get("fqn")),
             fqn=str(symbol.get("fqn")),
@@ -868,7 +877,30 @@ class GraphQueryService:
             source="symbol",
             signature=symbol.get("signature"),
             docstring=symbol.get("docstring"),
+            symbol_id=int(symbol_id) if symbol_id is not None else None,
         )
+
+    @staticmethod
+    def _node_from_cached(symbol: CachedSymbol, distance: int = 0) -> GraphNode:
+        """Shape a cached directory entry into a graph node."""
+        return GraphNode(
+            key=symbol.fqn,
+            fqn=symbol.fqn,
+            name=symbol.name,
+            kind=symbol.kind,
+            file_path=symbol.file_path,
+            line_start=symbol.line_start,
+            line_end=symbol.line_end,
+            source="symbol",
+            distance=distance,
+            signature=symbol.conventional_fqn,
+            docstring=symbol.docstring,
+            symbol_id=symbol.id,
+        )
+
+    def _snapshot(self) -> GraphSnapshot | None:
+        """Return the current generation's adjacency snapshot, if usable."""
+        return adjacency_snapshot(self._db, self._settings)
 
     def _fetch_outgoing(
         self, node: GraphNode, edge_types: set[str], *, direction: str = "both"
@@ -1072,6 +1104,7 @@ class GraphQueryService:
                     source="symbol",
                     signature=row["conventional_fqn"],
                     docstring=row["docstring"],
+                    symbol_id=int(row["other_id"]),
                 )
                 target_key = target.key
             else:
@@ -1184,26 +1217,26 @@ class GraphQueryService:
 
         max_hops = max(1, min(max_hops, _MAX_PATH_HOPS))
         active_types = (edge_types or set(DEFAULT_EDGE_TYPES)) & VALID_EDGE_TYPES
-        adjacency = self._build_adjacency(active_types, source_sym["id"], undirected)
-        parent: dict[int, tuple[int | None, GraphEdge | None]] = {
-            int(source_sym["id"]): (None, None)
-        }
-        queue: deque[int] = deque([int(source_sym["id"])])
         target_id = int(target_sym["id"])
-        found = False
-        while queue and len(parent) < _MAX_PATH_NODES:
-            current = queue.popleft()
-            if current == target_id:
-                found = True
-                break
-            hops_from_source = self._depth_of(current, parent)
-            if hops_from_source >= max_hops:
-                continue
-            for neighbor, edge in adjacency.get(current, []):
-                if neighbor in parent:
-                    continue
-                parent[neighbor] = (current, edge)
-                queue.append(neighbor)
+        snapshot = self._snapshot()
+        if snapshot is not None:
+            parent = self._cached_path_parents(
+                snapshot,
+                int(source_sym["id"]),
+                target_id,
+                active_types,
+                undirected=undirected,
+                max_hops=max_hops,
+            )
+        else:
+            parent = self._sql_path_parents(
+                int(source_sym["id"]),
+                target_id,
+                active_types,
+                undirected=undirected,
+                max_hops=max_hops,
+            )
+        found = target_id in parent
         if not found:
             explanation = f"no path within {max_hops} hops; " + (
                 "retry with --undirected to traverse callers as well"
@@ -1219,6 +1252,7 @@ class GraphQueryService:
                 stats={
                     "visited": len(parent),
                     "max_hops": max_hops,
+                    "adjacency": "cache" if snapshot is not None else "sql",
                     "elapsed_ms": round((time.monotonic() - start) * 1000, 1),
                 },
             )
@@ -1242,22 +1276,173 @@ class GraphQueryService:
                 "visited": len(parent),
                 "hop_count": len(hops),
                 "max_hops": max_hops,
+                "adjacency": "cache" if snapshot is not None else "sql",
                 "elapsed_ms": round((time.monotonic() - start) * 1000, 1),
             },
         )
 
-    @staticmethod
-    def _depth_of(node: int, parent: dict[int, tuple[int | None, GraphEdge | None]]) -> int:
-        """Return the BFS depth recorded for *node*."""
-        depth = 0
-        cursor: int | None = node
-        while cursor is not None:
-            previous, _edge = parent.get(cursor, (None, None))
-            if previous is None:
+    def _cached_path_parents(
+        self,
+        snapshot: GraphSnapshot,
+        source_id: int,
+        target_id: int,
+        edge_types: set[str],
+        *,
+        undirected: bool,
+        max_hops: int,
+    ) -> dict[int, tuple[int | None, GraphEdge | None]]:
+        """BFS over the in-memory adjacency up to *max_hops*.
+
+        The parent map is the public path reconstruction contract: each
+        visited symbol points at the node and edge it was first reached
+        through. Neighbours are sorted with the same confidence/type/id key as
+        the SQL fallback, so both paths return the same shortest path.
+        """
+        type_codes = snapshot.type_codes(edge_types)
+        parent: dict[int, tuple[int | None, GraphEdge | None]] = {source_id: (None, None)}
+        depth: dict[int, int] = {source_id: 0}
+        queue: deque[int] = deque([source_id])
+        while queue and len(parent) < _MAX_PATH_NODES:
+            current = queue.popleft()
+            if current == target_id:
                 break
-            depth += 1
-            cursor = previous
-        return depth
+            current_depth = depth[current]
+            if current_depth >= max_hops:
+                continue
+            for neighbor, edge in self._cached_neighbors(
+                snapshot, current, type_codes, undirected=undirected
+            ):
+                if neighbor in parent:
+                    continue
+                parent[neighbor] = (current, edge)
+                depth[neighbor] = current_depth + 1
+                queue.append(neighbor)
+        return parent
+
+    def _cached_neighbors(
+        self,
+        snapshot: GraphSnapshot,
+        current: int,
+        type_codes: frozenset[int],
+        *,
+        undirected: bool,
+    ) -> list[tuple[int, GraphEdge]]:
+        """Return one deterministic hop of neighbours from the snapshot.
+
+        Outgoing edges are always traversed. With *undirected*, incoming edges
+        are traversed as well. Structural containment is always available in
+        both directions because a class owns its members rather than calling
+        them.
+        """
+        current_symbol = snapshot.symbol(current)
+        if current_symbol is None:
+            return []
+        current_fqn = current_symbol.fqn
+        neighbors: list[tuple[int, GraphEdge]] = []
+        for neighbor in snapshot.iter_out(current, type_codes):
+            other = snapshot.symbol(neighbor.symbol_id)
+            if other is None:
+                continue
+            neighbors.append(
+                (
+                    neighbor.symbol_id,
+                    GraphEdge(
+                        source=current_fqn,
+                        target=other.fqn,
+                        relation=neighbor.edge_type,
+                        confidence=resolve_confidence(neighbor.resolution_tier, True),
+                        direction="forward",
+                        resolution_tier=neighbor.resolution_tier,
+                    ),
+                )
+            )
+        if undirected:
+            for neighbor in snapshot.iter_in(current, type_codes):
+                other = snapshot.symbol(neighbor.symbol_id)
+                if other is None:
+                    continue
+                neighbors.append(
+                    (
+                        neighbor.symbol_id,
+                        GraphEdge(
+                            source=other.fqn,
+                            target=current_fqn,
+                            relation=neighbor.edge_type,
+                            confidence=resolve_confidence(neighbor.resolution_tier, True),
+                            direction="reverse",
+                            resolution_tier=neighbor.resolution_tier,
+                        ),
+                    )
+                )
+        for child_id in snapshot.children(current):
+            child = snapshot.symbol(child_id)
+            if child is None:
+                continue
+            neighbors.append(
+                (
+                    child_id,
+                    GraphEdge(
+                        source=current_fqn,
+                        target=child.fqn,
+                        relation="CONTAINS",
+                        confidence="EXTRACTED",
+                        direction="forward",
+                    ),
+                )
+            )
+        parent_id = snapshot.parent(current)
+        if parent_id is not None:
+            parent_symbol = snapshot.symbol(parent_id)
+            if parent_symbol is not None:
+                neighbors.append(
+                    (
+                        parent_id,
+                        GraphEdge(
+                            source=parent_symbol.fqn,
+                            target=current_fqn,
+                            relation="CONTAINS",
+                            confidence="EXTRACTED",
+                            direction="reverse",
+                        ),
+                    )
+                )
+        neighbors.sort(
+            key=lambda pair: (
+                CONFIDENCE_ORDER[pair[1].confidence],
+                pair[1].relation,
+                pair[0],
+            )
+        )
+        return neighbors
+
+    def _sql_path_parents(
+        self,
+        source_id: int,
+        target_id: int,
+        edge_types: set[str],
+        *,
+        undirected: bool,
+        max_hops: int,
+    ) -> dict[int, tuple[int | None, GraphEdge | None]]:
+        """BFS over the SQL adjacency fallback used when no cache is available."""
+        adjacency = self._build_adjacency(edge_types, source_id, undirected)
+        parent: dict[int, tuple[int | None, GraphEdge | None]] = {source_id: (None, None)}
+        depth: dict[int, int] = {source_id: 0}
+        queue: deque[int] = deque([source_id])
+        while queue and len(parent) < _MAX_PATH_NODES:
+            current = queue.popleft()
+            if current == target_id:
+                break
+            current_depth = depth[current]
+            if current_depth >= max_hops:
+                continue
+            for neighbor, edge in adjacency.get(current, []):
+                if neighbor in parent:
+                    continue
+                parent[neighbor] = (current, edge)
+                depth[neighbor] = current_depth + 1
+                queue.append(neighbor)
+        return parent
 
     def _build_adjacency(
         self, edge_types: set[str], source_id: int, undirected: bool
@@ -1281,42 +1466,55 @@ class GraphQueryService:
                     self._append_containment(
                         adjacency, frontier, visited, conn, current, str(current_row["fqn"])
                     )
-                rows = conn.execute(
+                out_rows = conn.execute(
                     "SELECT e.source_symbol_id, e.target_symbol_id, e.edge_type, "
                     "e.resolution_tier, e.resolved, e.target_raw, "
                     "s1.fqn AS source_fqn, s2.fqn AS target_fqn "
-                    "FROM graph_edges e "
+                    "FROM graph_edges e INDEXED BY idx_edges_source_type "
                     "JOIN symbols s1 ON s1.id = e.source_symbol_id "
                     "JOIN symbols s2 ON s2.id = e.target_symbol_id "
                     f"WHERE e.edge_type IN ({placeholders}) "
-                    "AND (e.source_symbol_id = ? OR e.target_symbol_id = ?);",
-                    [*sorted(edge_types), current, current],
+                    "AND e.resolved = 1 AND e.source_symbol_id = ?;",
+                    [*sorted(edge_types), current],
                 ).fetchall()
-                for row in rows:
-                    src = int(row["source_symbol_id"])
+                for row in out_rows:
                     tgt = row["target_symbol_id"]
                     if tgt is None or not bool(row["resolved"]):
                         continue
                     tgt = int(tgt)
                     confidence = resolve_confidence(row["resolution_tier"], True)
-                    if src == current:
-                        adjacency.setdefault(current, []).append(
-                            (
-                                tgt,
-                                GraphEdge(
-                                    source=str(row["source_fqn"]),
-                                    target=str(row["target_fqn"]),
-                                    relation=str(row["edge_type"]),
-                                    confidence=confidence,
-                                    direction="forward",
-                                    resolution_tier=row["resolution_tier"],
-                                ),
-                            )
+                    adjacency.setdefault(current, []).append(
+                        (
+                            tgt,
+                            GraphEdge(
+                                source=str(row["source_fqn"]),
+                                target=str(row["target_fqn"]),
+                                relation=str(row["edge_type"]),
+                                confidence=confidence,
+                                direction="forward",
+                                resolution_tier=row["resolution_tier"],
+                            ),
                         )
-                        if tgt not in visited:
-                            visited.add(tgt)
-                            frontier.append(tgt)
-                    if undirected and tgt == current:
+                    )
+                    if tgt not in visited:
+                        visited.add(tgt)
+                        frontier.append(tgt)
+                if undirected:
+                    in_rows = conn.execute(
+                        "SELECT e.source_symbol_id, e.target_symbol_id, e.edge_type, "
+                        "e.resolution_tier, e.resolved, e.target_raw, "
+                        "s1.fqn AS source_fqn, s2.fqn AS target_fqn "
+                        "FROM graph_edges e INDEXED BY idx_edges_target_type "
+                        "JOIN symbols s1 ON s1.id = e.source_symbol_id "
+                        "JOIN symbols s2 ON s2.id = e.target_symbol_id "
+                        f"WHERE e.edge_type IN ({placeholders}) "
+                        "AND e.resolved = 1 "
+                        "AND e.target_symbol_id = ? AND e.source_symbol_id != ?;",
+                        [*sorted(edge_types), current, current],
+                    ).fetchall()
+                    for row in in_rows:
+                        src = int(row["source_symbol_id"])
+                        confidence = resolve_confidence(row["resolution_tier"], True)
                         adjacency.setdefault(current, []).append(
                             (
                                 src,
@@ -1691,10 +1889,15 @@ class GraphQueryService:
                     seed_nodes.setdefault(target.key, target)
 
         impacted: dict[str, GraphNode] = dict(seed_nodes)
+        parents: dict[str, dict[str, str]] = {}
         frontier: deque[GraphNode] = deque(seed_nodes.values())
         truncated = False
+        snapshot = self._snapshot()
+        type_codes = snapshot.type_codes(active_types) if snapshot is not None else frozenset()
         # One reader connection for the whole walk: opening a fresh connection
-        # per visited node was the N+1 cost this phase removes.
+        # per visited node would turn a deep walk into a connection storm. A
+        # warm snapshot answers the hop from memory instead of issuing even
+        # that one query.
         with self._db.connect() as conn:
             while frontier:
                 if len(impacted) >= max_nodes:
@@ -1705,26 +1908,31 @@ class GraphQueryService:
                     continue
                 if not fixpoint and node.distance >= depth:
                     continue
-                row = conn.execute(
-                    "SELECT id FROM symbols WHERE fqn = ? LIMIT 1;", (node.fqn,)
-                ).fetchone()
-                if row is None:
-                    continue
                 neighbor_edges: list[tuple[GraphEdge, GraphNode]] = []
-                if direction in ("inbound", "both"):
-                    neighbor_edges.extend(
-                        self._fetch_symbol_edges(
-                            node.key, int(row["id"]), active_types, "in", conn=conn
-                        )
+                if snapshot is not None and node.symbol_id is not None:
+                    neighbor_edges = self._cached_impact_neighbors(
+                        snapshot, node, type_codes, direction
                     )
-                if direction in ("outbound", "both"):
-                    neighbor_edges.extend(
-                        self._fetch_symbol_edges(
-                            node.key, int(row["id"]), active_types, "out", conn=conn
+                else:
+                    row = conn.execute(
+                        "SELECT id FROM symbols WHERE fqn = ? LIMIT 1;", (node.fqn,)
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    if direction in ("inbound", "both"):
+                        neighbor_edges.extend(
+                            self._fetch_symbol_edges(
+                                node.key, int(row["id"]), active_types, "in", conn=conn
+                            )
                         )
-                    )
+                    if direction in ("outbound", "both"):
+                        neighbor_edges.extend(
+                            self._fetch_symbol_edges(
+                                node.key, int(row["id"]), active_types, "out", conn=conn
+                            )
+                        )
                 seen_neighbors: set[str] = set()
-                for _edge, source_node in neighbor_edges:
+                for edge, source_node in neighbor_edges:
                     if source_node.source == "external" or source_node.key in impacted:
                         continue
                     if source_node.key in seen_neighbors:
@@ -1742,8 +1950,13 @@ class GraphQueryService:
                         distance=node.distance + 1,
                         signature=source_node.signature,
                         docstring=source_node.docstring,
+                        symbol_id=source_node.symbol_id,
                     )
                     impacted[source_node.key] = source_node
+                    parents[source_node.key] = {
+                        "parent": node.key,
+                        "relation": edge.relation,
+                    }
                     if source_node.source == "symbol":
                         frontier.append(source_node)
 
@@ -1789,6 +2002,7 @@ class GraphQueryService:
             production_symbols=production_symbols,
             risks=risks,
             risk_summary=risk_summary,
+            parents=parents,
             direction=direction,
             via=sorted(active_types),
             fixpoint=fixpoint,
@@ -1805,8 +2019,70 @@ class GraphQueryService:
                 "high_risk": risk_summary["high"],
                 "medium_risk": risk_summary["medium"],
                 "low_risk": risk_summary["low"],
+                "adjacency": "cache" if snapshot is not None else "sql",
             },
         )
+
+    def _cached_impact_neighbors(
+        self,
+        snapshot: GraphSnapshot,
+        node: GraphNode,
+        type_codes: frozenset[int],
+        direction: str,
+    ) -> list[tuple[GraphEdge, GraphNode]]:
+        """Return one deterministic hop of impact neighbours from the cache.
+
+        Neighbours are sorted by confidence, edge type, and FQN before the
+        caller sees them, so the first parent recorded for a node is stable
+        across runs even though the CSR stores edges in insertion order.
+        """
+        if node.symbol_id is None:
+            return []
+        neighbors: list[tuple[GraphEdge, GraphNode]] = []
+        if direction in ("inbound", "both"):
+            for neighbor in snapshot.iter_in(node.symbol_id, type_codes):
+                other = snapshot.symbol(neighbor.symbol_id)
+                if other is None:
+                    continue
+                neighbors.append(
+                    (
+                        GraphEdge(
+                            source=other.fqn,
+                            target=node.fqn,
+                            relation=neighbor.edge_type,
+                            confidence=resolve_confidence(neighbor.resolution_tier, True),
+                            direction="reverse",
+                            resolution_tier=neighbor.resolution_tier,
+                        ),
+                        self._node_from_cached(other, distance=node.distance + 1),
+                    )
+                )
+        if direction in ("outbound", "both"):
+            for neighbor in snapshot.iter_out(node.symbol_id, type_codes):
+                other = snapshot.symbol(neighbor.symbol_id)
+                if other is None:
+                    continue
+                neighbors.append(
+                    (
+                        GraphEdge(
+                            source=node.fqn,
+                            target=other.fqn,
+                            relation=neighbor.edge_type,
+                            confidence=resolve_confidence(neighbor.resolution_tier, True),
+                            direction="forward",
+                            resolution_tier=neighbor.resolution_tier,
+                        ),
+                        self._node_from_cached(other, distance=node.distance + 1),
+                    )
+                )
+        neighbors.sort(
+            key=lambda pair: (
+                CONFIDENCE_ORDER[pair[0].confidence],
+                pair[0].relation,
+                pair[1].key,
+            )
+        )
+        return neighbors
 
     @staticmethod
     def _fan_in_counts(
