@@ -151,6 +151,142 @@ def derive_tests_edges(conn: Any) -> int:
     return max(0, int(cursor.rowcount))
 
 
+def _fqn_arity(fqn: str | None) -> int | None:
+    """Return a declaration's parameter count, or ``None`` when unknown.
+
+    Mirrors the indexer's arity rule: Java/C#/Kotlin/Go/C++ declarations always
+    encode their parameter list (absence means zero), while dynamic-language
+    FQNs may omit it and must stay unknown rather than compare as zero.
+    """
+    if not fqn:
+        return None
+    if fqn.endswith(")"):
+        start = fqn.rfind("(")
+        if start != -1:
+            inner = fqn[start + 1 : -1].strip()
+            if not inner:
+                return 0
+            count = 1
+            depth = 0
+            for char in inner:
+                if char in "<[(":
+                    depth += 1
+                elif char in ">])":
+                    depth = max(0, depth - 1)
+                elif char == "," and depth == 0:
+                    count += 1
+            return count
+    return None
+
+
+def derive_interface_dispatch_edges(db: Any) -> int:
+    """Add resolved ``CALLS`` edges from an interface call site to its impls.
+
+    A receiver declared with an interface type (``provider.handle()``) resolves
+    to the interface method, so a path or impact walk never reaches the class
+    that actually handles the call. This pass closes that gap: for every
+    resolved ``CALLS`` edge whose target is a method declared on an interface,
+    it adds one edge per implementing/subclass method with the same name and a
+    compatible arity. Edges are marked ``properties.via =
+    "interface_dispatch"`` and tiered ``type_infer`` so consumers can tell a
+    derived dispatch edge from a directly resolved call.
+
+    The pass is deterministic and idempotent: prior dispatch edges are deleted
+    before the rebuild, and insertion uses ``INSERT OR IGNORE`` so an existing
+    direct edge to the implementation wins.
+
+    Args:
+        db: The graph database to update.
+
+    Returns:
+        The number of derived ``CALLS`` edges inserted.
+    """
+    with db.write_transaction() as conn:
+        conn.execute(
+            "DELETE FROM graph_edges WHERE edge_type = 'CALLS' "
+            "AND json_extract(properties, '$.via') = 'interface_dispatch';"
+        )
+        method_rows = conn.execute(
+            "SELECT e.source_symbol_id AS caller_id, e.source_range, "
+            "m.id AS method_id, m.name AS method_name, m.fqn AS method_fqn, "
+            "m.parent_symbol_id AS interface_id "
+            "FROM graph_edges e "
+            "JOIN symbols m ON m.id = e.target_symbol_id "
+            "JOIN symbols p ON p.id = m.parent_symbol_id "
+            "WHERE e.edge_type = 'CALLS' AND e.resolved = 1 "
+            "AND e.target_symbol_id IS NOT NULL AND p.kind = 'interface';"
+        ).fetchall()
+        if not method_rows:
+            return 0
+
+        subtypes: dict[int, set[int]] = {}
+        for edge in conn.execute(
+            "SELECT source_symbol_id, target_symbol_id FROM graph_edges "
+            "WHERE resolved = 1 AND target_symbol_id IS NOT NULL "
+            "AND edge_type IN ('IMPLEMENTS', 'INHERITS');"
+        ):
+            subtypes.setdefault(int(edge["target_symbol_id"]), set()).add(
+                int(edge["source_symbol_id"])
+            )
+
+        impl_methods: dict[int, list[tuple[int, str, int | None]]] = {}
+        for row in conn.execute(
+            "SELECT id, name, parent_symbol_id, fqn FROM symbols "
+            "WHERE kind IN ('method', 'constructor') AND parent_symbol_id IS NOT NULL;"
+        ):
+            impl_methods.setdefault(int(row["parent_symbol_id"]), []).append(
+                (int(row["id"]), str(row["name"]), _fqn_arity(str(row["fqn"])))
+            )
+
+        closure_cache: dict[int, set[int]] = {}
+
+        def _subtype_closure(root: int) -> set[int]:
+            cached = closure_cache.get(root)
+            if cached is not None:
+                return cached
+            seen: set[int] = {root}
+            queue = [root]
+            while queue:
+                current = queue.pop()
+                for child in sorted(subtypes.get(current, ())):
+                    if child in seen:
+                        continue
+                    seen.add(child)
+                    queue.append(child)
+            closure_cache[root] = seen
+            return seen
+
+        derived: set[tuple[int, int, str | None]] = set()
+        for row in method_rows:
+            interface_id = int(row["interface_id"])
+            method_name = str(row["method_name"])
+            expected_arity = _fqn_arity(row["method_fqn"])
+            for subtype_id in _subtype_closure(interface_id):
+                if subtype_id == interface_id:
+                    continue
+                for method_id, name, arity in impl_methods.get(subtype_id, ()):
+                    if name != method_name:
+                        continue
+                    if expected_arity is not None and arity is not None and expected_arity != arity:
+                        continue
+                    derived.add((int(row["caller_id"]), method_id, row["source_range"]))
+
+        properties = '{"derived": true, "via": "interface_dispatch"}'
+        inserted = 0
+        for caller_id, method_id, source_range in sorted(derived):
+            if caller_id == method_id:
+                continue
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO graph_edges "
+                "(source_symbol_id, target_symbol_id, edge_type, source_range, "
+                "resolution_tier, resolved, properties) "
+                "VALUES (?, ?, 'CALLS', ?, 'type_infer', 1, ?);",
+                (caller_id, method_id, source_range, properties),
+            )
+            inserted += max(0, int(cursor.rowcount))
+        return inserted
+
+
 def classify_entry_points(conn: Any, settings: Settings) -> int:
     """Store ``is_entry_point`` and ``entry_point_reason`` on every symbol.
 

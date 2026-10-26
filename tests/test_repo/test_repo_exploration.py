@@ -362,13 +362,13 @@ class TestSymbolNotFound:
 
     def test_symbol_non_existent_class(self, repo_path: Path) -> None:
         result = _run_cs(["symbol", "NonExistentClass", "--json"], cwd=repo_path)
-        assert result.returncode == 0
+        assert result.returncode == 2
         data = json.loads(result.stdout)
         assert data.get("found") is False
 
     def test_symbol_not_found_message(self, repo_path: Path) -> None:
         result = _run_cs(["symbol", "NonExistentClass"], cwd=repo_path)
-        assert result.returncode == 0
+        assert result.returncode == 2
         assert "not found" in result.stdout.lower()
 
 
@@ -426,7 +426,7 @@ class TestGraphBasic:
 
     def test_graph_not_found(self, repo_path: Path) -> None:
         result = _run_cs(["graph", "nonexistent::ghost", "--json"], cwd=repo_path)
-        assert result.returncode == 0
+        assert result.returncode == 2
         data = json.loads(result.stdout)
         assert data.get("symbol") is None, "Unknown symbol should resolve to null"
         assert data.get("callers") == []

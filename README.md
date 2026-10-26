@@ -70,6 +70,7 @@ code-search start                                  # once per machine/session
 code-search search "<query>" --json --paths-only   # discovery
 code-search search "<regex>" --mode exhaustive --regex  # enumeration
 code-search symbol <Fqn>                           # definitions
+code-search view <Fqn|file> --budget 2000          # compact outline/read
 code-search graph <Fqn> --explain-unresolved       # structural answers
 ```
 
@@ -91,7 +92,7 @@ additive. To index ignored paths anyway, set
 code-search search "how is JWT validation implemented" --limit 5
 code-search search "database connection pool settings" --content config   # config chunks only
 code-search search "how to run the dev server" --content docs             # docs chunks only
-code-search search "public Comment save" --mode exhaustive --matching literal --json
+code-search search "public Comment save" --matching literal --json
 ```
 
 `--content {code,config,docs,all,code_focused}` scopes a search to one content
@@ -142,16 +143,33 @@ envelope carries an accurate direction to include it (`--content config` or
 match set, and `enumerate` lists the definitions of a named symbol kind (for
 example "list all controllers").
 
-`--matching {literal,all_tokens,any_token}` selects the exhaustive matching
-semantics per request (default `all_tokens`): `literal` treats the whole
-query as one verbatim substring, `any_token` keeps OR semantics. Every
-exhaustive result set labels its `matching_semantics` so a count is never
-presented as an exact-phrase count.
+`--matching {literal,all_tokens,any_token}` selects exact line-wise matching
+per request: `literal` treats the whole query as one verbatim substring,
+`any_token` keeps OR semantics. Supplying `--matching` implies
+`--mode exhaustive`, so `--matching literal` alone returns the exact set and
+count; without the flag, exhaustive mode keeps its configured default
+(`all_tokens`). Every exhaustive result set labels its `matching_semantics` so
+a count is never presented as an exact-phrase count.
 
 `--regex` compiles the query as a regular expression and scans line by line;
 it requires `--mode exhaustive` and labels the result set
 `matching_semantics: "regex"`. An invalid pattern is reported as an
 `invalid_regex` explanation rather than silently returning nothing.
+
+`code-search ask "<question>"` routes one question to the right surface:
+identifiers and definition phrasing go to symbol resolution, "who calls" /
+"what does X call" to the call graph, "who implements" to implementation
+lookup, a quoted literal to exhaustive search, and everything else to ranked
+search. The reply is one compact payload with `answer_type`, an `answer`
+object, and follow-up `next` suggestions; `--budget` caps its output in tokens
+and `--strict` applies the abstention gate to ranked answers. The MCP `ask`
+tool exposes the same router.
+
+`code-search start --watch` (or `serve --watch`) starts a daemon-managed
+incremental indexer: change batches are debounced, re-indexed with the policy
+recorded at index time, and followed by a vector/cache reload. The freshness
+signal clears when the run completes, so a watching server does not report a
+stale index for the whole TTL.
 
 For repeated CLI use, run `code-search daemon start` once so a resident
 process owns the model load. `--no-startup-check` skips the transparent
@@ -177,11 +195,36 @@ results use the same hybrid ranking path as code and carry the same per-result
 also detects an out-of-band index rebuild and returns a visible "index changed
 — restart required" envelope instead of silent empty/stale results.
 
+JSON output is compact by default; add `--pretty` for indentation. `--meta
+short` (the default) collapses `freshness` to one value and omits
+`model_status`; `--meta full` keeps the diagnostic object.
+
 ### Look up a symbol
 
 ```bash
 code-search symbol "myproject.auth.jwt.validate_token"
+code-search symbol "ArticleService" --outline          # members, no class body
+code-search view "ArticleService" --budget 2000        # compact read
+code-search view src/main/java/com/example/ArticleService.java --body --max-lines 80
 ```
+
+`symbol` resolves a signature-qualified overload in one call (for example
+`OrderService.findOrderById(Long,boolean)`); fully qualified stored parameter
+types and Java primitives/boxed types match their short spellings. A genuinely
+ambiguous name exits `3`, an unknown name exits `2`, and a resolved definition
+exits `0`, so scripts can branch without parsing the payload.
+
+`view` is the compact read path: containers longer than 200 lines default to an
+outline with `source_omitted: true`; `--body` forces the source and `--outline`
+forces the member list. `--max-lines` and `--budget` bound the result.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--outline` | — | Return member declarations instead of the source body |
+| `--max-lines N` | — | Cap the returned source lines |
+| `--json` | — | Structured JSON output |
+| `--pretty` | off | Pretty-print JSON (compact by default) |
+| `--meta short\|full` | `short` | Short collapses freshness to one value and omits `model_status`; `full` preserves the diagnostic object |
 
 ### Traverse the call graph
 
@@ -192,12 +235,25 @@ code-search graph "myproject.auth.jwt.validate_token" --transitive --depth 2
 
 Each caller/callee appears once at its minimum depth. Direct-only is the
 default; add `--transitive` to expand to `--depth` (bounded by the configured
-graph depth). Pass `--direction implements` to return the static types that
-implement an interface method instead:
+graph depth). Results are paged: one bounded page per direction (default 50,
+`--limit N`) plus a `paging` object carrying the exact total and the next
+`--offset`, so a symbol with hundreds of callers does not dump the whole graph
+into an agent's context. Pass `--direction implements` to return the static
+types that implement an interface method instead:
 
 ```bash
 code-search graph "myproject.auth.ArticleRepository.findBySlug" --direction implements
 ```
+
+Receiver-qualified calls resolve through the declared field, parameter, or
+local type. Type spellings are reduced to their base name, so
+`execute(ProcessContext<Order> context)` makes `context.getPayload()` address
+`ProcessContext.getPayload` instead of the unaddressable
+`ProcessContext<Order>.getPayload`. When the declared type inherits the method,
+the nearest superclass or interface declaration is used. A call through an
+interface method additionally gets a derived `CALLS` edge to each implementing
+method (`properties.via = "interface_dispatch"`, tier `type_infer`), so path
+and impact walks reach the code that actually handles the call.
 
 ### Find interface implementations
 
@@ -268,7 +324,11 @@ a network call.
 |------|---------|-------------|
 | `--depth N` | `1` | Ego-graph depth (max: 4) |
 | `--relations LIST` | `CALLS,INHERITS` | Comma-separated relations to include (`CALLS`, `INHERITS`, `IMPLEMENTS`, `REFERENCES`, `USAGE`, `CALL_REFERENCE`, `IMPORTS`) |
+| `--budget N` | — | Approximate output-token budget; edges then nodes are trimmed |
+| `--full` | — | Emit the duplicated engine payload instead of short ids and a legend |
 | `--json` | — | Structured JSON output |
+| `--pretty` | off | Pretty-print JSON (compact by default) |
+| `--meta short\|full` | `short` | Short collapses freshness to one value |
 
 ### Impact analysis and architecture map
 
@@ -280,7 +340,7 @@ code-search map --output graph-report.md
 
 | Command | Flags | Description |
 |---|---|---|
-| `affected` | `--since REF`, `--base-branch REF`, `--scope MODE`, `--direction DIR`, `--depth N`, `--fixpoint`, `--edge-types LIST`, `--no-imports`, `--seed-filter MODE`, `--json` | Report changed files and their blast radius, with production/test buckets and per-symbol risk labels |
+| `affected` | `--since REF`, `--base-branch REF`, `--scope MODE`, `--direction DIR`, `--depth N`, `--fixpoint`, `--edge-types LIST`, `--no-imports`, `--seed-filter MODE`, `--json`, `--full`, `--pretty`, `--meta short\|full` | Report changed files and their blast radius with one canonical symbol list, production/test buckets, and per-symbol risk labels; `--full` keeps the legacy duplicated views |
 | `map` | `--output FILE`, `--top N`, `--max-communities N`, `--aspects LIST`, `--json` | Write a deterministic architecture report (god nodes, communities, import cycles); `--aspects` returns a bounded section instead |
 
 Impact results also carry `parents` (the parent FQN and edge type that first
@@ -335,6 +395,10 @@ code-search coverage --scope src --json
 tools (`get_graph_schema`, `get_file_outline`, `search_symbols`,
 `find_dead_code`, `check_index_coverage`). `get_architecture`,
 `detect_changes`, and `cypher_query` complete the MCP-side discovery set.
+`ask` routes one question to the right tool, and `doctor` reports index, model,
+daemon, and graph health. High-volume tools accept `max_output_tokens` (soft
+budget) and `profile` (`compact`/`outline`/`full`) so an agent can bound the
+reply it receives.
 Dead-code results are candidates with evidence, never permission to delete
 code: per-row `incoming.unresolved_same_name` and `used_only_by_tests` show
 where a dynamic caller may keep a symbol alive. A clean coverage result means
@@ -566,7 +630,7 @@ make check
 │   ├── cli/          # CLI entry point
 │   │   └── main.py         # code-search CLI commands
 │   ├── mcp/          # MCP protocol server
-│   │   └── server.py       # FastMCP stdio server with 15 tools
+│   │   └── server.py       # FastMCP stdio server with 19 tools
 │   └── context/      # Context directory management
 │       └── __init__.py     # .context/ directory setup
 ```

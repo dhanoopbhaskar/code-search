@@ -72,6 +72,10 @@ def test_reduced_first_query_within_budget_and_labelled(
     """The reduced first query returns under budget, labelled."""
     from code_search.engine.search import HybridSearch
 
+    # Measure the reduced path itself, not the background model load racing
+    # for the GIL. The concurrent-load gate below and the cold-start benchmark
+    # cover the real load; this gate keeps the latency assertion deterministic.
+    cold_generator["gen"].warmup_external = True
     search = HybridSearch(
         gate_components["db"],
         cold_generator["index"],

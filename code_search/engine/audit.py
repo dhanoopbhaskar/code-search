@@ -32,11 +32,14 @@ AUDIT_QUERY_TYPES = frozenset(
         "get_graph_schema",
         "get_file_outline",
         "search_symbols",
+        "view_symbol",
         "find_dead_code",
         "get_architecture",
         "check_index_coverage",
         "detect_changes",
         "cypher_query",
+        "ask",
+        "doctor",
     }
 )
 

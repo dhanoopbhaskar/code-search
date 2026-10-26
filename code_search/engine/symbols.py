@@ -104,6 +104,13 @@ _DEFINITION_NODES: set[str] = {
 # by implementation lookup instead of being silently dropped.
 _ANONYMOUS_CLASS_NODES: set[str] = {"object_creation_expression"}
 
+#: Types that a bare-name lookup may prefer over their own same-named
+#: constructor(s). Kept local to the store so search's resolution signal is not
+#: changed by this reader convenience.
+_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
+    {"class", "interface", "enum", "struct", "union", "trait", "type", "object"}
+)
+
 # Type-declaration nodes whose base clauses are read into INHERITS edges.
 _INHERITANCE_DEF_NODES: set[str] = {
     "class_definition",
@@ -182,6 +189,21 @@ def build_symbol_fqn(
     return fqn
 
 
+def _resolution_suggestion(candidate: dict[str, Any]) -> str | None:
+    """Return a fully qualified "try this" spelling for *candidate*.
+
+    ``conventional_fqn`` is the namespace-qualified form users type at the
+    CLI/MCP boundary, so it wins over the storage FQN (which embeds an
+    absolute file path). The value is only guidance; callers still apply the
+    normal resolution rules to it.
+    """
+    for key in ("conventional_fqn", "fqn"):
+        value = candidate.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 def _attach_row_signature(row: dict[str, Any]) -> dict[str, Any]:
     """Return *row* with a parsed ``signature`` object attached.
 
@@ -231,7 +253,10 @@ class SymbolExtractor:
     def extract_symbols(self, file_path: Path, source_bytes: bytes) -> list[dict[str, Any]]:
         """Return all symbol definitions found in *file_path*."""
         tree = self._parser.parse_file(file_path, source_bytes=source_bytes)
+        is_groovy = file_path.suffix.lower() in (".groovy", ".gvy")
         if tree is None:
+            if is_groovy:
+                return self._extract_groovy_symbols(file_path, source_bytes)
             return []
         root_node = tree.root_node
         package_name = self._extract_package_name(root_node, source_bytes)
@@ -239,7 +264,142 @@ class SymbolExtractor:
         self._walk_node(
             root_node, source_bytes, file_path, symbols, parent_fqn=None, package_name=package_name
         )
+        if is_groovy:
+            # The Groovy grammar does not understand Spock feature methods
+            # (``def "name"()``); it reports a parse error and drops the
+            # enclosing type, so the tree can be present yet yield fewer
+            # symbols than the source declares. Prefer the regex extractor
+            # when the tree is incomplete or empty, keeping the AST rows only
+            # when they are the richer result.
+            fallback = self._extract_groovy_symbols(file_path, source_bytes)
+            if fallback and (root_node.has_error or not symbols):
+                return fallback
         return self._deduplicate_fqns(symbols)
+
+    def _extract_groovy_symbols(self, file_path: Path, source_bytes: bytes) -> list[dict[str, Any]]:
+        """Extract Groovy types and methods without a tree-sitter grammar.
+
+        Groovy/Spock sources are common in enterprise Java repositories, but the
+        grammar is an optional dependency. This regex fallback keeps type and
+        method declarations addressable (so symbol lookup, outlines, and
+        coverage do not treat the file as unparsed). It is used when the
+        grammar is unavailable and also when the installed grammar reports a
+        parse error, because ``tree_sitter_groovy`` does not understand Spock
+        feature methods and would otherwise drop their enclosing type.
+
+        Args:
+            file_path: The Groovy source path.
+            source_bytes: The file content.
+
+        Returns:
+            Symbol rows in source order: type declarations followed by their
+            method declarations.
+        """
+        try:
+            text = source_bytes.decode("utf-8", errors="replace")
+        except Exception:
+            return []
+        package_match = re.search(r"(?m)^\s*package\s+([\w.]+)", text)
+        package_name = package_match.group(1) if package_match else None
+        lines = text.splitlines()
+        symbols: list[dict[str, Any]] = []
+        type_pattern = re.compile(
+            r"(?m)^[ \t]*(?:(?:public|private|protected|abstract|final|static|sealed)\s+)*"
+            r"(class|interface|enum|trait)\s+([A-Za-z_]\w*)"
+        )
+        method_pattern = re.compile(
+            r"(?m)^[ \t]+(?:(?:public|private|protected|static|final|synchronized|"
+            r"abstract|def|void|boolean|int|long|double|float|String|"
+            r"[A-Z]\w*(?:<[^>\n]+>)?)\s+)+"
+            r'(?:"([^"\n]+)"|([A-Za-z_]\w*))\s*\('
+        )
+        for match in type_pattern.finditer(text):
+            kind_token, name = match.group(1), match.group(2)
+            line_start = text.count("\n", 0, match.start()) + 1
+            body_end = self._groovy_block_end(text, match.end())
+            line_end = text.count("\n", 0, body_end) + 1
+            kind = {
+                "class": "class",
+                "interface": "interface",
+                "enum": "enum",
+                "trait": "trait",
+            }[kind_token]
+            fqn = build_symbol_fqn(str(file_path), None, name, None)
+            symbols.append(
+                {
+                    "fqn": fqn,
+                    "conventional_fqn": f"{package_name}.{name}" if package_name else name,
+                    "name": name,
+                    "kind": kind,
+                    "file_path": str(file_path),
+                    "line_start": line_start,
+                    "line_end": line_end,
+                    "column_start": 0,
+                    "column_end": len(lines[line_start - 1]) if line_start <= len(lines) else 0,
+                    "docstring": None,
+                    "declared_rules": None,
+                    "language": "groovy",
+                    "visibility": "public",
+                    "parent_fqn": None,
+                }
+            )
+            for method in method_pattern.finditer(text, match.end(), body_end):
+                method_name = method.group(1) or method.group(2)
+                if not method_name:
+                    continue
+                method_line = text.count("\n", 0, method.start()) + 1
+                method_fqn = build_symbol_fqn(str(file_path), fqn, method_name, None)
+                symbols.append(
+                    {
+                        "fqn": method_fqn,
+                        "conventional_fqn": (
+                            f"{package_name}.{name}.{method_name}"
+                            if package_name
+                            else f"{name}.{method_name}"
+                        ),
+                        "name": method_name,
+                        "kind": "method",
+                        "file_path": str(file_path),
+                        "line_start": method_line,
+                        "line_end": method_line,
+                        "column_start": 0,
+                        "column_end": (
+                            len(lines[method_line - 1]) if method_line <= len(lines) else 0
+                        ),
+                        "docstring": None,
+                        "declared_rules": None,
+                        "language": "groovy",
+                        "visibility": "public",
+                        "parent_fqn": fqn,
+                    }
+                )
+        return self._deduplicate_fqns(symbols)
+
+    @staticmethod
+    def _groovy_block_end(text: str, start: int) -> int:
+        """Return the offset of the brace that closes the block after *start*.
+
+        Args:
+            text: The full source text.
+            start: Offset just past the declaration header.
+
+        Returns:
+            The closing-brace offset, or the text length when the block is
+            unbalanced (the symbol then spans to end of file).
+        """
+        opening = text.find("{", start)
+        if opening == -1:
+            return min(len(text), start)
+        depth = 0
+        for index in range(opening, len(text)):
+            char = text[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return index
+        return len(text)
 
     @staticmethod
     def _deduplicate_fqns(symbols: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -875,22 +1035,13 @@ class SymbolExtractor:
         def visit(n: Any) -> None:
             try:
                 if n.type == "local_variable_declaration":
-                    type_name: str | None = None
-                    for sub in n.children:
-                        if sub.type in (
-                            "type_identifier",
-                            "scoped_type_identifier",
-                            "generic_type",
-                            "array_type",
-                            "integral_type",
-                            "floating_point_type",
-                            "boolean_type",
-                        ):
-                            type_name = ASTParser.get_node_text(sub, source_bytes)
-                            if type_name and type_name != "var":
-                                break
-                            type_name = None
-                    if type_name:
+                    # Reduce the declared spelling to its base leaf so a
+                    # generic type (``ProcessContext<Order>``) matches the
+                    # declared type symbol (``ProcessContext``) instead of
+                    # producing an unaddressable ``ProcessContext<Order>``
+                    # receiver.
+                    type_name = SymbolExtractor._declared_type_name(n, source_bytes)
+                    if type_name and type_name != "var":
                         for sub in n.children:
                             if sub.type != "variable_declarator":
                                 continue
@@ -910,6 +1061,63 @@ class SymbolExtractor:
 
         visit(node)
         return local_types
+
+    @staticmethod
+    def _collect_parameter_types(node: Any, source_bytes: bytes) -> dict[str, str]:
+        """Collect ``{parameter_name: type_simple_name}`` for a callable node.
+
+        A parameter is a typed receiver exactly like a local: in
+        ``execute(ProcessContext<Order> context)`` the body's
+        ``context.getPayload()`` can only resolve to
+        ``ProcessContext.getPayload`` when ``context``'s declared type is in
+        scope. Generic arguments are reduced to the base leaf so the receiver
+        names the indexed type symbol rather than an unaddressable
+        ``ProcessContext<Order>`` spelling.
+
+        Args:
+            node: The method/function/constructor node whose parameters are read.
+            source_bytes: Raw source bytes for text extraction.
+
+        Returns:
+            Mapping of parameter name -> declared type simple name.
+        """
+        parameter_types: dict[str, str] = {}
+
+        def visit(n: Any) -> None:
+            try:
+                if n.type in ("formal_parameters", "parameter_list", "parameters"):
+                    for param in n.named_children:
+                        if param.type not in (
+                            "formal_parameter",
+                            "parameter",
+                            "spread_parameter",
+                        ):
+                            continue
+                        type_name = SymbolExtractor._declared_type_name(param, source_bytes)
+                        if not type_name or type_name in ("var", "params"):
+                            continue
+                        name_node = param.child_by_field_name("name")
+                        if name_node is None:
+                            for sub in param.named_children:
+                                if sub.type == "identifier":
+                                    name_node = sub
+                                    break
+                        if name_node is None:
+                            continue
+                        name = ASTParser.get_node_text(name_node, source_bytes)
+                        if name:
+                            parameter_types[name] = type_name
+                    return
+            except Exception:
+                pass
+            try:
+                for child in n.children:
+                    visit(child)
+            except Exception:
+                pass
+
+        visit(node)
+        return parameter_types
 
     @staticmethod
     def _collect_ts_local_types(node: Any, source_bytes: bytes) -> dict[str, str]:
@@ -1076,8 +1284,9 @@ class SymbolExtractor:
                             class_field_types = dict(field_types or {})
                             class_field_types.update(collected)
                     # Method bodies may reference receiver-qualified calls on
-                    # local variables; fold their declared types into the scope
-                    # so ``Type helper = new Type(); helper.method()`` resolves.
+                    # parameters and local variables; fold their declared types
+                    # into the scope so ``execute(ProcessContext<Order> ctx)``
+                    # and ``Type helper = new Type(); helper.method()`` resolve.
                     if node_type in (
                         "method_declaration",
                         "method_definition",
@@ -1087,12 +1296,13 @@ class SymbolExtractor:
                         "arrow_function",
                         "lexical_declaration",
                     ):
-                        local_types = self._collect_local_var_types(node, source_bytes)
+                        scoped_types = self._collect_parameter_types(node, source_bytes)
+                        scoped_types.update(self._collect_local_var_types(node, source_bytes))
                         if self._is_javascript_like(str(file_path)):
-                            local_types.update(self._collect_ts_local_types(node, source_bytes))
-                        if local_types:
+                            scoped_types.update(self._collect_ts_local_types(node, source_bytes))
+                        if scoped_types:
                             scoped = dict(class_field_types or {})
-                            scoped.update(local_types)
+                            scoped.update(scoped_types)
                             class_field_types = scoped
                     try:
                         for child in node.children:
@@ -1866,15 +2076,31 @@ class SymbolExtractor:
         source_bytes: bytes,
         import_map: dict[str, str] | None = None,
     ) -> str | None:
-        """Resolve a Java object_creation_expression (new ClassName())."""
+        """Resolve a Java object_creation_expression (new ClassName()).
+
+        A generic instantiation (``new ProcessContextImpl<Order>()``) carries a
+        ``generic_type`` node rather than a bare ``type_identifier``; reduce it
+        to the constructed type's leaf name so the constructor call is
+        addressable too.
+        """
         try:
-            for child in node.children:
-                if child.type in ("type_identifier", "identifier", "scoped_type_identifier"):
-                    type_name = self._parser.get_node_text(child, source_bytes)
-                    if type_name:
-                        if import_map and type_name in import_map:
-                            return import_map[type_name]
-                        return type_name
+            candidates = []
+            typed = node.child_by_field_name("type")
+            if typed is not None:
+                candidates.append(typed)
+            candidates.extend(
+                child
+                for child in node.children
+                if child.type
+                in ("type_identifier", "identifier", "scoped_type_identifier", "generic_type")
+            )
+            for child in candidates:
+                raw = self._parser.get_node_text(child, source_bytes)
+                type_name = self._base_leaf_name(raw)
+                if type_name:
+                    if import_map and type_name in import_map:
+                        return import_map[type_name]
+                    return type_name
             return None
         except Exception:
             return None
@@ -2736,7 +2962,7 @@ class SymbolStore:
         """
         self._db = db
         self._settings = settings or Settings.from_env()
-        self._resolve_cache: dict[tuple[str, int | None], dict[str, Any]] = {}
+        self._resolve_cache: dict[tuple[str, int | None, bool], dict[str, Any]] = {}
 
     def invalidate_resolution_cache(self) -> None:
         """Drop cached resolution envelopes after an index mutation."""
@@ -2871,7 +3097,13 @@ class SymbolStore:
                 logger.warning("Failed to insert symbol %s: %s", sym.get("fqn"), exc)
         return result
 
-    def resolve_name(self, query: str, max_candidates: int | None = None) -> dict[str, Any]:
+    def resolve_name(
+        self,
+        query: str,
+        max_candidates: int | None = None,
+        *,
+        prefer_type: bool = False,
+    ) -> dict[str, Any]:
         """Resolve *query* to a resolution envelope (the ONE shared rule).
 
         Returns ``{"kind", "symbol", "candidates", "overloads", "ambiguous",
@@ -2906,13 +3138,18 @@ class SymbolStore:
         consumer (both MCP tools, both CLI commands) derives from this
         function so the candidate list — content and order — is identical
         everywhere.
+
+        ``prefer_type`` is a reader-only convenience: when a bare name matches
+        exactly one type declaration plus that type's own constructors, the
+        type resolves instead of reporting a false ambiguity. It defaults to
+        ``False`` so search ranking signals keep their existing behaviour.
         """
         cap = (
             max_candidates
             if max_candidates is not None
             else self._settings.max_resolution_candidates
         )
-        cache_key = (query, cap)
+        cache_key = (query, cap, prefer_type)
         cached = self._resolve_cache.get(cache_key)
         if cached is not None:
             import copy
@@ -2928,6 +3165,17 @@ class SymbolStore:
                 self._resolve_cache[cache_key] = resolved
                 return resolved
             symbol, ranked, kind = _rank_symbol_candidates(query, candidates, max_candidates=cap)
+            if prefer_type and kind == "ambiguous":
+                type_rows = [
+                    candidate
+                    for candidate in candidates
+                    if candidate.get("kind") in _TYPE_DECLARATION_KINDS
+                ]
+                if len(type_rows) == 1 and all(
+                    candidate is type_rows[0] or candidate.get("kind") == "constructor"
+                    for candidate in candidates
+                ):
+                    symbol, ranked, kind = type_rows[0], [], "exact"
             result = ResolutionResult(symbol, ranked, kind)
             envelope = self._build_envelope(result)
             envelope["outcome"] = outcome_for_kind(envelope["kind"])
@@ -2950,7 +3198,15 @@ class SymbolStore:
             return {"kind": "exact", "symbol": symbol, "candidates": []}
         if result.kind == "ambiguous":
             summaries = [_candidate_summary(c) for c in result.candidates]
-            return {"kind": "ambiguous", "symbol": None, "candidates": summaries}
+            envelope: dict[str, Any] = {
+                "kind": "ambiguous",
+                "symbol": None,
+                "candidates": summaries,
+            }
+            suggestion = _resolution_suggestion(result.candidates[0])
+            if suggestion is not None:
+                envelope["suggestion"] = "try " + suggestion
+            return envelope
         if result.kind == "suggestion":
             summaries = [_candidate_summary(c) for c in result.candidates[:10]]
             if any(c.get("edit_distance") is not None for c in summaries):

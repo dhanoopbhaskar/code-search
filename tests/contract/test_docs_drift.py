@@ -42,6 +42,7 @@ _DOCUMENTED_SUBCOMMANDS = (
     "index",
     "search",
     "symbol",
+    "view",
     "graph",
     "implementations",
     "query",

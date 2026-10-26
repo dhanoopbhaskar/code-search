@@ -122,7 +122,7 @@ def test_cli_affected_json(
     assert code == 0
     payload = json.loads(out)
     assert payload["summary"]["symbols"] > 0
-    names = {node["fqn"].rsplit("::", 1)[-1].split("(", 1)[0] for node in payload["impacted"]}
+    names = {node["fqn"].rsplit("::", 1)[-1].split("(", 1)[0] for node in payload["symbols"]}
     assert any(name.startswith("ArticleService") for name in names)
 
 

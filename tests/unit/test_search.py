@@ -2232,6 +2232,56 @@ def test_exhaustive_within_cap_is_complete(tmp_path: Path) -> None:
     assert env["complete"] is True
 
 
+def test_ripgrep_backend_matches_python_scan(tmp_path: Path) -> None:
+    """The rg fast path and the in-process fallback return the same counts."""
+    import shutil
+
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep is not installed")
+
+    hs = _exhaustive_search(tmp_path, exhaustive_max_lines=100)
+    with_rg = hs.search("token", limit=50, mode="exhaustive", matching="literal")
+
+    original = hs._ripgrep_literal
+    hs._ripgrep_literal = lambda _files, _needle: None  # type: ignore[method-assign]
+    try:
+        without_rg = hs.search("token", limit=50, mode="exhaustive", matching="literal")
+    finally:
+        hs._ripgrep_literal = original  # type: ignore[method-assign]
+
+    assert with_rg["total_count"] == without_rg["total_count"] == 12
+    assert with_rg["occurrences_per_line"] == without_rg["occurrences_per_line"]
+    assert with_rg["occurrence_line_numbers"] == without_rg["occurrence_line_numbers"]
+    assert [row["file_path"] for row in with_rg["results"]] == [
+        row["file_path"] for row in without_rg["results"]
+    ]
+    assert [row["line_number"] for row in with_rg["results"]] == [
+        row["line_number"] for row in without_rg["results"]
+    ]
+
+
+def test_ripgrep_counts_multiple_occurrences_on_one_line(tmp_path: Path) -> None:
+    """Per-line occurrence counts survive the rg backend."""
+    import shutil
+
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep is not installed")
+
+    hs = _exhaustive_search(tmp_path, exhaustive_max_lines=100)
+    repeated = tmp_path / "repeated.py"
+    repeated.write_text("token token token\ntoken\n")
+    with hs._db.write_transaction() as conn:
+        conn.execute(
+            "INSERT INTO file_checksums (file_path, checksum) VALUES (?, '');",
+            (str(repeated),),
+        )
+
+    env = hs.search("token", limit=50, mode="exhaustive", matching="literal")
+
+    assert env["total_count"] == 16  # 12 single hits + 3 + 1
+    assert env["occurrences_per_line"][-2:] == [3, 1]
+
+
 def _enumeration_db(tmp_path: Path) -> object:
     """Controlled corpus for enumerate-mode semantics."""
     from code_search.engine.config import Settings

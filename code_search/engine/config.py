@@ -1275,6 +1275,11 @@ class Settings:
             in ("true", "1", "yes")
         )
     )
+    # Per-batch wall-clock bound for the ripgrep backend. A timeout falls back
+    # to the in-process scan rather than returning a partial count.
+    exhaustive_rg_timeout_s: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_EXHAUSTIVE_RG_TIMEOUT_S", "10"))
+    )
 
     # --- Enumerate mode ---
     # "list all controllers" collects the named symbol kind across the index
@@ -1513,6 +1518,27 @@ class Settings:
                 env_dir,
             )
         return cls(context_dir=context_dir)
+
+    def with_repo_expansions(self) -> Settings:
+        """Return settings that prefer a repository's own expansion pack.
+
+        A repository can ship ``.code-search/expansions.json`` next to its
+        ``.context`` directory to add or override domain vocabulary. An
+        explicit ``CODE_SEARCH_EXPANSION_FILE`` (or constructor value) always
+        wins, so operators keep the final say.
+
+        Returns:
+            The same settings when an expansion file is already configured or
+            no repository pack exists, else a copy pointing at the pack.
+        """
+        if self.expansion_file:
+            return self
+        candidate = Path(self.context_dir).resolve().parent / ".code-search" / "expansions.json"
+        if not candidate.is_file():
+            return self
+        from dataclasses import replace
+
+        return replace(self, expansion_file=str(candidate))
 
     def resolve_context_dir(self) -> Path:
         """Return the absolute, created context directory path.

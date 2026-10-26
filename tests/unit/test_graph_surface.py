@@ -120,9 +120,15 @@ def test_file_outline_is_source_ordered_and_exact(graph_db: GraphDatabase) -> No
     assert payload["file_path"] == "src/app.py"
     assert payload["total"] == 3
     assert [entry["name"] for entry in payload["symbols"]] == ["App", "run", "main"]
-    assert payload["symbols"][1]["parent_fqn"] == "/repo/src/app.py::App"
+    assert payload["symbols"][1]["parent_name"] == "App"
+    assert "fqn" not in payload["symbols"][1]
+    assert "column_start" not in payload["symbols"][1]
     assert payload["symbols"][1]["kind"] == "method"
     assert payload["truncated"] is False
+
+    with_ids = get_file_outline(graph_db, "src/app.py", index_root=Path("/repo"), include_ids=True)
+    assert with_ids["symbols"][1]["parent_fqn"] == "/repo/src/app.py::App"
+    assert with_ids["symbols"][1]["fqn"] == "/repo/src/app.py::App.run"
 
 
 def test_file_outline_filters_kinds_and_pages(graph_db: GraphDatabase) -> None:

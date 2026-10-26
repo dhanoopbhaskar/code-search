@@ -158,6 +158,7 @@ class QueryDaemon:
         socket_path: Path,
         context_dir: Path,
         verbose: bool = False,
+        watch: bool = False,
     ) -> None:
         """Create a daemon that will serve on *socket_path*.
 
@@ -166,10 +167,14 @@ class QueryDaemon:
             context_dir: The daemon's context directory (``.context/``);
                 components are initialised lazily in ``start``.
             verbose: When true, enable debug logging on ``stderr``.
+            watch: When true, watch the indexed tree and incrementally
+                re-index changed files in the background.
         """
         self._socket_path = socket_path
         self._context_dir = context_dir
         self._verbose = verbose
+        self._watch = watch
+        self._live_index: Any | None = None
         self._server: socket.socket | None = None
         self._running = threading.Event()
         self._comps: dict[str, Any] | None = None
@@ -228,6 +233,8 @@ class QueryDaemon:
             return
         self._ready.set()
         write_state(self._context_dir, "warming")
+        if self._watch:
+            self._start_live_index(self._comps)
         try:
             begin_warmup = getattr(self._comps["embedding_gen"], "begin_warmup", None)
             if callable(begin_warmup):
@@ -239,6 +246,22 @@ class QueryDaemon:
         if self._is_warm(self._comps):
             write_state(self._context_dir, "ready")
 
+    def _start_live_index(self, comps: dict[str, Any]) -> None:
+        """Start background incremental re-indexing for watched trees.
+
+        Args:
+            comps: The daemon's initialised component registry.
+        """
+        from code_search.engine.index_service import LiveIndexUpdater
+
+        try:
+            updater = LiveIndexUpdater(comps)
+            updater.start()
+            self._live_index = updater
+            logger.info("Live index watcher started for %s", updater.root_path)
+        except Exception as exc:
+            logger.warning("Live index watcher failed to start: %s", exc)
+
     def stop(self) -> None:
         """Stop servicing requests, close the socket, and remove its path.
 
@@ -247,6 +270,10 @@ class QueryDaemon:
         file so a stale path cannot block a later ``start``.
         """
         self._running.clear()
+        if self._live_index is not None:
+            with suppress(Exception):
+                self._live_index.stop()
+            self._live_index = None
         if self._server is not None:
             with suppress(OSError):
                 self._server.shutdown(socket.SHUT_RDWR)
@@ -441,6 +468,7 @@ class QueryDaemon:
             matching=params.get("matching"),
             regex=bool(params.get("regex", False)),
             allow_weak=bool(params.get("allow_weak", False)),
+            strict=bool(params.get("strict", False)),
         )
         results = envelope["results"]
         reranked = comps["reranker"].rerank(
@@ -522,6 +550,7 @@ class QueryDaemon:
             # Reset search engine caches (symbol store, vocabularies, BM25 corpus)
             search_engine: HybridSearch = comps["search"]
             search_engine.reset_caches()
+            comps["symbol_store"].invalidate_resolution_cache()
             # Re-initialize the embedding model for the search engine
             search_engine._embedding_generator = embedding_gen
             # Mark reload as complete in detector and update metadata store
@@ -574,6 +603,22 @@ class QueryDaemon:
             payload["degraded_reason"] = envelope["degraded_reason"]
         if envelope.get("no_match") is not None:
             payload["no_match"] = envelope["no_match"]
+        if envelope.get("reliable") is not None:
+            payload["reliable"] = bool(envelope["reliable"])
+        if envelope.get("alternatives"):
+            alternatives = comps["redactor"].redact_results(envelope["alternatives"])
+            if params.get("compact", True):
+                from code_search.engine.response_service import compact_results
+
+                max_lines = params.get("max_snippet_lines")
+                alternatives = compact_results(
+                    alternatives,
+                    10 if max_lines is None else int(max_lines),
+                    paths_only=bool(params.get("paths_only", False)),
+                )
+            from code_search.engine.response_service import relativize_results
+
+            payload["alternatives"] = relativize_results(alternatives, result_root)
         if "complete" in envelope:
             payload["complete"] = bool(envelope["complete"])
         if envelope.get("excluded"):
@@ -620,7 +665,7 @@ class QueryDaemon:
         Returns:
             A success payload describing the resolution outcome.
         """
-        envelope = comps["symbol_store"].resolve_name(str(params.get("fqn", "")))
+        envelope = comps["symbol_store"].resolve_name(str(params.get("fqn", "")), prefer_type=True)
         kind = envelope["kind"]
         symbol = envelope["symbol"]
         candidates = envelope["candidates"]
@@ -630,12 +675,16 @@ class QueryDaemon:
                 "ok": True,
                 "payload": {
                     "found": True,
+                    "matched": False,
                     "ambiguous": True,
                     "outcome": envelope.get("outcome", "ambiguous"),
                     "symbol": None,
                     "parent": None,
                     "candidates": candidates,
                     "overloads": overloads,
+                    **(
+                        {"suggestion": envelope["suggestion"]} if envelope.get("suggestion") else {}
+                    ),
                     "freshness": _daemon_freshness(comps),
                 },
             }
@@ -645,6 +694,7 @@ class QueryDaemon:
                 "ok": True,
                 "payload": {
                     "found": False,
+                    "matched": False,
                     "outcome": envelope.get("outcome", "not_found"),
                     "symbol": None,
                     "candidates": candidates,
@@ -662,6 +712,7 @@ class QueryDaemon:
             "ok": True,
             "payload": {
                 "found": True,
+                "matched": True,
                 "outcome": envelope.get("outcome", "resolved"),
                 "ambiguous": bool(envelope.get("ambiguous")),
                 "overloads": overloads,
@@ -761,6 +812,13 @@ class QueryDaemon:
             payload["freshness"] = _daemon_freshness(comps)
             return {"ok": True, "payload": payload}
         depth = min(int(params.get("depth", 1)), settings.max_graph_depth)
+        requested_limit = params.get("limit")
+        limit = (
+            int(requested_limit)
+            if requested_limit is not None
+            else int(getattr(settings, "call_graph_limit", 50))
+        )
+        offset = max(0, int(params.get("offset", 0)))
         data = json.loads(
             _call_neighbors_payload(
                 comps["symbol_store"],
@@ -771,6 +829,8 @@ class QueryDaemon:
                 comps.get("freshness"),
                 bool(params.get("transitive", False)),
                 comps.get("db"),
+                limit=limit,
+                offset=offset,
             )
         )
         if data.get("symbol") is None and data.get("candidates"):
@@ -807,6 +867,7 @@ class QueryDaemon:
                 "symbol": data["symbol"],
                 "callers": data["callers"],
                 "callees": data["callees"],
+                **({"paging": data["paging"]} if data.get("paging") else {}),
                 "freshness": data.get("freshness", _daemon_freshness(comps)),
             },
         }
@@ -1031,12 +1092,21 @@ def clear_pidfile(context_dir: Path) -> None:
         _pidfile_path(context_dir).unlink()
 
 
-def run_daemon_foreground(context_dir: Path, socket_path: Path, verbose: bool) -> int:
+def run_daemon_foreground(
+    context_dir: Path, socket_path: Path, verbose: bool, watch: bool = False
+) -> int:
     """Run the daemon in the foreground (blocking); used by ``daemon start``.
 
-    Returns 0 on clean shutdown.
+    Args:
+        context_dir: The daemon's context directory.
+        socket_path: The unix-socket path to bind.
+        verbose: Enable debug logging on ``stderr``.
+        watch: Watch the indexed tree and incrementally re-index changes.
+
+    Returns:
+        0 on clean shutdown.
     """
-    daemon = QueryDaemon(socket_path, context_dir, verbose=verbose)
+    daemon = QueryDaemon(socket_path, context_dir, verbose=verbose, watch=watch)
     write_pidfile(context_dir)
     try:
         daemon.start()

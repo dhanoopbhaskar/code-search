@@ -565,7 +565,9 @@ class TestFreshnessStaleness:
         target = repo / "src" / "main.py"
         target.write_text(target.read_text() + "\n# edited after index\n")
 
-        result = _search_fresh(repo, "UserService", extra=["--json", "--limit", "3"])
+        result = _search_fresh(
+            repo, "UserService", extra=["--json", "--meta", "full", "--limit", "3"]
+        )
         assert result.returncode == 0
         data = json.loads(result.stdout.strip())
         assert data["freshness"]["stale"] is True
@@ -575,7 +577,9 @@ class TestFreshnessStaleness:
     def test_clean_index_has_no_false_warning(self, tmp_path: Path) -> None:
         repo = _indexed_freshness_repo(tmp_path)
 
-        result = _search_fresh(repo, "UserService", extra=["--json", "--limit", "3"])
+        result = _search_fresh(
+            repo, "UserService", extra=["--json", "--meta", "full", "--limit", "3"]
+        )
         assert result.returncode == 0
         data = json.loads(result.stdout.strip())
         assert data["freshness"]["stale"] is False
@@ -589,7 +593,9 @@ class TestFreshnessStaleness:
         repo = _indexed_freshness_repo(tmp_path)
         (repo / "src" / "models.py").unlink()
 
-        result = _search_fresh(repo, "UserService", extra=["--json", "--limit", "3"])
+        result = _search_fresh(
+            repo, "UserService", extra=["--json", "--meta", "full", "--limit", "3"]
+        )
         assert result.returncode == 0
         data = json.loads(result.stdout.strip())
         assert data["freshness"]["stale"] is True

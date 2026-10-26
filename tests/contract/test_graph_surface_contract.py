@@ -28,6 +28,8 @@ _NEW_TOOLS = {
     "check_index_coverage",
     "detect_changes",
     "cypher_query",
+    "ask",
+    "doctor",
 }
 _EXISTING_TOOLS = {
     "search",

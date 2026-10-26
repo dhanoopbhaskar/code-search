@@ -159,6 +159,36 @@ def test_depth_one_is_direct_and_deeper_is_indirect(dedup_comps: dict[str, Any])
     assert indirect == {"leaf"}
 
 
+@pytest.mark.integration
+@pytest.mark.slow
+def test_payload_pages_wide_fan_in_with_exact_totals(dedup_comps: dict[str, Any]) -> None:
+    """A paged payload returns one bounded span and the unpaged total."""
+    data = json.loads(
+        _call_neighbors_payload(
+            dedup_comps["symbol_store"],
+            dedup_comps["edge_store"],
+            "root",
+            "callees",
+            3,
+            None,
+            False,
+            dedup_comps["db"],
+            limit=1,
+            offset=0,
+        )
+    )
+
+    assert len(data["callees"]) == 1
+    assert data["paging"]["callees"] == {
+        "returned": 1,
+        "total": 2,
+        "limit": 1,
+        "offset": 0,
+        "has_more": True,
+        "next_offset": 1,
+    }
+
+
 def _mcp_payload(
     comps: dict[str, Any],
     symbol: str,

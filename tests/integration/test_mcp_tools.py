@@ -839,6 +839,8 @@ async def test_mcp_all_tools_work(mcp_components: dict[str, Any], indexed_repo: 
         "check_index_coverage",
         "detect_changes",
         "cypher_query",
+        "ask",
+        "doctor",
     }
 
     for tool_name, args in [
@@ -858,6 +860,8 @@ async def test_mcp_all_tools_work(mcp_components: dict[str, Any], indexed_repo: 
             "cypher_query",
             {"query": "MATCH (f:Function) RETURN f.name AS name ORDER BY name LIMIT 3"},
         ),
+        ("ask", {"question": "validate_token"}),
+        ("doctor", {}),
     ]:
         result = await mcp.call_tool(tool_name, args)
         assert not result.is_error, f"Tool {tool_name} failed"

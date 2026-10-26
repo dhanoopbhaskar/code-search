@@ -44,6 +44,7 @@ lang = [
     "tree-sitter-php>=0.21",
     "tree-sitter-cpp>=0.21",
     "tree-sitter-c-sharp>=0.21",
+    "tree-sitter-groovy>=0.1",
 ]
 prod = [
     "prometheus-client>=0.20",
@@ -82,7 +83,7 @@ python_version = "3.12"
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["tree_sitter", "tree_sitter_python", "tree_sitter_java", "tree_sitter_javascript", "tree_sitter_typescript", "tree_sitter_c_sharp", "tree_sitter_cpp", "tree_sitter_go", "tree_sitter_rust", "tree_sitter_ruby", "tree_sitter_swift", "tree_sitter_kotlin", "tree_sitter_php", "tree_sitter_bash", "tree_sitter_yaml", "tree_sitter_toml", "model2vec", "rank_bm25", "fastmcp", "watchdog", "presidio_analyzer", "numpy"]
+module = ["tree_sitter", "tree_sitter_python", "tree_sitter_java", "tree_sitter_javascript", "tree_sitter_typescript", "tree_sitter_c_sharp", "tree_sitter_cpp", "tree_sitter_go", "tree_sitter_rust", "tree_sitter_ruby", "tree_sitter_swift", "tree_sitter_kotlin", "tree_sitter_php", "tree_sitter_groovy", "tree_sitter_bash", "tree_sitter_yaml", "tree_sitter_toml", "model2vec", "rank_bm25", "fastmcp", "watchdog", "presidio_analyzer", "numpy"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

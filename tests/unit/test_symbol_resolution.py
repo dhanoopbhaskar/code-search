@@ -404,3 +404,50 @@ def test_signature_inconsistent_falls_back_to_ranked_list() -> None:
     assert result.kind == "ambiguous"
     assert result.symbol is None
     assert all(c["signature"]["normalized"] != "boolean" for c in result.candidates)
+
+
+def test_boxed_and_primitive_parameter_types_are_equivalent() -> None:
+    """``Boolean`` matches a stored ``boolean`` overload."""
+    boxed = _cand("save", fqn="src/A.java::A.save(Order,boolean)", params=["Order", "boolean"])
+    bare = _cand("save", fqn="src/A.java::A.save(Order)", params=["Order"])
+
+    result = _resolve("A.save(Order, Boolean)", [bare, boxed])
+
+    assert result.kind == "exact"
+    assert result.symbol is boxed
+
+
+def test_qualified_parameter_type_matches_simple_spelling() -> None:
+    """A fully qualified stored parameter matches the short query spelling."""
+    row = _cand(
+        "findOrderById",
+        fqn="src/O.java::O.findOrderById(java.lang.Long)",
+        params=["java.lang.Long"],
+        parent_name="O",
+    )
+
+    result = _resolve("O.findOrderById(Long)", [row])
+
+    assert result.kind == "exact"
+    assert result.symbol is row
+
+
+def test_parent_scope_wins_before_signature_ranking() -> None:
+    """A same-signature overload on another class cannot make the answer ambiguous."""
+    mine = _cand("save", fqn="src/A.java::A.save(Article)", params=["Article"], parent_name="A")
+    other = _cand("save", fqn="src/B.java::B.save(Article)", params=["Article"], parent_name="B")
+
+    result = _resolve("A.save(Article)", [other, mine])
+
+    assert result.kind == "exact"
+    assert result.symbol is mine
+
+
+def test_arity_alone_never_resolves_a_contradicting_type() -> None:
+    """A unique arity with different types stays ambiguous, not exact."""
+    row = _cand("save", fqn="src/A.java::A.save(String)", params=["String"], parent_name="A")
+
+    result = _resolve("A.save(Widget)", [row])
+
+    assert result.kind == "ambiguous"
+    assert result.symbol is None

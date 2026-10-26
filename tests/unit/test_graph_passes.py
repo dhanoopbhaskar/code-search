@@ -9,8 +9,10 @@ from typing import Any
 
 from code_search.engine.config import Settings
 from code_search.engine.graph import ALL_DDLS, SCHEMA_VERSION, GraphDatabase
+from code_search.engine.graph_passes import derive_interface_dispatch_edges
 from code_search.engine.graph_surface import find_dead_code, search_symbols
 from code_search.engine.implementations import find_implementations
+from code_search.engine.indexer import _TypeHierarchy
 
 V17_SYMBOLS_DDL = """
 CREATE TABLE IF NOT EXISTS symbols (
@@ -247,6 +249,141 @@ def test_find_implementations_prefers_implements(indexed_graph_edges: dict[str, 
     assert "Service" in implementers
     service = next(row for row in result["implementations"] if row["type"]["name"] == "Service")
     assert service["type"]["edge_relationship"] == "IMPLEMENTS"
+
+
+def test_interface_dispatch_reaches_the_implementation(tmp_path: Path) -> None:
+    """A call through an interface method also targets the implementing method."""
+    db = _dispatch_database(tmp_path)
+    assert derive_interface_dispatch_edges(db) == 1
+
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT src.name AS source, tgt.name AS target, p.name AS parent, "
+            "e.resolution_tier, e.properties "
+            "FROM graph_edges e "
+            "JOIN symbols src ON src.id = e.source_symbol_id "
+            "JOIN symbols tgt ON tgt.id = e.target_symbol_id "
+            "JOIN symbols p ON p.id = tgt.parent_symbol_id "
+            "WHERE e.edge_type = 'CALLS' ORDER BY e.id;"
+        ).fetchall()
+
+    pairs = {(row["source"], row["parent"], row["target"]) for row in rows}
+    assert ("run", "Service", "run") in pairs
+    assert ("run", "Api", "run") in pairs
+    dispatch = next(row for row in rows if row["parent"] == "Service")
+    assert dispatch["resolution_tier"] == "type_infer"
+    assert json.loads(dispatch["properties"]) == {
+        "derived": True,
+        "via": "interface_dispatch",
+    }
+
+    # A re-run replaces the derived rows instead of accumulating duplicates.
+    assert derive_interface_dispatch_edges(db) == 1
+    with db.connect() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) AS n FROM graph_edges WHERE edge_type = 'CALLS';"
+        ).fetchone()["n"]
+    assert count == 2
+
+
+def test_interface_dispatch_skips_incompatible_arity(tmp_path: Path) -> None:
+    """An overload with a different parameter count is not a dispatch target."""
+    db = _dispatch_database(tmp_path, impl_method_fqn="src/Service.java::Service.run(int)")
+    assert derive_interface_dispatch_edges(db) == 0
+
+
+def test_type_hierarchy_walks_nearest_supertype_first() -> None:
+    """The in-memory ancestry names the closest supertype before its bases."""
+    hierarchy = _TypeHierarchy(
+        types_by_name={
+            "Child": [
+                {
+                    "fqn": "src/Child.java::Child",
+                    "name": "Child",
+                    "file_path": "src/Child.java",
+                    "conventional_fqn": "p.Child",
+                }
+            ],
+            "Base": [
+                {
+                    "fqn": "src/Base.java::Base",
+                    "name": "Base",
+                    "file_path": "src/Base.java",
+                    "conventional_fqn": "p.Base",
+                }
+            ],
+            "Root": [
+                {
+                    "fqn": "src/Root.java::Root",
+                    "name": "Root",
+                    "file_path": "src/Root.java",
+                    "conventional_fqn": "p.Root",
+                }
+            ],
+        },
+        bases_by_fqn={
+            "src/Child.java::Child": {"Base"},
+            "src/Base.java::Base": {"Root"},
+        },
+    )
+
+    levels = hierarchy.ancestor_name_levels("Child", "Child", "src/User.java")
+    assert levels[0] == {"Base"}
+    assert levels[1] == {"Root"}
+
+
+def _dispatch_database(
+    tmp_path: Path,
+    impl_method_fqn: str = "src/Service.java::Service.run()",
+) -> GraphDatabase:
+    """Build an interface call graph: ``run`` calls ``Api.run`` via a field."""
+    db = GraphDatabase(tmp_path / "dispatch.db")
+    db.initialize()
+    with db.write_transaction() as conn:
+        api = _insert_symbol(conn, "src/Api.java::Api", "Api", "interface", "src/Api.java")
+        api_run = _insert_symbol(
+            conn, "src/Api.java::Api.run()", "run", "method", "src/Api.java", parent_id=api
+        )
+        service = _insert_symbol(
+            conn, "src/Service.java::Service", "Service", "class", "src/Service.java"
+        )
+        _insert_symbol(
+            conn, impl_method_fqn, "run", "method", "src/Service.java", parent_id=service
+        )
+        caller = _insert_symbol(
+            conn, "src/Client.java::Client.run()", "run", "method", "src/Client.java"
+        )
+        conn.execute(
+            "INSERT INTO graph_edges (source_symbol_id, target_symbol_id, edge_type, "
+            "resolution_tier, resolved, properties) "
+            "VALUES (?, ?, 'IMPLEMENTS', 'exact', 1, '{}');",
+            (service, api),
+        )
+        conn.execute(
+            "INSERT INTO graph_edges (source_symbol_id, target_symbol_id, edge_type, "
+            "resolution_tier, resolved, properties, source_range) "
+            "VALUES (?, ?, 'CALLS', 'conventional', 1, '{}', '[10, 4, 10, 12]');",
+            (caller, api_run),
+        )
+    return db
+
+
+def _insert_symbol(
+    conn: sqlite3.Connection,
+    fqn: str,
+    name: str,
+    kind: str,
+    file_path: str,
+    parent_id: int | None = None,
+) -> int:
+    """Insert a minimal symbol row and return its id."""
+    cursor = conn.execute(
+        "INSERT INTO symbols (fqn, name, kind, file_path, line_start, line_end, "
+        "column_start, column_end, language, parent_symbol_id) "
+        "VALUES (?, ?, ?, ?, 1, 20, 0, 0, 'java', ?);",
+        (fqn, name, kind, file_path, parent_id),
+    )
+    return int(cursor.lastrowid)
 
 
 def test_v16_database_migrates_through_v17_to_v18(tmp_path: Path) -> None:
