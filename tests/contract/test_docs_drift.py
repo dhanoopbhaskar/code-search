@@ -50,6 +50,7 @@ _DOCUMENTED_SUBCOMMANDS = (
     "affected",
     "map",
     "metrics",
+    "cypher",
 )
 
 

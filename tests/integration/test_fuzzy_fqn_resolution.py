@@ -222,7 +222,7 @@ def test_no_schema_or_migration_change(transparency_comps: dict[str, Any]) -> No
     """The schema version and symbol/graph columns are unchanged."""
     from code_search.engine.graph import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == 16
+    assert SCHEMA_VERSION == 18
     db = transparency_comps["db"]
     with db.connect() as conn:
         symbol_cols = {row["name"] for row in conn.execute("PRAGMA table_info(symbols);")}
@@ -241,7 +241,13 @@ def test_no_schema_or_migration_change(transparency_comps: dict[str, Any]) -> No
         "declared_rules",
         "language",
         "conventional_fqn",
+        "canonical_fqn",
         "parent_symbol_id",
+        "visibility",
+        "is_test",
+        "is_entry_point",
+        "entry_point_reason",
+        "importance",
         "created_at",
         "updated_at",
     }
@@ -255,6 +261,7 @@ def test_no_schema_or_migration_change(transparency_comps: dict[str, Any]) -> No
         "resolution_tier",
         "resolved",
         "target_raw",
+        "properties",
         "created_at",
     }
 

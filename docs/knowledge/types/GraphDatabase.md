@@ -15,11 +15,15 @@ sources:
 
 Thread-safe SQLite database connection manager for the code graph schema.
 Defined in [`engine.graph`](../modules/engine/graph.md). The current
-`SCHEMA_VERSION` is 16; `initialize()` migrates older databases forward.
+`SCHEMA_VERSION` is 18; `initialize()` migrates older databases forward.
 v14 added the `module_edges`, `symbol_rationale` + `rationale_fts`, and
 `doc_links` tables; v15 added `code_chunks.is_test` with its composite
 index; v16 replaced the unique conventional-FQN index with a non-unique one
-so legitimate duplicate symbols are no longer dropped.
+so legitimate duplicate symbols are no longer dropped; v17 deduplicated
+unresolved edges and added `index_coverage`; v18 added edge `properties`,
+the widened edge-type CHECK, `symbol_degrees`, and the symbol trust columns
+(`canonical_fqn`, `visibility`, `is_test`, `is_entry_point`,
+`entry_point_reason`, `importance`).
 
 # Methods
 

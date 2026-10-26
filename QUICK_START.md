@@ -252,9 +252,10 @@ code-search query "who calls ArticleRepository.save" --depth 3 --json
 |------|---------|-------------|
 | `--depth N` | `2` | Traversal depth (max: 4) |
 | `--max-nodes N` | `120` | Maximum graph nodes (max: 200) |
-| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`CALLS`, `INHERITS`, `REFERENCES`, `IMPORTS`) |
+| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`CALLS`, `INHERITS`, `IMPLEMENTS`, `REFERENCES`, `USAGE`, `CALL_REFERENCE`, `IMPORTS`) |
 | `--token-budget N` | `1500` | Soft output budget; trimmed deterministically |
 | `--include-externals` | off | Include unresolved/external callee leaves; by default they are collapsed and counted in `stats.collapsed_externals` |
+| `--direction DIR` | `both` | `both`, `inbound` (callers/importers), or `outbound` (callees/imports) |
 | `--json` | — | JSON output |
 
 ### `code-search path`
@@ -270,7 +271,7 @@ code-search path "ArticleController.favoriteArticle" "ArticleRepository.save" --
 |------|---------|-------------|
 | `--undirected` | off | Traverse edges in both directions |
 | `--max-hops N` | `6` | Maximum path length (max: 6) |
-| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`CALLS`, `INHERITS`, `REFERENCES`, `IMPORTS`) |
+| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`CALLS`, `INHERITS`, `IMPLEMENTS`, `REFERENCES`, `USAGE`, `CALL_REFERENCE`, `IMPORTS`) |
 | `--json` | — | JSON output |
 
 Ambiguous endpoints are refused with their ranked candidates instead of being
@@ -289,23 +290,33 @@ code-search explain "ArticleRepository.save" --depth 2 --relations CALLS,INHERIT
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--depth N` | `1` | Ego-graph depth (max: 4) |
-| `--relations LIST` | `CALLS,INHERITS` | Comma-separated relations to include (`CALLS`, `INHERITS`, `REFERENCES`, `IMPORTS`) |
+| `--relations LIST` | `CALLS,INHERITS` | Comma-separated relations to include (`CALLS`, `INHERITS`, `IMPLEMENTS`, `REFERENCES`, `USAGE`, `CALL_REFERENCE`, `IMPORTS`) |
 | `--json` | — | JSON output |
 
 ### `code-search affected`
 
-Report symbols impacted by changed files, using reverse traversal over callers,
-subtypes, and importers.
+Report changed files and their blast radius, using traversal over callers,
+subtypes, importers, or (outbound) dependencies. The response separates
+production and test files/symbols and labels each impacted symbol with a
+heuristic risk level (`high`/`medium`/`low`).
 
 ```bash
 code-search affected --since HEAD~1
 code-search affected src/main/java/io/spring/core/Article.java --depth 3 --json
+code-search affected --base-branch main --scope tests --fixpoint
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--since REF` | — | Git ref to diff against; changed paths are added to any explicit paths |
-| `--depth N` | `3` | Reverse traversal depth (max: 4) |
+| `--base-branch REF` | — | Base ref to diff against (takes precedence over `--since`) |
+| `--scope MODE` | `impact` | `files` (changed set only), `impact` (full blast radius), or `tests` (test files/symbols) |
+| `--direction DIR` | `inbound` | `inbound` (dependents), `outbound` (dependencies), or `both` |
+| `--depth N` | `3` | Traversal depth (max: 4) |
+| `--fixpoint` | — | Walk to closure instead of stopping at `--depth` |
+| `--edge-types LIST` | `CALLS,INHERITS` | Symbol edge types to traverse |
+| `--no-imports` | — | Do not traverse file-level import edges |
+| `--seed-filter MODE` | `all` | `all` seeds every changed symbol; `product` drops test-file seeds |
 | `--json` | — | JSON output |
 
 ### `code-search map`
@@ -323,7 +334,117 @@ code-search map --top 20 --max-communities 8
 | `--output FILE` | — | Write Markdown to this path instead of stdout |
 | `--top N` | `15` | Number of god nodes |
 | `--max-communities N` | `10` | Maximum communities to report |
+| `--aspects LIST` | — | Return only the named bounded sections (`overview`, `structure`, `dependencies`, `hotspots`, `entry_points`, `clusters`, `cycles`, `all`) |
 | `--json` | — | JSON output |
+
+### `code-search schema`
+
+Describe the graph before querying it: stored labels, supported and emitted
+edge types, resolution tiers, unresolved targets, entry-point counts,
+importance availability, coverage gaps, and the index generation.
+
+```bash
+code-search schema
+code-search schema --diagnostics --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--diagnostics` | — | Include bounded edge-property diagnostics |
+| `--limit N` | `100` | Maximum node labels to return |
+| `--offset N` | `0` | Node-label offset |
+| `--json` | — | JSON output |
+
+### `code-search outline`
+
+List one file's declarations in source order. The exact total is returned even
+when the page is bounded.
+
+```bash
+code-search outline src/main/java/com/example/article/ArticleService.java
+code-search outline src/app.py --kind method,function --include-docstring
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--kind LIST` | — | Comma-separated declaration kinds |
+| `--limit N` | `200` | Maximum declarations (500 max) |
+| `--offset N` | `0` | Declaration offset |
+| `--include-docstring` | — | Include stored docstrings |
+| `--json` | — | JSON output |
+
+### `code-search symbols`
+
+Search symbols structurally: name/QN regex, kind, file glob, and resolved
+degree. Unlike `search`, this does not rank by text similarity.
+
+```bash
+code-search symbols --kind class --name-pattern '.*Controller' --include-entry-points
+code-search symbols --min-degree 5 --include-connected --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name-pattern RE` | — | Python regex full-match on the name |
+| `--qn-pattern RE` | — | Python regex full-match on the FQN |
+| `--kind LIST` | — | Comma-separated declaration kinds |
+| `--file-pattern GLOB` | — | Shell glob over the path, or `re:<regex>` |
+| `--min-degree N` | — | Minimum resolved total degree |
+| `--max-degree N` | — | Maximum resolved total degree |
+| `--edge-types LIST` | `CALLS,INHERITS,IMPLEMENTS,REFERENCES,USAGE,CALL_REFERENCE` | Edge types counted for degree |
+| `--include-entry-points` | off | Include classified entry points: tests, `main`, constructors, overrides, annotated handlers, and exported top-level declarations (excluded by default) |
+| `--include-connected` | off | Attach up to 10 resolved neighbours per symbol |
+| `--limit N` | `50` | Maximum symbols (200 max) |
+| `--offset N` | `0` | Result offset |
+| `--json` | — | JSON output |
+
+### `code-search dead-code`
+
+Report callables with no proven incoming reference from production code.
+Candidates exclude entry points and test symbols by default, and each row
+reports confidence, test-only usage, and same-name unresolved references.
+This is evidence, not permission to delete code.
+
+```bash
+code-search dead-code
+code-search dead-code --include-tests --json
+code-search dead-code --kinds function,method --include-entry-points
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--kinds LIST` | `function,method,constructor` | Candidate declaration kinds |
+| `--include-entry-points` | off | Include classified entry points |
+| `--include-tests` | off | Include test symbols as candidates |
+| `--limit N` | `50` | Maximum candidates (200 max) |
+| `--offset N` | `0` | Result offset |
+| `--json` | — | JSON output |
+
+Confidence is `high` (no incoming edges and no same-name unresolved calls),
+`medium` (same-name unresolved calls or test-only usage), or `low` (only
+low-confidence incoming evidence). Interface method declarations are not
+candidates; they are contracts implemented elsewhere.
+
+### `code-search coverage`
+
+Report where the index has gaps. This is how the CLI distinguishes "no
+callers" from "the caller was never indexed".
+
+```bash
+code-search coverage
+code-search coverage src/app.py
+code-search coverage --scope src --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--scope PREFIX` | — | Index-relative directory aggregate (repeatable) |
+| `--max-rows N` | `500` | Row cap (1000 max) |
+| `--json` | — | JSON output |
+
+Statuses are `no_recorded_issue`, `partial`, `unusable`, `skipped`,
+`excluded`, `not_indexed`, and `coverage_unavailable`. A clean result means no
+gap was recorded for the current generation, not that every reference resolved.
 
 ### `code-search metrics`
 
@@ -710,9 +831,14 @@ abstention gate. `--no-daemon` (formerly `--no-startup-check`) serves one
 invocation in-process.
 
 `code-search stats --format json` reports the effective profile, layout,
-freshness mode, index age, and per-store sizes. `code-search start`,
-`code-search status`, and `code-search doctor` are one-word aliases for the
-daemon lifecycle and a combined index/model/daemon diagnosis. `daemon wait
+freshness mode, index age, and per-store sizes. It also reports a `graph`
+section: edge counts by type and resolution tier, the most frequent unresolved
+targets, symbol counts by kind and language, and coverage gaps for the current
+`index_generation`. Coverage records distinguish `parse_partial`,
+`parse_unusable`, `skipped_read`, and `skipped_oversized` files so an empty
+graph answer can be separated from a file that was never indexed. `code-search
+start`, `code-search status`, and `code-search doctor` are one-word aliases for
+the daemon lifecycle and a combined index/model/daemon diagnosis. `daemon wait
 --timeout 30` waits for the model to become warm.
 
 ## Evaluation harness

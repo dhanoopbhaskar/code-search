@@ -233,6 +233,21 @@ def _symbol_index(db: Any) -> dict[tuple[str, str, str], list[str]]:
 
 
 @pytest.fixture
+def indexed_graph_edges(tmp_path: Path) -> dict[str, Any]:
+    """Indexed components over ``tests/fixtures/graph_edges/``.
+
+    A compact multi-language corpus for the Phase 2 edge model: Java and
+    TypeScript interface implementations, Java class inheritance, a Python
+    callable passed as a value, type annotations, member usage, test-to-
+    production edges, and a same-name reference that must stay ambiguous.
+    """
+    src = FIXTURES_DIR / "graph_edges"
+    repo = tmp_path / "graph_edges_repo"
+    shutil.copytree(src, repo)
+    return _indexed_components(repo, repo / ".context")
+
+
+@pytest.fixture
 def indexed_implementations(tmp_path: Path) -> dict[str, Any]:
     """Indexed components over ``tests/fixtures/implementations/``.
 

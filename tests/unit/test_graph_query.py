@@ -71,6 +71,38 @@ def test_edge_resolution_stats(tmp_path: Path) -> None:
     assert stats["CALLS"]["ratio"] == 0
 
 
+def test_containment_truncation_is_reported(tmp_path: Path) -> None:
+    """A type with more than the containment cap sets ``truncated``."""
+    settings = Settings(context_dir=tmp_path)
+    db = GraphDatabase(tmp_path / "graph.db", settings)
+    db.initialize()
+    with db.write_transaction() as conn:
+        conn.execute(
+            "INSERT INTO symbols (fqn, name, kind, file_path, line_start, line_end, "
+            "column_start, column_end, language) "
+            "VALUES (?, 'Parent', 'class', '/repo/parent.py', 0, 100, 0, 1, 'python');",
+            ("/repo/parent.py::Parent",),
+        )
+        parent_id = conn.execute(
+            "SELECT id FROM symbols WHERE fqn = '/repo/parent.py::Parent';"
+        ).fetchone()["id"]
+        conn.executemany(
+            "INSERT INTO symbols (fqn, name, kind, file_path, line_start, line_end, "
+            "column_start, column_end, language, parent_symbol_id) "
+            "VALUES (?, ?, 'method', '/repo/parent.py', ?, ?, 0, 1, 'python', ?);",
+            [
+                (f"/repo/parent.py::Parent.m{i}", f"m{i}", i + 1, i + 2, parent_id)
+                for i in range(51)
+            ],
+        )
+
+    service = GraphQueryService(db, SymbolStore(db, settings), EdgeStore(db), None, settings)
+    answer = service.query("parent", depth=1, seeds=["/repo/parent.py::Parent"])
+
+    assert answer.truncated is True
+    assert answer.stats["visited"] == 1 + 50
+
+
 def test_render_query_text_marks_seeds_and_confidence() -> None:
     """The compact renderer marks seeds and renders provenance."""
     seed = GraphNode("f::A", "f::A", "A", "function", "f", 1, 2)

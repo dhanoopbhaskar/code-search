@@ -1,8 +1,8 @@
 """AST-based symbol extraction and SQLite-backed symbol store.
 
 Walks tree-sitter ASTs to discover function/method/class/interface/enum
-definitions, their FQN-qualified hierarchy, call-graph edges, import
-relationships, and inheritance edges.
+definitions, their FQN-qualified hierarchy, call/reference/usage edges, import
+relationships, and inheritance/implementation edges.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, cast
 
-from code_search.engine.config import Settings
+from code_search.engine.config import Settings, _is_test_file
 from code_search.engine.graph import (
     GraphDatabase,
     _candidate_summary,
@@ -40,6 +40,39 @@ _REFERENCE_PATTERNS: set[str] = {
     "subscript",
 }
 
+#: Builtin type names that are not useful REFERENCES targets. They are not
+#: indexed symbols, so emitting them would only create unresolved noise.
+_BUILTIN_TYPE_NAMES: frozenset[str] = frozenset(
+    {
+        "Any",
+        "None",
+        "String",
+        "bool",
+        "boolean",
+        "byte",
+        "bytes",
+        "char",
+        "complex",
+        "dict",
+        "double",
+        "float",
+        "frozenset",
+        "int",
+        "integer",
+        "list",
+        "long",
+        "map",
+        "number",
+        "object",
+        "set",
+        "short",
+        "str",
+        "string",
+        "tuple",
+        "void",
+    }
+)
+
 # Definition nodes carrying a type declaration (used by symbol and edge walkers).
 _DEFINITION_NODES: set[str] = {
     "function_definition",
@@ -62,6 +95,7 @@ _DEFINITION_NODES: set[str] = {
     "method_elem",
     "object_declaration",
     "property_declaration",
+    "public_field_definition",
 }
 
 # Object-creation nodes that may carry an inline anonymous class body. A Java
@@ -990,6 +1024,20 @@ class SymbolExtractor:
         except Exception:
             return
 
+        if node_type == "decorated_definition":
+            self._walk_decorated_definition(
+                node,
+                source_bytes,
+                file_path,
+                edges,
+                current_fqn,
+                import_map=import_map,
+                namespace_map=namespace_map,
+                symbol_catalog=symbol_catalog,
+                field_types=field_types,
+            )
+            return
+
         if node_type == "lexical_declaration" and not self._lexical_has_function_value(node):
             node_type = "__non_definition_lexical__"
 
@@ -1105,15 +1153,81 @@ class SymbolExtractor:
                 current_fqn=current_fqn,
             )
             if target_name and target_name != current_fqn:
-                edges.append(
-                    {
-                        "source_fqn": current_fqn,
-                        "target_fqn": target_name,
-                        "target_raw": self._raw_call_text(node, source_bytes),
-                        "edge_type": "CALLS",
-                        "source_range": source_range,
-                    }
+                edge: dict[str, Any] = {
+                    "source_fqn": current_fqn,
+                    "target_fqn": target_name,
+                    "target_raw": self._raw_call_text(node, source_bytes),
+                    "edge_type": "CALLS",
+                    "source_range": source_range,
+                    "via": self._resolution_via(
+                        target_name, import_map, field_types, namespace_map
+                    ),
+                }
+                arg_count = self._call_arg_count(node)
+                if arg_count is not None:
+                    edge["arg_count"] = arg_count
+                if node_type in ("object_creation_expression", "new_expression"):
+                    # ``new Type(...)`` names a type, not an overloaded method;
+                    # tell the resolver so a class/constructor pair is not
+                    # treated as ambiguous.
+                    edge["target_kind_hint"] = "type"
+                edges.append(edge)
+            if node_type in ("call", "call_expression", "method_invocation"):
+                self._emit_call_argument_references(
+                    node,
+                    source_bytes,
+                    edges,
+                    current_fqn,
+                    source_range,
+                    import_map=import_map,
+                    namespace_map=namespace_map,
+                    field_types=field_types,
                 )
+
+        if node_type == "method_reference" and current_fqn:
+            self._emit_method_reference(
+                node,
+                source_bytes,
+                edges,
+                current_fqn,
+                import_map=import_map,
+                field_types=field_types,
+            )
+
+        if node_type in ("assignment", "assignment_expression", "variable_declarator"):
+            value_node = node.child_by_field_name("right") or node.child_by_field_name("value")
+            if value_node is not None:
+                self._emit_value_reference(
+                    value_node,
+                    source_bytes,
+                    edges,
+                    current_fqn,
+                    via="assignment",
+                    import_map=import_map,
+                    namespace_map=namespace_map,
+                    field_types=field_types,
+                )
+
+        if node_type in ("type", "type_annotation") and current_fqn:
+            self._emit_type_references(
+                node,
+                source_bytes,
+                edges,
+                current_fqn,
+                import_map=import_map,
+                field_types=field_types,
+            )
+
+        if node_type in ("attribute", "member_expression", "field_access") and current_fqn:
+            self._emit_usage_reference(
+                node,
+                source_bytes,
+                edges,
+                current_fqn,
+                import_map=import_map,
+                namespace_map=namespace_map,
+                field_types=field_types,
+            )
 
         try:
             for child in node.children:
@@ -1130,6 +1244,430 @@ class SymbolExtractor:
                 )
         except Exception:
             pass
+
+    def _walk_decorated_definition(
+        self,
+        node: Any,
+        source_bytes: bytes,
+        file_path: Path,
+        edges: list[dict[str, Any]],
+        current_fqn: str | None,
+        *,
+        import_map: dict[str, str] | None,
+        namespace_map: dict[str, str] | None,
+        symbol_catalog: dict[str, int] | None,
+        field_types: dict[str, str] | None,
+    ) -> None:
+        """Walk a decorated definition, attributing decorator edges to it.
+
+        A Python ``decorated_definition`` wraps the decorator expressions and
+        the definition itself. The generic walk would attribute a decorator to
+        the enclosing scope (or drop it at module level), so the decorators are
+        handled here with the decorated symbol as the edge source and the
+        definition subtree is walked normally afterwards.
+        """
+        definition = next(
+            (
+                child
+                for child in node.children
+                if child.type in _DEFINITION_NODES or child.type == "lexical_declaration"
+            ),
+            None,
+        )
+        definition_fqn = (
+            self._definition_fqn(definition, source_bytes, file_path, current_fqn)
+            if definition is not None
+            else None
+        )
+        for child in node.children:
+            if child.type != "decorator" or definition_fqn is None:
+                continue
+            target = next(iter(child.named_children), None)
+            if target is None or target.type in ("call", "call_expression"):
+                # An invoked decorator (``@app.route("/x")``) is a call, not a
+                # bare callable used as a value.
+                continue
+            if target.type not in ("identifier", "attribute", "member_expression", "field_access"):
+                continue
+            raw = self._parser.get_node_text(target, source_bytes)
+            if not raw:
+                continue
+            resolved = self._resolve_member_target(
+                raw,
+                import_map=import_map,
+                namespace_map=namespace_map,
+                field_types=field_types,
+                current_fqn=definition_fqn,
+                symbol_catalog=symbol_catalog,
+            )
+            edges.append(
+                {
+                    "source_fqn": definition_fqn,
+                    "target_fqn": resolved or raw,
+                    "target_raw": raw,
+                    "edge_type": "CALL_REFERENCE",
+                    "source_range": json.dumps(self._parser.get_node_range(target)),
+                    "via": "decorator",
+                }
+            )
+        if definition is not None:
+            self._walk_calls_and_inherits(
+                definition,
+                source_bytes,
+                file_path,
+                edges,
+                current_fqn=current_fqn,
+                import_map=import_map,
+                namespace_map=namespace_map,
+                symbol_catalog=symbol_catalog,
+                field_types=field_types,
+            )
+
+    def _definition_fqn(
+        self,
+        node: Any,
+        source_bytes: bytes,
+        file_path: Path,
+        parent_fqn: str | None,
+    ) -> str | None:
+        """Return the FQN a definition node will be stored under.
+
+        Mirrors the main walker's FQN construction (including parameter types
+        for methods) so a decorator edge's source matches ``symbols.fqn``.
+        """
+        name_node = self._find_name_node(node)
+        if name_node is None:
+            return None
+        name = self._parser.get_node_text(name_node, source_bytes)
+        if not name:
+            return None
+        fqn = build_symbol_fqn(str(file_path), parent_fqn, name)
+        if node.type in (
+            "method_declaration",
+            "method_definition",
+            "constructor_declaration",
+            "function_definition",
+            "function_declaration",
+            "method",
+            "method_signature",
+            "abstract_method_signature",
+        ):
+            param_types = self._extract_param_types(node, source_bytes)
+            if param_types:
+                fqn = f"{fqn}({','.join(param_types)})"
+        return fqn
+
+    def _emit_call_argument_references(
+        self,
+        node: Any,
+        source_bytes: bytes,
+        edges: list[dict[str, Any]],
+        current_fqn: str,
+        source_range: str,
+        *,
+        import_map: dict[str, str] | None,
+        namespace_map: dict[str, str] | None,
+        field_types: dict[str, str] | None,
+    ) -> None:
+        """Emit ``CALL_REFERENCE`` edges for callables passed as arguments.
+
+        Only references that are provably resolvable are emitted: imported bare
+        names, and member expressions whose receiver is ``self``/``this``, an
+        imported binding, a namespace import, or a typed field/local. A bare
+        local variable is never guessed.
+        """
+        argument_list = node.child_by_field_name("arguments")
+        if argument_list is None:
+            argument_list = next(
+                (child for child in node.children if child.type in ("argument_list", "arguments")),
+                None,
+            )
+        if argument_list is None:
+            return
+        for argument in argument_list.named_children:
+            self._emit_value_reference(
+                argument,
+                source_bytes,
+                edges,
+                current_fqn,
+                via="argument",
+                source_range=source_range,
+                import_map=import_map,
+                namespace_map=namespace_map,
+                field_types=field_types,
+            )
+
+    def _emit_value_reference(
+        self,
+        node: Any,
+        source_bytes: bytes,
+        edges: list[dict[str, Any]],
+        current_fqn: str | None,
+        *,
+        via: str,
+        source_range: str | None = None,
+        import_map: dict[str, str] | None,
+        namespace_map: dict[str, str] | None,
+        field_types: dict[str, str] | None,
+    ) -> None:
+        """Emit a ``CALL_REFERENCE`` edge for a callable used as a value."""
+        if not current_fqn:
+            return
+        node_type = node.type
+        if node_type not in ("identifier", "attribute", "member_expression", "field_access"):
+            return
+        raw = self._parser.get_node_text(node, source_bytes)
+        if not raw or raw in ("self", "this", "None", "null", "true", "false"):
+            return
+        base = raw.split(".", 1)[0]
+        resolved: str | None
+        if node_type == "identifier":
+            if not import_map or raw not in import_map:
+                return
+            resolved = import_map[raw]
+        else:
+            if not self._receiver_is_typed(base, import_map, namespace_map, field_types):
+                return
+            resolved = self._resolve_member_target(
+                raw,
+                import_map=import_map,
+                namespace_map=namespace_map,
+                field_types=field_types,
+                current_fqn=current_fqn,
+                symbol_catalog=None,
+            )
+        if not resolved:
+            return
+        edges.append(
+            {
+                "source_fqn": current_fqn,
+                "target_fqn": resolved,
+                "target_raw": raw,
+                "edge_type": "CALL_REFERENCE",
+                "source_range": source_range or json.dumps(self._parser.get_node_range(node)),
+                "via": via,
+            }
+        )
+
+    def _emit_method_reference(
+        self,
+        node: Any,
+        source_bytes: bytes,
+        edges: list[dict[str, Any]],
+        current_fqn: str,
+        *,
+        import_map: dict[str, str] | None,
+        field_types: dict[str, str] | None,
+    ) -> None:
+        """Emit a ``CALL_REFERENCE`` edge for a Java method reference.
+
+        Handles ``this::handle`` and ``Type::method`` (including ``Type::new``,
+        whose target is the type itself). An untyped receiver is left to the
+        normal unresolved path rather than guessed.
+        """
+        text = self._parser.get_node_text(node, source_bytes)
+        if not text or "::" not in text:
+            return
+        receiver, member = text.rsplit("::", 1)
+        receiver = receiver.strip()
+        member = member.strip()
+        if not receiver or not member:
+            return
+        target: str | None
+        if member == "new":
+            target = (import_map or {}).get(receiver, receiver)
+            via = "import" if import_map and receiver in import_map else "type_infer"
+        else:
+            resolved_receiver = (import_map or {}).get(receiver, receiver)
+            if receiver in ("this", "self"):
+                qualified = f"{receiver}.{member}"
+                via = "type_infer"
+            else:
+                qualified = f"{resolved_receiver}.{member}"
+                via = "import" if import_map and receiver in import_map else "type_infer"
+            target = self._resolve_member_target(
+                qualified,
+                import_map=import_map,
+                namespace_map=None,
+                field_types=field_types,
+                current_fqn=current_fqn,
+                symbol_catalog=None,
+            )
+        if not target:
+            return
+        edges.append(
+            {
+                "source_fqn": current_fqn,
+                "target_fqn": target,
+                "target_raw": text,
+                "edge_type": "CALL_REFERENCE",
+                "source_range": json.dumps(self._parser.get_node_range(node)),
+                "via": via,
+            }
+        )
+
+    def _emit_usage_reference(
+        self,
+        node: Any,
+        source_bytes: bytes,
+        edges: list[dict[str, Any]],
+        current_fqn: str,
+        *,
+        import_map: dict[str, str] | None,
+        namespace_map: dict[str, str] | None,
+        field_types: dict[str, str] | None,
+    ) -> None:
+        """Emit a conservative ``USAGE`` edge for a member access.
+
+        The callee of a call is already a ``CALLS`` edge, so it is skipped; a
+        nested receiver (``self.repo`` in ``self.repo.save``) still emits. Only
+        ``self``/``this``, imported, namespace, or typed receivers are emitted;
+        bare identifiers and untyped receivers are left unresolved rather than
+        guessed.
+        """
+        parent = getattr(node, "parent", None)
+        if parent is not None and parent.type in (
+            "call",
+            "call_expression",
+            "method_invocation",
+            "object_creation_expression",
+            "new_expression",
+        ):
+            function = parent.child_by_field_name("function")
+            if function is not None and function.id == node.id:
+                return
+        if parent is not None and parent.type in ("argument_list", "arguments", "decorator"):
+            # A callable passed as an argument is a CALL_REFERENCE, and a
+            # decorator is handled by the decorated-definition walk.
+            return
+        if parent is not None and parent.type in (
+            "assignment",
+            "assignment_expression",
+            "variable_declarator",
+        ):
+            value = parent.child_by_field_name("right") or parent.child_by_field_name("value")
+            if value is not None and value.id == node.id:
+                return
+        raw = self._parser.get_node_text(node, source_bytes)
+        if not raw or raw in ("self", "this"):
+            return
+        base = raw.split(".", 1)[0]
+        if not self._receiver_is_typed(base, import_map, namespace_map, field_types):
+            return
+        resolved = self._resolve_member_target(
+            raw,
+            import_map=import_map,
+            namespace_map=namespace_map,
+            field_types=field_types,
+            current_fqn=current_fqn,
+            symbol_catalog=None,
+        )
+        if not resolved:
+            return
+        edges.append(
+            {
+                "source_fqn": current_fqn,
+                "target_fqn": resolved,
+                "target_raw": raw,
+                "edge_type": "USAGE",
+                "source_range": json.dumps(self._parser.get_node_range(node)),
+                "via": self._resolution_via(raw, import_map, field_types, namespace_map),
+            }
+        )
+
+    def _emit_type_references(
+        self,
+        node: Any,
+        source_bytes: bytes,
+        edges: list[dict[str, Any]],
+        current_fqn: str,
+        *,
+        import_map: dict[str, str] | None,
+        field_types: dict[str, str] | None,
+    ) -> None:
+        """Emit ``REFERENCES`` edges for type names used in annotations."""
+        for raw in self._type_name_leaves(node, source_bytes):
+            if raw in _BUILTIN_TYPE_NAMES:
+                continue
+            target = (import_map or {}).get(raw)
+            if not target and field_types and raw in field_types:
+                target = field_types[raw]
+            if not target:
+                target = raw
+            edges.append(
+                {
+                    "source_fqn": current_fqn,
+                    "target_fqn": target,
+                    "target_raw": raw,
+                    "edge_type": "REFERENCES",
+                    "source_range": json.dumps(self._parser.get_node_range(node)),
+                    "via": "import" if import_map and raw in import_map else "type_annotation",
+                }
+            )
+
+    def _type_name_leaves(self, node: Any, source_bytes: bytes) -> list[str]:
+        """Return type-name leaf texts inside an annotation node."""
+        leaves: list[str] = []
+        try:
+            node_type = node.type
+        except Exception:
+            return leaves
+        if node_type in ("identifier", "type_identifier", "nested_type_identifier"):
+            text = self._parser.get_node_text(node, source_bytes)
+            if text:
+                leaves.append(text.rsplit(".", 1)[-1])
+            return leaves
+        try:
+            for child in node.children:
+                leaves.extend(self._type_name_leaves(child, source_bytes))
+        except Exception:
+            pass
+        return leaves
+
+    @staticmethod
+    def _receiver_is_typed(
+        base: str,
+        import_map: dict[str, str] | None,
+        namespace_map: dict[str, str] | None,
+        field_types: dict[str, str] | None,
+    ) -> bool:
+        """Return whether *base* is a resolvable receiver, not a bare local."""
+        if base in ("self", "this"):
+            return True
+        if import_map and base in import_map:
+            return True
+        if namespace_map and base in namespace_map:
+            return True
+        return bool(field_types and base in field_types)
+
+    @staticmethod
+    def _resolution_via(
+        raw: str,
+        import_map: dict[str, str] | None,
+        field_types: dict[str, str] | None,
+        namespace_map: dict[str, str] | None,
+    ) -> str:
+        """Return the resolution evidence label stored on an edge."""
+        base = raw.split(".", 1)[0]
+        if field_types and base in field_types:
+            return "type_infer"
+        if base in ("self", "this"):
+            return "type_infer"
+        if (import_map and base in import_map) or (namespace_map and base in namespace_map):
+            return "import"
+        return "same_file" if "." not in raw else "unknown"
+
+    def _call_arg_count(self, node: Any) -> int | None:
+        """Return the number of arguments passed at a call site, when known."""
+        argument_list = node.child_by_field_name("arguments")
+        if argument_list is None:
+            argument_list = next(
+                (child for child in node.children if child.type in ("argument_list", "arguments")),
+                None,
+            )
+        if argument_list is None:
+            return None
+        return sum(1 for child in argument_list.named_children if child.type != "comment")
 
     def _raw_call_text(self, node: Any, source_bytes: bytes) -> str:
         """Return the raw callee reference text of a call node.
@@ -1226,7 +1764,7 @@ class SymbolExtractor:
         base = parts[0]
         rest = parts[1:]
 
-        if base == "this":
+        if base in ("this", "self"):
             if len(parts) >= 3:
                 declared = (field_types or {}).get(parts[1])
                 if declared:
@@ -1293,6 +1831,23 @@ class SymbolExtractor:
                 else:
                     method_name = full_text
             resolved = f"{object_name}.{method_name}" if object_name else method_name
+            if object_name and object_name.lstrip().startswith("new "):
+                constructed = re.match(r"new\s+([A-Za-z_][\w.]*)", object_name.lstrip())
+                if constructed:
+                    constructed_type = constructed.group(1)
+                    resolved = f"{(import_map or {}).get(constructed_type, constructed_type)}."
+                    resolved += method_name
+            if object_name:
+                member = self._resolve_member_target(
+                    resolved,
+                    import_map=import_map,
+                    namespace_map=None,
+                    field_types=field_types,
+                    current_fqn=None,
+                    symbol_catalog=_catalog,
+                )
+                if member and member != resolved:
+                    return member
             if import_map and object_name and object_name in import_map:
                 resolved = f"{import_map[object_name]}.{method_name}"
             elif field_types and object_name and object_name in field_types:
@@ -1554,6 +2109,7 @@ class SymbolExtractor:
                         "target_raw": base,
                         "edge_type": "INHERITS",
                         "source_range": json.dumps(self._parser.get_node_range(node)),
+                        "via": "import" if import_map and base in import_map else "same_file",
                     }
                 )
 
@@ -1773,6 +2329,8 @@ class SymbolExtractor:
             docstring = self._extract_docstring(node, source_bytes, lang)
             kind = kind_override or self._map_kind(node_type)
             kind = self._refine_declared_kind(node, node_type, lang, kind)
+            if kind == "method" and name == "constructor":
+                kind = "constructor"
             if kind == "function" and parent_fqn is not None:
                 kind = "method"
 
@@ -1804,11 +2362,80 @@ class SymbolExtractor:
                 "docstring": docstring,
                 "declared_rules": rules or None,
                 "language": lang,
+                "visibility": self._extract_visibility(
+                    node, name, lang, parent_fqn is not None, source_bytes
+                ),
                 "parent_fqn": full_parent_fqn,
             }
         except Exception as exc:
             logger.debug("Failed to extract symbol: %s", exc)
             return None
+
+    @staticmethod
+    def _extract_visibility(
+        node: Any,
+        name: str,
+        language: str,
+        nested: bool,
+        source_bytes: bytes,
+    ) -> str:
+        """Classify a declaration's visibility for entry-point and dead-code rules.
+
+        The classifier is conservative and per-language: Python uses the
+        leading-underscore convention, Go uses capitalization, JavaScript and
+        TypeScript require an ``export`` wrapper or an explicit access modifier,
+        and Java/C#/Kotlin read the ``modifiers``/``accessibility_modifier``
+        text. Unrecognised languages fall back to the Python-style convention.
+
+        Args:
+            node: The declaration AST node.
+            name: The declared name.
+            language: The file's internal language identifier.
+            nested: Whether the declaration has an enclosing symbol.
+            source_bytes: Raw source bytes for modifier-text extraction.
+
+        Returns:
+            ``public``, ``protected``, ``private``, ``package``, or ``internal``.
+        """
+        if language == "python":
+            return "private" if name.startswith("_") else "public"
+        if language == "go":
+            return "public" if name[:1].isupper() else "private"
+        if language in ("javascript", "typescript"):
+            try:
+                parent = node.parent
+            except AttributeError:
+                parent = None
+            if parent is not None and parent.type == "export_statement":
+                return "public"
+            modifiers = SymbolExtractor._modifier_text(node, source_bytes)
+            for marker in ("private", "protected", "public"):
+                if marker in modifiers:
+                    return marker
+            # A TypeScript class member is public by default; a module-level
+            # declaration is not reachable outside its module without export.
+            return "public" if nested else "private"
+        if language in ("java", "c_sharp", "kotlin"):
+            modifiers = SymbolExtractor._modifier_text(node, source_bytes)
+            for marker in ("private", "protected", "public", "internal"):
+                if marker in modifiers:
+                    return marker
+            return "internal" if language in ("c_sharp", "kotlin") else "package"
+        return "private" if name.startswith("_") else "public"
+
+    @staticmethod
+    def _modifier_text(node: Any, source_bytes: bytes) -> str:
+        """Return the lowercased modifier/accessibility text declared on *node*."""
+        parts: list[str] = []
+        try:
+            for child in node.children:
+                if child.type in ("modifiers", "accessibility_modifier"):
+                    parts.append(ASTParser.get_node_text(child, source_bytes))
+                elif child.type in ("private", "protected", "public", "internal"):
+                    parts.append(child.type)
+        except Exception:
+            pass
+        return " ".join(parts).lower()
 
     @staticmethod
     def _extract_param_types(
@@ -2090,6 +2717,7 @@ class SymbolExtractor:
             "method_elem": "method",
             "object_declaration": "class",
             "property_declaration": "field",
+            "public_field_definition": "field",
         }
         return mapping.get(node_type, "variable")
 
@@ -2138,8 +2766,9 @@ class SymbolStore:
                 cursor = conn.execute(
                     "INSERT INTO symbols "
                     "(fqn, name, kind, file_path, line_start, line_end, column_start, column_end, "
-                    "docstring, declared_rules, language, parent_symbol_id, conventional_fqn) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                    "docstring, declared_rules, language, parent_symbol_id, conventional_fqn, "
+                    "visibility, is_test) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
                     (
                         symbol["fqn"],
                         symbol["name"],
@@ -2154,6 +2783,8 @@ class SymbolStore:
                         symbol.get("language", "unknown"),
                         parent_id,
                         symbol.get("conventional_fqn"),
+                        symbol.get("visibility"),
+                        1 if _is_test_file(symbol["file_path"]) else 0,
                     ),
                 )
                 return cursor.lastrowid
@@ -2212,8 +2843,9 @@ class SymbolStore:
                     "INSERT INTO symbols "
                     "(fqn, name, kind, file_path, line_start, "
                     "line_end, column_start, column_end, "
-                    "docstring, declared_rules, language, parent_symbol_id, conventional_fqn) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                    "docstring, declared_rules, language, parent_symbol_id, conventional_fqn, "
+                    "visibility, is_test) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
                     (
                         sym["fqn"],
                         sym["name"],
@@ -2228,6 +2860,8 @@ class SymbolStore:
                         sym.get("language", "unknown"),
                         parent_id,
                         sym.get("conventional_fqn"),
+                        sym.get("visibility"),
+                        1 if _is_test_file(sym["file_path"]) else 0,
                     ),
                 )
                 result[sym["fqn"]] = cast(int, cursor.lastrowid)

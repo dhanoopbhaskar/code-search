@@ -379,6 +379,7 @@ def _implementation(subtype: dict[str, Any], site: dict[str, Any] | None) -> dic
         "type": {
             **_type_summary(subtype),
             "relationship": relationship,
+            "edge_relationship": subtype.get("relationship"),
             "depth": subtype.get("depth"),
             "path": subtype.get("path") or [],
         },
