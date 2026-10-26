@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from code_search.engine.parser import ASTParser
 from code_search.engine.symbols import SymbolExtractor
 
@@ -42,6 +44,33 @@ def test_groovy_regex_fallback_extracts_types_and_methods(tmp_path: Path) -> Non
     assert spec["kind"] == "class"
     assert spec["line_start"] == 3
     assert all(symbol["file_path"] == str(path) for symbol in symbols)
+
+
+def test_groovy_regex_fallback_used_when_grammar_reports_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A present-but-incomplete Groovy tree falls back to the regex extractor."""
+
+    class _Root:
+        type = "program"
+        children: tuple[Any, ...] = ()
+        has_error = True
+
+    class _ErrorTree:
+        root_node = _Root()
+
+    parser = ASTParser()
+
+    def fake_parse(*_args: Any, **_kwargs: Any) -> Any:
+        return _ErrorTree()
+
+    monkeypatch.setattr(parser, "parse_file", fake_parse)
+    source = b'class HandlerSpec {\n  def "handles"() { }\n}\n'
+    symbols = SymbolExtractor(parser).extract_symbols(tmp_path / "HandlerSpec.groovy", source)
+
+    names = {symbol["name"] for symbol in symbols}
+    assert "HandlerSpec" in names
+    assert "handles" in names
 
 
 def test_groovy_fallback_is_not_used_for_other_missing_grammars(tmp_path: Path) -> None:

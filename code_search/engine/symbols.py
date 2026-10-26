@@ -253,8 +253,9 @@ class SymbolExtractor:
     def extract_symbols(self, file_path: Path, source_bytes: bytes) -> list[dict[str, Any]]:
         """Return all symbol definitions found in *file_path*."""
         tree = self._parser.parse_file(file_path, source_bytes=source_bytes)
+        is_groovy = file_path.suffix.lower() in (".groovy", ".gvy")
         if tree is None:
-            if file_path.suffix.lower() in (".groovy", ".gvy"):
+            if is_groovy:
                 return self._extract_groovy_symbols(file_path, source_bytes)
             return []
         root_node = tree.root_node
@@ -263,6 +264,16 @@ class SymbolExtractor:
         self._walk_node(
             root_node, source_bytes, file_path, symbols, parent_fqn=None, package_name=package_name
         )
+        if is_groovy:
+            # The Groovy grammar does not understand Spock feature methods
+            # (``def "name"()``); it reports a parse error and drops the
+            # enclosing type, so the tree can be present yet yield fewer
+            # symbols than the source declares. Prefer the regex extractor
+            # when the tree is incomplete or empty, keeping the AST rows only
+            # when they are the richer result.
+            fallback = self._extract_groovy_symbols(file_path, source_bytes)
+            if fallback and (root_node.has_error or not symbols):
+                return fallback
         return self._deduplicate_fqns(symbols)
 
     def _extract_groovy_symbols(self, file_path: Path, source_bytes: bytes) -> list[dict[str, Any]]:
@@ -271,8 +282,10 @@ class SymbolExtractor:
         Groovy/Spock sources are common in enterprise Java repositories, but the
         grammar is an optional dependency. This regex fallback keeps type and
         method declarations addressable (so symbol lookup, outlines, and
-        coverage do not treat the file as unparsed) and is replaced by the
-        tree-sitter path whenever ``tree_sitter_groovy`` is installed.
+        coverage do not treat the file as unparsed). It is used when the
+        grammar is unavailable and also when the installed grammar reports a
+        parse error, because ``tree_sitter_groovy`` does not understand Spock
+        feature methods and would otherwise drop their enclosing type.
 
         Args:
             file_path: The Groovy source path.
