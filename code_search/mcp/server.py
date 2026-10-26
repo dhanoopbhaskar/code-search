@@ -1,6 +1,6 @@
 """Model Context Protocol (MCP) server — exposes code-search via stdio transport.
 
-Registers nine tools:
+Registers these tools:
   - ``search`` — hybrid keyword + semantic search.
   - ``get_symbol_definition`` — look up a symbol by FQN.
   - ``get_call_neighbors`` — traverse callers/callees.
@@ -10,6 +10,13 @@ Registers nine tools:
   - ``shortest_path`` — shortest path between two symbols.
   - ``explain_symbol`` — symbol metadata, relations, rationale, and doc links.
   - ``get_impact`` — symbols impacted by changed files.
+  - ``get_graph_schema`` — labels, edge types, tiers, coverage, generation.
+  - ``get_file_outline`` — declarations of one file in source order.
+  - ``search_symbols`` — structural search by regex, kind, file, and degree.
+  - ``find_dead_code`` — callables with no proven production reference.
+  - ``get_architecture`` — bounded architecture aspects.
+  - ``check_index_coverage`` — distinguish "not found" from "not indexed".
+  - ``detect_changes`` — git/explicit changes → files, impact, or tests.
 """
 
 from __future__ import annotations
@@ -287,8 +294,9 @@ class MCPServer:
     Wraps a component registry (see ``_initialize_components``) and registers
     the MCP tools: ``search``, ``get_symbol_definition``,
     ``get_call_neighbors``, ``get_implementations``, ``find_related``,
-    ``query_graph``, ``shortest_path``, ``explain_symbol``, and
-    ``get_impact``.
+    ``query_graph``, ``shortest_path``, ``explain_symbol``, ``get_impact``,
+    ``get_graph_schema``, ``get_file_outline``, ``search_symbols``,
+    ``get_architecture``, ``check_index_coverage``, and ``detect_changes``.
     """
 
     def __init__(self, components: dict[str, Any]) -> None:
@@ -319,9 +327,10 @@ class MCPServer:
         """Build the FastMCP server with every MCP tool registered.
 
         Registers the search, definition, call-neighbour, implementation,
-        related-search, graph-query, path, explain, and impact tools so a test
-        or embedder can exercise the real tool bodies without starting the
-        stdio loop.
+        related-search, graph-query, path, explain, impact, schema, outline,
+        structural-search, architecture, coverage, and change-detection tools
+        so a test or embedder can exercise the real tool bodies without
+        starting the stdio loop.
 
         Returns:
             A ready-to-serve ``fastmcp.FastMCP`` instance.
@@ -766,6 +775,347 @@ class MCPServer:
                 """Parse a comma-separated edge-type argument."""
                 return {part.strip().upper() for part in value.split(",") if part.strip()}
 
+            def _index_root() -> Path:
+                """Return the indexed repository root recorded in metadata."""
+                return Path(
+                    comps["metadata"].get("index_root") or str(Path(comps["context_dir"]).parent)
+                )
+
+            @mcp.tool()
+            async def get_graph_schema(
+                diagnostics: bool = False,
+                limit: int = 100,
+                offset: int = 0,
+            ) -> str:
+                """Describe the graph before querying it.
+
+                Reports stored node labels, supported and emitted edge types,
+                resolution tiers, unresolved targets, symbol totals, coverage
+                gaps, and the index generation. Call this first when you do not
+                know which labels or edge types exist.
+
+                Args:
+                    diagnostics: Include bounded edge-property diagnostics.
+                    limit: Maximum node labels returned (clipped to 500).
+                    offset: Zero-based offset into the sorted node-label list.
+
+                Returns:
+                    A JSON payload with the schema sections and freshness.
+                """
+                start = time.monotonic()
+                from code_search.engine.graph_surface import get_graph_schema
+
+                payload = get_graph_schema(
+                    comps["db"],
+                    diagnostics=diagnostics,
+                    node_limit=limit,
+                    offset=offset,
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["index_status"] = comps["metadata"].get_index_status()
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="get_graph_schema",
+                    query_summary="schema",
+                    result_count=int(payload.get("node_labels_total", 0)),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
+
+            @mcp.tool()
+            async def get_file_outline(
+                file_path: str,
+                kind: str = "",
+                limit: int = 200,
+                offset: int = 0,
+                include_docstring: bool = False,
+            ) -> str:
+                """List one indexed file's declarations in source order.
+
+                Use this to find declarations without grepping: it returns the
+                exact symbol names, kinds, FQNs, and line ranges stored in the
+                graph. An unindexed file returns ``outcome: not_indexed`` rather
+                than an empty list.
+
+                Args:
+                    file_path: Absolute or index-relative path to the file.
+                    kind: Optional comma-separated declaration kinds.
+                    limit: Maximum declarations returned (clipped to 500).
+                    offset: Zero-based offset into the declaration list.
+                    include_docstring: Include stored docstrings (off by default).
+
+                Returns:
+                    A JSON payload with ``symbols``, exact ``total``, paging, and
+                    freshness.
+                """
+                start = time.monotonic()
+                from code_search.engine.graph_surface import get_file_outline
+
+                kinds = [part.strip() for part in kind.split(",") if part.strip()] or None
+                payload = get_file_outline(
+                    comps["db"],
+                    file_path,
+                    index_root=_index_root(),
+                    kinds=kinds,
+                    limit=limit,
+                    offset=offset,
+                    include_docstring=include_docstring,
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["index_status"] = comps["metadata"].get_index_status()
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="get_file_outline",
+                    query_summary=file_path[: settings.query_summary_length],
+                    result_count=int(payload.get("returned", 0)),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
+
+            @mcp.tool()
+            async def check_index_coverage(
+                paths: list[str] | None = None,
+                scopes: list[str] | None = None,
+                max_rows: int = 500,
+            ) -> str:
+                """Report where the index has gaps before trusting a negative answer.
+
+                Use this when a symbol, caller, or path seems missing: it
+                distinguishes ``no_recorded_issue`` from ``partial``,
+                ``unusable``, ``skipped``, ``excluded``, ``not_indexed``, and
+                ``coverage_unavailable``. A clean result is not proof of
+                completeness.
+
+                Args:
+                    paths: Optional absolute or index-relative file paths.
+                    scopes: Optional index-relative directory prefixes.
+                    max_rows: Row cap (clipped to 1000).
+
+                Returns:
+                    A JSON payload with per-path entries, per-scope aggregates,
+                    a summary, freshness, and a recommended action.
+                """
+                start = time.monotonic()
+                from code_search.engine.graph_surface import check_index_coverage as run_check
+
+                payload = run_check(
+                    comps["db"],
+                    paths=paths,
+                    scopes=scopes,
+                    index_root=_index_root(),
+                    parser=comps.get("parser"),
+                    max_rows=max_rows,
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["index_status"] = comps["metadata"].get_index_status()
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="check_index_coverage",
+                    query_summary=", ".join([*(paths or []), *(scopes or [])])[
+                        : settings.query_summary_length
+                    ]
+                    or "all",
+                    result_count=int(payload.get("summary", {}).get("returned", 0)),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
+
+            @mcp.tool()
+            async def search_symbols(
+                query: str | None = None,
+                name_pattern: str | None = None,
+                qn_pattern: str | None = None,
+                kind: str = "",
+                file_pattern: str | None = None,
+                min_degree: int | None = None,
+                max_degree: int | None = None,
+                edge_types: str = "CALLS,INHERITS,IMPLEMENTS,REFERENCES,USAGE,CALL_REFERENCE",
+                exclude_entry_points: bool = True,
+                include_connected: bool = False,
+                limit: int = 50,
+                offset: int = 0,
+            ) -> str:
+                """Search symbols by structure instead of text similarity.
+
+                Answers questions like "classes in src/api", "functions with zero
+                callers", or "symbols matching .*Service". Degree counts resolved
+                edges only; unresolved references never inflate a degree.
+                Classified entry points (tests, main, constructors, overrides,
+                annotated handlers, and exported top-level declarations) are
+                excluded by default. Set exclude_entry_points=false to include
+                them.
+
+                Args:
+                    query: Optional substring over name, FQN, and docstring.
+                    name_pattern: Optional Python regex, full-match on the name.
+                    qn_pattern: Optional Python regex, full-match on the FQN.
+                    kind: Optional comma-separated declaration kinds.
+                    file_pattern: Optional glob (or ``re:<regex>``) over the path.
+                    min_degree: Minimum resolved total degree.
+                    max_degree: Maximum resolved total degree.
+                    edge_types: Comma-separated edge types counted for degree.
+                    exclude_entry_points: Exclude tests, main, and constructors.
+                    include_connected: Attach up to 10 resolved neighbours.
+                    limit: Maximum symbols returned (clipped to 200).
+                    offset: Zero-based offset into the ordered matches.
+
+                Returns:
+                    A JSON payload with symbols, exact total, paging, echoed
+                    filters, generation, and a coverage caveat.
+                """
+                start = time.monotonic()
+                from code_search.engine.graph_surface import search_symbols as run_search
+
+                payload = run_search(
+                    comps["db"],
+                    query=query,
+                    name_pattern=name_pattern,
+                    qn_pattern=qn_pattern,
+                    kind=kind,
+                    file_pattern=file_pattern,
+                    min_degree=min_degree,
+                    max_degree=max_degree,
+                    edge_types=sorted(_edge_types(edge_types)),
+                    exclude_entry_points=exclude_entry_points,
+                    include_connected=include_connected,
+                    limit=limit,
+                    offset=offset,
+                    index_root=_index_root(),
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["index_status"] = comps["metadata"].get_index_status()
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="search_symbols",
+                    query_summary=(query or name_pattern or "symbols")[
+                        : settings.query_summary_length
+                    ],
+                    result_count=int(payload.get("returned", 0)),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
+
+            @mcp.tool()
+            async def find_dead_code(
+                kinds: str = "function,method,constructor",
+                include_entry_points: bool = False,
+                include_tests: bool = False,
+                limit: int = 50,
+                offset: int = 0,
+            ) -> str:
+                """Report callables with no proven production reference.
+
+                Candidates have zero incoming resolved CALLS, USAGE,
+                CALL_REFERENCE, REFERENCES, IMPLEMENTS, or INHERITS edges from
+                non-test symbols. Entry points and test symbols are excluded by
+                default. Every row reports test-only usage and same-name
+                unresolved references, because those are the cases where a
+                dynamic or external caller could keep the symbol alive.
+
+                This tool reports evidence, not permission to delete code.
+                Check ``check_index_coverage`` when a negative answer matters.
+
+                Args:
+                    kinds: Comma-separated candidate kinds.
+                    include_entry_points: Include classified entry points.
+                    include_tests: Include test symbols as candidates.
+                    limit: Maximum candidates returned (clipped to 200).
+                    offset: Zero-based offset into the ordered candidates.
+
+                Returns:
+                    A JSON payload with candidates, exact total, paging,
+                    confidence, and the edge types checked.
+                """
+                start = time.monotonic()
+                from code_search.engine.graph_surface import find_dead_code as run_dead_code
+
+                payload = run_dead_code(
+                    comps["db"],
+                    kinds=kinds,
+                    include_entry_points=include_entry_points,
+                    include_tests=include_tests,
+                    limit=limit,
+                    offset=offset,
+                    index_root=_index_root(),
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["index_status"] = comps["metadata"].get_index_status()
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="find_dead_code",
+                    query_summary=kinds[: settings.query_summary_length],
+                    result_count=int(payload.get("returned", 0)),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
+
+            @mcp.tool()
+            async def get_architecture(
+                aspects: str = "overview",
+                top_n: int = 15,
+                max_communities: int = 10,
+            ) -> str:
+                """Return a bounded architecture summary of the indexed graph.
+
+                The default ``overview`` aspect is deliberately small: languages,
+                directory packages, and entry-point counts. Request only the
+                sections you need; ``all`` expands to every section and can be
+                large.
+
+                Aspects: ``overview``, ``structure``, ``dependencies``,
+                ``hotspots``, ``entry_points``, ``clusters``, ``cycles``.
+
+                Args:
+                    aspects: Comma-separated aspect names, or ``all``.
+                    top_n: Maximum hotspots/packages/examples (clipped to 50).
+                    max_communities: Maximum clusters returned (clipped to 20).
+
+                Returns:
+                    A JSON payload with the requested sections, generation,
+                    stats, and freshness.
+                """
+                start = time.monotonic()
+                requested = {part.strip().lower() for part in aspects.split(",") if part.strip()}
+                payload = _graph_service().architecture(
+                    aspects=requested or None,
+                    top_n=top_n,
+                    max_communities=max_communities,
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["index_status"] = comps["metadata"].get_index_status()
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="get_architecture",
+                    query_summary=", ".join(sorted(requested)) or "overview",
+                    result_count=len(payload.get("hotspots") or []),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
+
             @mcp.tool()
             async def query_graph(
                 question: str,
@@ -774,6 +1124,7 @@ class MCPServer:
                 token_budget: int = 1500,
                 edge_types: str = "CALLS,INHERITS",
                 include_external: bool = False,
+                direction: str = "both",
             ) -> str:
                 """Answer a multi-hop question by traversing the code graph.
 
@@ -790,10 +1141,12 @@ class MCPServer:
                     include_external: Include unresolved/external callee leaves;
                         false (default) collapses them so the answer is a clean
                         in-corpus neighbourhood.
+                    direction: ``both`` (default), ``inbound`` (who calls/imports
+                        this), or ``outbound`` (what this calls/imports).
 
                 Returns:
                     A JSON payload with seeds, nodes, edges, truncation, stats,
-                    and freshness.
+                    direction, and freshness.
                 """
                 start = time.monotonic()
                 answer = _graph_service().query(
@@ -803,6 +1156,7 @@ class MCPServer:
                     edge_types=_edge_types(edge_types),
                     token_budget=token_budget,
                     include_external=include_external,
+                    direction=direction,
                 )
                 payload = answer.as_dict()
                 duration_ms = int((time.monotonic() - start) * 1000)
@@ -825,6 +1179,7 @@ class MCPServer:
                 target: str,
                 undirected: bool = False,
                 max_hops: int = 6,
+                edge_types: str = "CALLS,INHERITS",
             ) -> str:
                 """Return the shortest graph path between two symbols.
 
@@ -836,6 +1191,7 @@ class MCPServer:
                     target: Target symbol reference.
                     undirected: Traverse edges in both directions.
                     max_hops: Maximum path length (clipped to 6).
+                    edge_types: Comma-separated edge types to traverse.
 
                 Returns:
                     A JSON payload with source, target, hops, outcome, and
@@ -843,7 +1199,11 @@ class MCPServer:
                 """
                 start = time.monotonic()
                 answer = _graph_service().shortest_path(
-                    source, target, undirected=undirected, max_hops=max_hops
+                    source,
+                    target,
+                    undirected=undirected,
+                    max_hops=max_hops,
+                    edge_types=_edge_types(edge_types),
                 )
                 payload = answer.as_dict()
                 duration_ms = int((time.monotonic() - start) * 1000)
@@ -925,6 +1285,77 @@ class MCPServer:
                 if mc:
                     mc.record_query(duration_ms)
                 return json.dumps(payload, default=str)
+
+            @mcp.tool()
+            async def detect_changes(
+                changed_paths: list[str] | None = None,
+                since: str | None = None,
+                base_branch: str | None = None,
+                scope: str = "impact",
+                direction: str = "inbound",
+                depth: int = 3,
+                fixpoint: bool = False,
+                edge_types: str = "CALLS,INHERITS",
+                include_imports: bool = True,
+                seed_filter: str = "all",
+                max_nodes: int = 200,
+            ) -> str:
+                """Resolve changed files (optionally from git) and report impact.
+
+                Use ``scope="files"`` when you only need the changed path set,
+                ``scope="impact"`` for the full blast radius, and
+                ``scope="tests"`` for the test files and test symbols that
+                reach the change. ``direction="inbound"`` answers "what depends
+                on this"; ``outbound`` answers "what does this depend on".
+
+                Args:
+                    changed_paths: Explicit changed paths.
+                    since: Git ref to diff against.
+                    base_branch: Base branch/ref (takes precedence over since).
+                    scope: ``files``, ``impact``, or ``tests``.
+                    direction: ``inbound``, ``outbound``, or ``both``.
+                    depth: Traversal depth (clipped to 4).
+                    fixpoint: Walk to closure instead of stopping at depth.
+                    edge_types: Comma-separated symbol edge types to traverse.
+                    include_imports: Traverse file-level import edges too.
+                    seed_filter: ``all`` or ``product`` (drop test-file seeds).
+                    max_nodes: Maximum returned nodes (clipped to 200).
+
+                Returns:
+                    A JSON payload with changed files, impacted symbols with
+                    risk labels, production/test buckets, traversal provenance,
+                    generation, and freshness.
+                """
+                start = time.monotonic()
+                result = _graph_service().detect_changes(
+                    changed_paths or [],
+                    since=since,
+                    base_branch=base_branch,
+                    scope=scope,
+                    direction=direction,
+                    depth=depth,
+                    fixpoint=fixpoint,
+                    edge_types=_edge_types(edge_types),
+                    include_imports=include_imports,
+                    seed_filter=seed_filter,
+                    max_nodes=max_nodes,
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                result["index_status"] = comps["metadata"].get_index_status()
+                result["query_time_ms"] = duration_ms
+                result["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="detect_changes",
+                    query_summary=(
+                        base_branch or since or ", ".join(changed_paths or []) or "no_changes"
+                    )[: settings.query_summary_length],
+                    result_count=int(result.get("summary", {}).get("symbols", 0)),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(result, default=str)
 
             @mcp.tool()
             async def find_related(

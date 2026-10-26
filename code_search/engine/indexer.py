@@ -36,6 +36,7 @@ from code_search.engine.embeddings import (
     set_representation_scheme_version,
 )
 from code_search.engine.graph import (
+    INDEX_FORMAT_VERSION,
     SCHEMA_VERSION,
     DocLinkStore,
     EdgeStore,
@@ -44,6 +45,7 @@ from code_search.engine.graph import (
     ModuleEdgeStore,
     RationaleStore,
 )
+from code_search.engine.graph_passes import rebuild_derived_graph_data
 from code_search.engine.parser import ASTParser
 from code_search.engine.parser import _is_lockfile as _is_lockfile_path
 from code_search.engine.search import identify_subwords
@@ -86,6 +88,10 @@ ProgressCallback = Callable[[str, int, int], None]
 # under it keeps cross-file edge resolution correct on large indexes.
 _SQL_VAR_LIMIT = 900
 
+# Upper bound on error spans retained per file. A pathologically malformed file
+# cannot inflate the coverage table beyond this many ranges.
+_MAX_COVERAGE_RANGES = 50
+
 
 def _chunked(items: list[str], size: int) -> list[list[str]]:
     """Split *items* into consecutive sublists of at most *size* elements."""
@@ -103,6 +109,10 @@ StatusCallback = Callable[[str], None]
 # type, never a receiver-qualified ``Class.method``, so the resolver may fall
 # back to the unique type declaration sharing its leaf name.
 _TYPE_DECLARATION_KINDS = {"class", "interface", "enum", "type_alias"}
+
+#: Symbol kinds that can be invoked. A ``CALL_REFERENCE`` whose target is not
+#: callable is downgraded to ``USAGE``: the value was referenced, not called.
+_CALLABLE_KINDS = {"function", "method", "constructor", "class"}
 
 #: Comment markers promoted to first-class rationale evidence.
 _RATIONALE_MARKERS = re.compile(r"\b(NOTE|WHY|HACK|TODO|FIXME|ADR|RFC)\b", re.IGNORECASE)
@@ -166,6 +176,49 @@ def _extract_rationale(
     return rationale
 
 
+def _collect_error_ranges(tree: Any, source_bytes: bytes) -> tuple[list[list[int]], bool]:
+    """Return tree-sitter error ranges as 1-based inclusive line spans.
+
+    The ranges are merged and capped so a file with thousands of tiny syntax
+    errors cannot blow up the coverage row. A file is ``unusable`` when the
+    union of its error spans covers at least 80% of its lines: the structural
+    extraction is then too incomplete to trust.
+
+    Args:
+        tree: A tree-sitter tree, or ``None`` when parsing was unavailable.
+        source_bytes: The exact source that produced *tree*.
+
+    Returns:
+        ``(line_ranges, unusable)`` where each range is ``[start, end]`` using
+        1-based line numbers.
+    """
+    if tree is None:
+        return [], False
+    root = tree.root_node
+    if not root.has_error:
+        return [], False
+
+    raw: list[tuple[int, int]] = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.is_error or node.is_missing:
+            raw.append((int(node.start_point[0]), int(node.end_point[0])))
+            continue
+        stack.extend(reversed(node.children))
+
+    merged: list[list[int]] = []
+    for start, end in sorted(raw):
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    ranges = [[start + 1, end + 1] for start, end in merged[:_MAX_COVERAGE_RANGES]]
+    total_lines = source_bytes.count(b"\n") + 1
+    covered = sum(end - start + 1 for start, end in merged)
+    return ranges, bool(merged) and covered / max(total_lines, 1) >= 0.8
+
+
 def _process_file_worker(args: tuple[Path, bytes, str, tuple[str, ...] | None]) -> dict[str, Any]:
     """Standalone pickle-safe worker for parallel AST parsing.
 
@@ -198,6 +251,12 @@ def _process_file_worker(args: tuple[Path, bytes, str, tuple[str, ...] | None]) 
             else:
                 chunks = _module_fallback_chunk(file_path, source_bytes, language)
                 parse_failed = file_path.suffix.lower() not in (resource_extensions or ())
+    # Parse-error coverage: reuse the tree the extractor already produced. A
+    # file with ERROR/MISSING ranges is indexed partially; one whose errors
+    # cover most of the file is recorded as unusable.
+    tree = parser.parse_file(file_path, source_bytes=source_bytes)
+    error_ranges, parse_unusable = _collect_error_ranges(tree, source_bytes)
+    parse_failed = parse_failed or parse_unusable
     for chunk in chunks:
         if is_resource:
             chunk["chunk_type"] = "resource"
@@ -219,6 +278,8 @@ def _process_file_worker(args: tuple[Path, bytes, str, tuple[str, ...] | None]) 
         "rationale": rationale,
         "content_hash": content_hash,
         "parse_failed": parse_failed,
+        "parse_error_ranges": error_ranges,
+        "parse_unusable": parse_unusable,
     }
 
 
@@ -740,6 +801,15 @@ class IndexOrchestrator:
                     schema_version,
                     index_status,
                 )
+            stored_format = self._metadata.get_int("index_format_version")
+            if stored_format is None or stored_format < INDEX_FORMAT_VERSION:
+                force = True
+                incremental = False
+                logger.info(
+                    "Index format %s (required %s) requires re-index. Forcing full re-index.",
+                    stored_format,
+                    INDEX_FORMAT_VERSION,
+                )
             stored_scheme = get_representation_scheme_version(self._metadata)
             engine_built = bool(self._metadata.get("vector_model_name"))
             scheme_stale = (
@@ -780,12 +850,27 @@ class IndexOrchestrator:
             max_bytes = max(1, self._settings.max_file_bytes)
             oversized: list[Path] = []
             within_limits: list[Path] = []
+            coverage_events: list[dict[str, Any]] = []
             for candidate in all_files:
                 try:
                     if candidate.stat().st_size > max_bytes:
                         oversized.append(candidate)
+                        coverage_events.append(
+                            {
+                                "file_path": str(candidate),
+                                "kind": "skipped_oversized",
+                                "detail": f"size exceeds max_file_bytes={max_bytes}",
+                            }
+                        )
                         continue
-                except OSError:
+                except OSError as exc:
+                    coverage_events.append(
+                        {
+                            "file_path": str(candidate),
+                            "kind": "skipped_read",
+                            "detail": f"stat failed: {exc.__class__.__name__}",
+                        }
+                    )
                     continue
                 within_limits.append(candidate)
             all_files = within_limits
@@ -811,6 +896,7 @@ class IndexOrchestrator:
                         conn.execute("DELETE FROM module_edges;")
                         conn.execute("DELETE FROM symbol_rationale;")
                         conn.execute("DELETE FROM doc_links;")
+                        conn.execute("DELETE FROM symbol_degrees;")
                 except BaseException:
                     self._db.set_fts_triggers(True)
                     raise
@@ -905,6 +991,20 @@ class IndexOrchestrator:
                     self._db.set_fts_triggers(True)
                 fts_count = self._ensure_fts_parity()
                 self._metadata.set_fts_chunks(fts_count)
+                self._metadata.set(
+                    "last_indexed_at", datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                )
+                generation = self._compute_index_generation(root_path)
+                try:
+                    self._persist_coverage(coverage_events, generation, set())
+                except Exception as exc:
+                    logger.warning("Coverage persistence failed: %s", exc)
+                    self._metadata.set("index_generation", generation)
+                try:
+                    rebuild_derived_graph_data(self._db, root_path, self._settings)
+                except Exception as exc:
+                    logger.warning("Derived graph passes failed: %s", exc)
+                self._metadata.set_int("index_format_version", INDEX_FORMAT_VERSION)
                 self._metadata.set_index_status("ready")
                 return {
                     "total_files": 0,
@@ -957,7 +1057,14 @@ class IndexOrchestrator:
             for fp in files_to_process:
                 try:
                     source_bytes = fp.read_bytes()
-                except Exception:
+                except Exception as exc:
+                    coverage_events.append(
+                        {
+                            "file_path": str(fp),
+                            "kind": "skipped_read",
+                            "detail": f"read failed: {exc.__class__.__name__}",
+                        }
+                    )
                     continue
                 lang = self._parser.detect_language(fp, resource_extensions=res_exts) or "unknown"
                 worker_args.append((fp, source_bytes, lang, res_exts))
@@ -996,6 +1103,7 @@ class IndexOrchestrator:
             unresolved_edges: list[dict[str, Any]] = []
             import_edges: list[dict[str, Any]] = []
             has_resource_files = False
+            processed_paths: set[str] = set()
 
             persist_total = len(processed_results)
             suspend_fts = not incremental
@@ -1003,6 +1111,29 @@ class IndexOrchestrator:
                 with self._db.write_connection() as wconn:
                     for done, result in enumerate(processed_results, start=1):
                         file_path_str = result["file_path"]
+                        processed_paths.add(file_path_str)
+                        if result.get("parse_unusable"):
+                            coverage_events.append(
+                                {
+                                    "file_path": file_path_str,
+                                    "kind": "parse_unusable",
+                                    "detail": "syntax errors cover most of the file",
+                                    "line_ranges": json.dumps(
+                                        result.get("parse_error_ranges") or []
+                                    ),
+                                }
+                            )
+                        elif result.get("parse_error_ranges"):
+                            coverage_events.append(
+                                {
+                                    "file_path": file_path_str,
+                                    "kind": "parse_partial",
+                                    "detail": (
+                                        f"{len(result['parse_error_ranges'])} syntax error range(s)"
+                                    ),
+                                    "line_ranges": json.dumps(result["parse_error_ranges"]),
+                                }
+                            )
                         syms = result["symbols"]
                         edges = result["edges"]
                         chunks = result["chunks"]
@@ -1027,6 +1158,11 @@ class IndexOrchestrator:
 
                         id_map = self._symbol_store.insert_symbols_batch(syms, conn=wconn)
                         total_symbols += len(id_map)
+                        kind_by_id = {
+                            id_map[sym["fqn"]]: str(sym.get("kind") or "")
+                            for sym in syms
+                            if sym.get("fqn") in id_map
+                        }
                         if syms:
                             languages.add(syms[0].get("language", "unknown"))
 
@@ -1041,14 +1177,33 @@ class IndexOrchestrator:
                             if tgt_id is None and "::" not in tgt_fqn and file_path_str:
                                 tgt_id = id_map.get(f"{file_path_str}::{tgt_fqn}")
                             if src_id is not None and tgt_id is not None:
+                                edge_type = str(edge["edge_type"])
+                                target_kind = kind_by_id.get(tgt_id, "")
+                                if (
+                                    edge_type == "INHERITS"
+                                    and target_kind == "interface"
+                                    and kind_by_id.get(src_id) == "class"
+                                ):
+                                    edge_type = "IMPLEMENTS"
+                                elif (
+                                    edge_type == "CALL_REFERENCE"
+                                    and target_kind not in _CALLABLE_KINDS
+                                ):
+                                    edge_type = "USAGE"
+                                tier = "exact"
+                                if edge.get("via") == "import":
+                                    tier = "import"
+                                elif edge.get("via") == "type_infer":
+                                    tier = "type_infer"
                                 resolved_edges.append(
                                     {
                                         "source_symbol_id": src_id,
                                         "target_symbol_id": tgt_id,
-                                        "edge_type": edge["edge_type"],
+                                        "edge_type": edge_type,
                                         "source_range": edge.get("source_range"),
                                         "target_range": edge.get("target_range"),
-                                        "resolution_tier": "exact",
+                                        "resolution_tier": tier,
+                                        "properties": self._edge_properties(edge, tier),
                                     }
                                 )
                             else:
@@ -1128,37 +1283,53 @@ class IndexOrchestrator:
                         tgt_ids.update({r["fqn"]: r["id"] for r in tgt_rows})
                     batch_edges: list[dict[str, Any]] = []
                     name_rows_cache: dict[str, list[Any]] = {}
+                    kind_cache: dict[int, str] = {}
                     for edge in unresolved_edges:
                         edge_src_id: int | None = src_ids.get(edge.get("source_fqn", ""))
                         src_tier: str | None = "exact"
                         if edge_src_id is None:
-                            edge_src_id, src_tier = self._resolve_cross_file_symbol(
-                                conn,
-                                edge.get("source_fqn", ""),
-                                source_range=edge.get("source_range"),
-                                name_rows_cache=name_rows_cache,
+                            edge_src_id, src_tier, _src_candidates = (
+                                self._resolve_cross_file_symbol(
+                                    conn,
+                                    edge.get("source_fqn", ""),
+                                    source_range=edge.get("source_range"),
+                                    name_rows_cache=name_rows_cache,
+                                )
                             )
                         if edge_src_id is None:
                             continue
                         edge_tgt_id: int | None = tgt_ids.get(edge.get("target_fqn", ""))
                         tgt_tier: str | None = "exact"
+                        candidate_count = 1
                         if edge_tgt_id is None:
-                            edge_tgt_id, tgt_tier = self._resolve_cross_file_symbol(
+                            (
+                                edge_tgt_id,
+                                tgt_tier,
+                                candidate_count,
+                            ) = self._resolve_cross_file_symbol(
                                 conn,
                                 edge.get("target_fqn", ""),
                                 edge.get("source_fqn", ""),
                                 edge.get("source_range"),
-                                type_only=edge.get("edge_type") == "INHERITS",
+                                type_only=edge.get("edge_type") in ("INHERITS", "IMPLEMENTS")
+                                or edge.get("target_kind_hint") == "type",
+                                receiver_qualified=(
+                                    "." in str(edge.get("target_raw") or "")
+                                    and not str(edge.get("target_raw") or "")
+                                    .lstrip()
+                                    .startswith("new ")
+                                ),
+                                arg_count=edge.get("arg_count"),
                                 name_rows_cache=name_rows_cache,
                             )
                         if edge_tgt_id is None:
                             if not self._settings.capture_unresolved_callees:
                                 continue
-                            # Persist the unresolved/external callee
-                            # reference as a ``resolved: 0`` edge carrying the
-                            # raw callee text instead of dropping it, so
-                            # framework/external calls and typos surface in the
-                            # call graph (distinguishable by ``target_raw``).
+                            # Persist the unresolved/external reference as a
+                            # ``resolved: 0`` edge carrying the raw text instead
+                            # of dropping it. An ambiguous reference records its
+                            # tier and candidate count; it is never attached to
+                            # the first same-named symbol.
                             batch_edges.append(
                                 {
                                     "source_symbol_id": edge_src_id,
@@ -1166,20 +1337,44 @@ class IndexOrchestrator:
                                     "edge_type": edge["edge_type"],
                                     "source_range": edge.get("source_range"),
                                     "target_range": edge.get("target_range"),
+                                    "resolution_tier": tgt_tier,
                                     "resolved": 0,
                                     "target_raw": edge.get("target_raw")
                                     or edge.get("target_fqn", ""),
+                                    "properties": self._edge_properties(
+                                        edge,
+                                        tgt_tier,
+                                        candidate_count=candidate_count,
+                                    ),
                                 }
                             )
                             continue
-                        tier = src_tier if src_tier != "exact" else tgt_tier
+                        edge_tier: str | None = src_tier if src_tier != "exact" else tgt_tier
+                        via = edge.get("via")
+                        if edge_tier == "exact" and via == "import":
+                            edge_tier = "import"
+                        elif edge_tier == "exact" and via == "type_infer":
+                            edge_tier = "type_infer"
+                        edge_type = str(edge["edge_type"])
+                        target_kind = self._symbol_kind(conn, edge_tgt_id, kind_cache)
+                        if (
+                            edge_type == "INHERITS"
+                            and target_kind == "interface"
+                            and self._symbol_kind(conn, edge_src_id, kind_cache) == "class"
+                        ):
+                            edge_type = "IMPLEMENTS"
+                        elif edge_type == "CALL_REFERENCE" and target_kind not in _CALLABLE_KINDS:
+                            edge_type = "USAGE"
                         edge_dict: dict[str, Any] = {
                             "source_symbol_id": edge_src_id,
                             "target_symbol_id": edge_tgt_id,
-                            "edge_type": edge["edge_type"],
+                            "edge_type": edge_type,
                             "source_range": edge.get("source_range"),
                             "target_range": edge.get("target_range"),
-                            "resolution_tier": tier,
+                            "resolution_tier": edge_tier,
+                            "properties": self._edge_properties(
+                                edge, edge_tier, candidate_count=candidate_count
+                            ),
                         }
                         if edge_src_id == edge_tgt_id:
                             call_line = self._declaration_line_from_range(edge.get("source_range"))
@@ -1311,6 +1506,16 @@ class IndexOrchestrator:
             except Exception as exc:
                 logger.warning("Edge validation sweep failed: %s", exc)
 
+            # Derived trust passes: canonical names, TESTS edges, entry points,
+            # importance, and degree counts. They run last because every one of
+            # them depends on the final edge set.
+            if status_callback is not None:
+                status_callback("Computing graph trust passes")
+            try:
+                rebuild_derived_graph_data(self._db, root_path, self._settings)
+            except Exception as exc:
+                logger.warning("Derived graph passes failed: %s", exc)
+
             self._metadata.set(
                 "last_indexed_at", datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             )
@@ -1339,6 +1544,13 @@ class IndexOrchestrator:
                 "index_exclusion_patterns", sorted(exclusion_patterns) if exclusion_patterns else []
             )
             self._metadata.set("index_prose", str(self._settings.index_prose).lower())
+            generation = self._compute_index_generation(root_path)
+            try:
+                self._persist_coverage(coverage_events, generation, processed_paths)
+            except Exception as exc:
+                logger.warning("Coverage persistence failed: %s", exc)
+                self._metadata.set("index_generation", generation)
+            self._metadata.set_int("index_format_version", INDEX_FORMAT_VERSION)
             self._metadata.set_index_status("ready")
             if status_callback is not None:
                 status_callback("Optimizing index storage")
@@ -1596,6 +1808,98 @@ class IndexOrchestrator:
                 [(prefix, language, count) for (prefix, language), count in prefix_counts.items()],
             )
         return len(rows)
+
+    def _compute_index_generation(self, root_path: Path) -> str:
+        """Return a stable digest identifying this published graph.
+
+        The generation changes whenever the indexed content does, and is the
+        cache/cursor key for later adjacency and paging layers. Including the
+        finish timestamp keeps two identical rebuilds distinguishable while
+        the table counts capture semantic changes.
+        """
+        with self._db.connect() as conn:
+            rows = {
+                table: int(conn.execute(f"SELECT COUNT(*) AS n FROM {table};").fetchone()["n"])
+                for table in ("symbols", "graph_edges", "code_chunks")
+            }
+            finished = conn.execute(
+                "SELECT value FROM index_metadata WHERE key = 'last_indexed_at';"
+            ).fetchone()
+        payload = "|".join(
+            [
+                str(root_path.resolve()),
+                finished["value"] if finished is not None else "",
+                str(rows["symbols"]),
+                str(rows["graph_edges"]),
+                str(rows["code_chunks"]),
+                str(SCHEMA_VERSION),
+                str(INDEX_FORMAT_VERSION),
+            ]
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+    def _persist_coverage(
+        self,
+        events: list[dict[str, Any]],
+        generation: str,
+        processed_paths: set[str],
+    ) -> None:
+        """Publish coverage rows and the index generation atomically.
+
+        Coverage from the previous generation is superseded entirely. Rows for
+        files that were not part of this run (incremental indexing) are carried
+        forward, while rows for reprocessed files are replaced by the current
+        events so a fixed file stops reporting a stale gap.
+
+        Args:
+            events: Coverage rows ``{file_path, kind, detail?, line_ranges?}``
+                collected during discovery and parsing.
+            generation: The generation digest to stamp on every row.
+            processed_paths: Files whose source was parsed in this run; their
+                previous coverage rows must not be carried forward.
+        """
+        current: dict[tuple[str, str], dict[str, Any]] = {}
+        for event in events:
+            key = (str(event["file_path"]), str(event["kind"]))
+            current[key] = event
+        event_paths = {file_path for file_path, _kind in current}
+
+        with self._db.write_transaction() as conn:
+            current_files = {
+                str(row["file_path"])
+                for row in conn.execute("SELECT file_path FROM file_checksums;")
+            }
+            carried: list[dict[str, Any]] = []
+            for row in conn.execute(
+                "SELECT file_path, kind, detail, line_ranges FROM index_coverage;"
+            ):
+                file_path = str(row["file_path"])
+                if (
+                    file_path in current_files
+                    and file_path not in processed_paths
+                    and file_path not in event_paths
+                ):
+                    carried.append(dict(row))
+            conn.execute("DELETE FROM index_coverage;")
+            conn.executemany(
+                "INSERT OR REPLACE INTO index_coverage "
+                "(file_path, kind, detail, line_ranges, generation) "
+                "VALUES (?, ?, ?, ?, ?);",
+                [
+                    (
+                        str(row["file_path"]),
+                        str(row["kind"]),
+                        str(row.get("detail") or ""),
+                        row.get("line_ranges"),
+                        generation,
+                    )
+                    for row in [*current.values(), *carried]
+                ],
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO index_metadata (key, value) VALUES (?, ?);",
+                ("index_generation", generation),
+            )
 
     def _sweep_stale_files(self, root_path: Path) -> int:
         """Prune rows for files that no longer exist or now fall under exclusions."""
@@ -2029,6 +2333,63 @@ class IndexOrchestrator:
         if module_rows:
             self._module_store.insert_edges_batch(module_rows)
 
+    @staticmethod
+    def _symbol_arity(fqn: str, language: str) -> int | None:
+        """Return a symbol's parameter count, or ``None`` when it is unknown.
+
+        Java/C#/Kotlin/Go/C++ declarations always encode their parameter list
+        (a zero-argument method simply has no ``(...)`` suffix). TypeScript and
+        Python method FQNs may omit parameters, so an absent list is unknown
+        rather than zero and must not filter candidates.
+        """
+        if fqn.endswith(")"):
+            start = fqn.rfind("(")
+            if start != -1:
+                inner = fqn[start + 1 : -1].strip()
+                if not inner:
+                    return 0
+                count = 1
+                depth = 0
+                for char in inner:
+                    if char in "<[(":
+                        depth += 1
+                    elif char in ">])":
+                        depth = max(0, depth - 1)
+                    elif char == "," and depth == 0:
+                        count += 1
+                return count
+        if language in ("java", "c_sharp", "kotlin", "go", "cpp"):
+            return 0
+        return None
+
+    @staticmethod
+    def _symbol_kind(conn: Any, symbol_id: int, cache: dict[int, str]) -> str:
+        """Return a symbol's kind, cached for the cross-file resolution batch."""
+        kind = cache.get(symbol_id)
+        if kind is None:
+            row = conn.execute("SELECT kind FROM symbols WHERE id = ?;", (symbol_id,)).fetchone()
+            kind = str(row["kind"]) if row is not None else ""
+            cache[symbol_id] = kind
+        return kind
+
+    def _edge_properties(
+        self,
+        edge: dict[str, Any],
+        tier: str | None,
+        *,
+        candidate_count: int = 1,
+    ) -> dict[str, Any]:
+        """Build the evidence object stored on a resolved or unresolved edge."""
+        properties: dict[str, Any] = {"via": edge.get("via") or tier or "unknown"}
+        line = self._declaration_line_from_range(edge.get("source_range"))
+        if line is not None:
+            properties["line"] = line
+        if edge.get("arg_count") is not None:
+            properties["arg_count"] = int(edge["arg_count"])
+        if candidate_count > 1:
+            properties["candidate_count"] = candidate_count
+        return properties
+
     def _resolve_cross_file_target(
         self,
         conn: Any,
@@ -2057,12 +2418,18 @@ class IndexOrchestrator:
         source_fqn: str | None = None,
         source_range: str | None = None,
         type_only: bool = False,
+        receiver_qualified: bool = False,
+        arg_count: int | None = None,
         name_rows_cache: dict[str, list[Any]] | None = None,
-    ) -> tuple[int | None, str | None]:
-        """Resolve *symbol_fqn* against persisted symbols, returning ``(id, tier)``.
+    ) -> tuple[int | None, str | None, int]:
+        """Resolve *symbol_fqn* against persisted symbols with evidence.
 
         Tier names match the persisted ``resolution_tier`` vocabulary:
-        ``exact``, ``conventional``, ``same_file``, ``range``, ``fallback``.
+        ``exact``, ``conventional``, ``same_file``, ``range``, ``fallback``,
+        and ``ambiguous``. The third return value is the number of competing
+        candidates. An ambiguous reference is never attached to the first
+        same-named symbol: it returns ``(None, "ambiguous", n)`` so the caller
+        can persist ``resolved = 0`` evidence.
 
         Args:
             conn: An open graph connection.
@@ -2070,17 +2437,25 @@ class IndexOrchestrator:
             source_fqn: FQN of the referencing symbol (for same-file/range tiers).
             source_range: Source range of the reference.
             type_only: When ``True`` the target names a type declaration (an
-                inheritance base), so a dotted import-map path that does not
-                byte-match a symbol may fall back to the unique type sharing
-                its leaf name. Receiver-qualified call targets keep the default
-                ``False`` and never fall through to that fallback.
+                inheritance base or an object creation), so a dotted
+                import-map path that does not byte-match a symbol may fall back
+                to the unique type sharing its leaf name.
+            receiver_qualified: When ``True`` the raw target was a member
+                expression (``repo.save``), so an unmatched receiver must not
+                attach to a same-named method of another type. A dotted import
+                path (``app.models.Article``) is not receiver-qualified.
+            arg_count: Number of arguments at the call site. When several
+                same-named overloads remain, candidates whose parameter count
+                matches are preferred; no match leaves the reference ambiguous.
             name_rows_cache: Optional per-run cache of ``name -> symbol rows``.
                 Candidate rows depend only on the leaf name, so reusing them
                 avoids re-querying the same common names for every edge.
         """
         if not symbol_fqn:
-            return None, None
-        simple = symbol_fqn.rsplit(".", 1)[-1] if "." in symbol_fqn else symbol_fqn
+            return None, None, 0
+        declaration = symbol_fqn.rsplit("::", 1)[-1] if "::" in symbol_fqn else symbol_fqn
+        stripped_declaration = self._strip_params(declaration)
+        simple = stripped_declaration.rsplit(".", 1)[-1]
         source_path = source_fqn.split("::", 1)[0] if source_fqn and "::" in source_fqn else ""
         call_line = self._declaration_line_from_range(source_range)
         stripped = self._strip_params(symbol_fqn)
@@ -2090,7 +2465,7 @@ class IndexOrchestrator:
         else:
             rows = conn.execute(
                 "SELECT s.id, s.fqn, s.conventional_fqn, s.file_path, s.line_start, s.line_end, "
-                "s.kind, p.name AS parent_name "
+                "s.kind, s.language, p.name AS parent_name "
                 "FROM symbols s LEFT JOIN symbols p ON s.parent_symbol_id = p.id "
                 "WHERE s.name = ? ORDER BY s.id;",
                 (simple,),
@@ -2099,55 +2474,78 @@ class IndexOrchestrator:
                 name_rows_cache[simple] = rows
 
         exact = [r for r in rows if r["fqn"] == symbol_fqn]
-        if exact:
-            return int(exact[0]["id"]), "exact"
+        if len(exact) == 1:
+            return int(exact[0]["id"]), "exact", 1
+        if len(exact) > 1:
+            return None, "ambiguous", len(exact)
+
+        if arg_count is not None and rows:
+            known_arity: list[tuple[int, Any]] = []
+            unknown_arity: list[Any] = []
+            for row in rows:
+                arity = self._symbol_arity(str(row["fqn"]), str(row["language"] or ""))
+                if arity is None:
+                    unknown_arity.append(row)
+                else:
+                    known_arity.append((arity, row))
+            arity_matches = [row for arity, row in known_arity if arity == arg_count]
+            if arity_matches:
+                rows = [*arity_matches, *unknown_arity]
 
         conv = [
             r
             for r in rows
             if r["conventional_fqn"] and self._strip_params(r["conventional_fqn"]) == stripped
         ]
-        if conv:
-            return int(conv[0]["id"]), "conventional"
+        if len(conv) == 1:
+            return int(conv[0]["id"]), "conventional", 1
+        if len(conv) > 1:
+            return None, "ambiguous", len(conv)
 
         # Qualified-name tier: a dotted target like ``AuthService.authenticate``
         # names its enclosing class, so it must resolve to the symbol whose
         # parent class matches, NOT to a same-named method in the caller's file.
         class_part = None
-        if "." in symbol_fqn and not symbol_fqn.startswith("::"):
-            class_part = self._strip_params(symbol_fqn).rsplit(".", 1)[0]
-            if class_part:
-                qualified = [
-                    r
-                    for r in rows
-                    if r["parent_name"] == class_part
-                    and self._strip_params(r["fqn"]).endswith(symbol_fqn)
-                ]
-                if qualified:
-                    return int(qualified[0]["id"]), "conventional"
+        if "." in declaration:
+            class_part = stripped_declaration.rsplit(".", 1)[0]
+        class_leaf = class_part.rsplit(".", 1)[-1] if class_part else None
+        if class_part:
+            qualified = [
+                r for r in rows if r["parent_name"] == class_part or r["parent_name"] == class_leaf
+            ]
+            if len(qualified) == 1:
+                return int(qualified[0]["id"]), "conventional", 1
+            if len(qualified) > 1:
+                return None, "ambiguous", len(qualified)
 
-        # A receiver-qualified call target (e.g. ``repository.save`` or
-        # ``articleService.save``) must NEVER merge onto a same-named method of
-        # a different receiver via the ``same_file``/``range``/``fallback``
-        # tiers. Only a receiver whose enclosing type matches the callee's may
-        # attach; an unknown receiver yields no edge, never a wrong one.
-        if class_part is not None:
+        if class_part is not None and receiver_qualified:
+            # A receiver-qualified call target (e.g. ``repository.save`` or
+            # ``articleService.save``) must NEVER merge onto a same-named method
+            # of a different receiver via the ``same_file``/``range``/``fallback``
+            # tiers. Only a receiver whose enclosing type matches the callee's
+            # may attach; an unknown receiver yields no edge, never a wrong one.
             same_qualified = [
                 r
                 for r in rows
-                if source_path and r["file_path"] == source_path and r["parent_name"] == class_part
+                if source_path
+                and r["file_path"] == source_path
+                and (r["parent_name"] == class_part or r["parent_name"] == class_leaf)
             ]
-            if same_qualified:
-                return int(same_qualified[0]["id"]), "same_file"
+            if len(same_qualified) == 1:
+                return int(same_qualified[0]["id"]), "same_file", 1
+            if len(same_qualified) > 1:
+                return None, "ambiguous", len(same_qualified)
             if type_only:
                 typed = [r for r in rows if (r["kind"] or "") in _TYPE_DECLARATION_KINDS]
                 if len(typed) == 1:
-                    return int(typed[0]["id"]), "fallback"
-            return None, None
+                    return int(typed[0]["id"]), "fallback", 1
+            return None, "ambiguous" if rows else None, len(rows)
 
         same_file = [r for r in rows if source_path and r["file_path"] == source_path]
-        if same_file:
-            return int(same_file[0]["id"]), "same_file"
+        if len(same_file) == 1:
+            return int(same_file[0]["id"]), "same_file", 1
+        if len(same_file) > 1:
+            return None, "ambiguous", len(same_file)
 
         if call_line is not None:
             decl = [
@@ -2157,19 +2555,21 @@ class IndexOrchestrator:
                 and r["line_end"] is not None
                 and r["line_start"] <= call_line <= r["line_end"]
             ]
-            if decl:
-                return int(decl[0]["id"]), "range"
+            if len(decl) == 1:
+                return int(decl[0]["id"]), "range", 1
+            if len(decl) > 1:
+                return None, "ambiguous", len(decl)
 
         if len(rows) == 1:
-            return int(rows[0]["id"]), "fallback"
+            return int(rows[0]["id"]), "fallback", 1
         if type_only:
             typed = [r for r in rows if (r["kind"] or "") in _TYPE_DECLARATION_KINDS]
             if len(typed) == 1:
-                return int(typed[0]["id"]), "fallback"
+                return int(typed[0]["id"]), "fallback", 1
         if rows:
             logger.debug(
                 "Dropping ambiguous cross-file symbol %r (%d candidates)",
                 symbol_fqn,
                 len(rows),
             )
-        return None, None
+        return None, "ambiguous" if rows else None, len(rows)

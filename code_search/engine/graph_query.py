@@ -21,6 +21,7 @@ from __future__ import annotations
 import contextlib
 import json
 import re
+import sqlite3
 import time
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -43,9 +44,13 @@ from code_search.engine.symbols import SymbolStore
 CONFIDENCE_BY_TIER: dict[str, str] = {
     "exact": "EXTRACTED",
     "conventional": "EXTRACTED",
+    "import": "EXTRACTED",
     "same_file": "INFERRED",
     "range": "INFERRED",
+    "type_infer": "INFERRED",
+    "derived": "INFERRED",
     "fallback": "AMBIGUOUS",
+    "ambiguous": "AMBIGUOUS",
 }
 
 #: Confidence ordering, most trustworthy first.
@@ -56,9 +61,31 @@ CONFIDENCE_ORDER: dict[str, int] = {
     "UNRESOLVED": 3,
 }
 
-VALID_EDGE_TYPES = {"CALLS", "INHERITS", "REFERENCES", "IMPORTS"}
+VALID_EDGE_TYPES = {
+    "CALLS",
+    "IMPORTS",
+    "INHERITS",
+    "IMPLEMENTS",
+    "REFERENCES",
+    "USAGE",
+    "CALL_REFERENCE",
+    "TESTS",
+}
 DEFAULT_EDGE_TYPES = frozenset({"CALLS", "INHERITS"})
 _TYPE_KINDS = frozenset({"class", "interface", "enum"})
+
+#: Bounded aspects accepted by :meth:`GraphQueryService.architecture`.
+ARCHITECTURE_ASPECTS = frozenset(
+    {
+        "overview",
+        "structure",
+        "dependencies",
+        "hotspots",
+        "entry_points",
+        "clusters",
+        "cycles",
+    }
+)
 
 _MAX_DEPTH = 4
 _MAX_NODES = 200
@@ -112,12 +139,14 @@ def resolve_confidence(resolution_tier: str | None, resolved: bool = True) -> st
 
     Args:
         resolution_tier: Persisted tier (``exact``, ``conventional``,
-            ``same_file``, ``range``, ``fallback``) or ``None``.
+            ``import``, ``same_file``, ``range``, ``type_infer``, ``derived``,
+            ``fallback``, ``ambiguous``) or ``None``.
         resolved: Whether the edge target resolved to a symbol.
 
     Returns:
-        ``EXTRACTED`` for exact/conventional, ``INFERRED`` for same-file/range,
-        ``AMBIGUOUS`` for fallback, and ``UNRESOLVED`` when *resolved* is false.
+        ``EXTRACTED`` for exact/conventional/import, ``INFERRED`` for
+        same-file/range/type-inferred/derived, ``AMBIGUOUS`` for
+        fallback/ambiguous, and ``UNRESOLVED`` when *resolved* is false.
     """
     if not resolved:
         return "UNRESOLVED"
@@ -369,6 +398,7 @@ class ExplainAnswer:
     doc_links: list[dict[str, Any]] = field(default_factory=list)
     outcome: str = "resolved"
     candidates: list[dict[str, Any]] = field(default_factory=list)
+    truncated: bool = False
     stats: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -381,6 +411,7 @@ class ExplainAnswer:
             "rationale": self.rationale,
             "doc_links": self.doc_links,
             "candidates": self.candidates,
+            "truncated": self.truncated,
             "stats": self.stats,
         }
 
@@ -396,6 +427,14 @@ class ImpactAnswer:
     production_files: list[str] = field(default_factory=list)
     test_files: list[str] = field(default_factory=list)
     summary: dict[str, int] = field(default_factory=dict)
+    test_symbols: list[GraphNode] = field(default_factory=list)
+    production_symbols: list[GraphNode] = field(default_factory=list)
+    risks: dict[str, str] = field(default_factory=dict)
+    risk_summary: dict[str, int] = field(default_factory=dict)
+    direction: str = "inbound"
+    via: list[str] = field(default_factory=list)
+    fixpoint: bool = False
+    truncated: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         """Return the structured impact payload."""
@@ -406,6 +445,14 @@ class ImpactAnswer:
             "files": self.files,
             "production_files": self.production_files,
             "test_files": self.test_files,
+            "test_symbols": [n.as_dict() for n in self.test_symbols],
+            "production_symbols": [n.as_dict() for n in self.production_symbols],
+            "risks": self.risks,
+            "risk_summary": self.risk_summary,
+            "direction": self.direction,
+            "via": self.via,
+            "fixpoint": self.fixpoint,
+            "truncated": self.truncated,
             "summary": self.summary,
         }
 
@@ -503,6 +550,7 @@ class GraphQueryService:
         token_budget: int = _DEFAULT_TOKEN_BUDGET,
         seeds: list[str] | None = None,
         include_external: bool = False,
+        direction: str = "both",
     ) -> GraphAnswer:
         """Traverse the graph from hybrid-search seeds and answer *question*.
 
@@ -518,12 +566,18 @@ class GraphQueryService:
                 callee leaves are collapsed out of the neighbourhood so the
                 answer is a clean in-corpus graph. The collapsed count is
                 reported in ``stats["collapsed_externals"]``.
+            direction: ``both`` (default neighbourhood), ``inbound``
+                (callers/importers/subtypes), or ``outbound``
+                (callees/imports/base types). Unknown values fall back to
+                ``both`` for compatibility.
 
         Returns:
             A :class:`GraphAnswer`; ``outcome`` is ``no_seed`` when nothing
             could be mapped to a symbol.
         """
         start = time.monotonic()
+        if direction not in {"inbound", "outbound", "both"}:
+            direction = "both"
         depth = max(0, min(depth, _MAX_DEPTH))
         max_nodes = max(1, min(max_nodes, _MAX_NODES))
         active_types = (edge_types or set(DEFAULT_EDGE_TYPES)) & VALID_EDGE_TYPES
@@ -532,9 +586,11 @@ class GraphQueryService:
             return GraphAnswer(
                 question=question,
                 outcome="no_seed",
-                stats={"elapsed_ms": round((time.monotonic() - start) * 1000, 1)},
+                stats={
+                    "direction": direction,
+                    "elapsed_ms": round((time.monotonic() - start) * 1000, 1),
+                },
             )
-
         nodes: dict[str, GraphNode] = {n.key: n for n in seed_nodes}
         edges: list[GraphEdge] = []
         seen_edges: set[tuple[str, str, str, str]] = set()
@@ -549,7 +605,11 @@ class GraphQueryService:
             if len(nodes) >= max_nodes:
                 truncated = True
                 break
-            outgoing = self._fetch_outgoing(node, active_types)
+            outgoing, fanout_truncated = self._fetch_outgoing(
+                node, active_types, direction=direction
+            )
+            if fanout_truncated:
+                truncated = True
             for edge, target in outgoing:
                 if target.source == "external" and not include_external:
                     collapsed_externals += 1
@@ -606,6 +666,7 @@ class GraphQueryService:
             stats={
                 "depth": depth,
                 "max_nodes": max_nodes,
+                "direction": direction,
                 "edge_types": sorted(active_types),
                 "visited": len(nodes),
                 "returned": len(ordered_nodes),
@@ -810,40 +871,71 @@ class GraphQueryService:
         )
 
     def _fetch_outgoing(
-        self, node: GraphNode, edge_types: set[str]
-    ) -> list[tuple[GraphEdge, GraphNode]]:
-        """Return forward edges from *node*, including module imports when asked."""
+        self, node: GraphNode, edge_types: set[str], *, direction: str = "both"
+    ) -> tuple[list[tuple[GraphEdge, GraphNode]], bool]:
+        """Return one hop of neighbours and whether the fan-out was capped.
+
+        Args:
+            node: The node being expanded.
+            edge_types: Edge types to traverse.
+            direction: ``both``, ``inbound``, or ``outbound``. Containment is
+                structural and only expands in the outbound/both direction.
+
+        Returns:
+            ``(neighbours, truncated)`` where ``truncated`` is ``True`` when
+            more edges were available than the fan-out cap (including an
+            over-cap containment list).
+        """
         outgoing: list[tuple[GraphEdge, GraphNode]] = []
+        truncated = False
         if node.source == "symbol" and node.line_start is not None:
             with self._db.connect() as conn:
                 symbol_row = conn.execute(
                     "SELECT id FROM symbols WHERE fqn = ? LIMIT 1;", (node.fqn,)
                 ).fetchone()
             if symbol_row is not None:
-                outgoing.extend(
-                    self._fetch_symbol_edges(
-                        node.key, int(symbol_row["id"]), edge_types, direction="out"
+                if direction in {"outbound", "both"}:
+                    outgoing.extend(
+                        self._fetch_symbol_edges(
+                            node.key, int(symbol_row["id"]), edge_types, direction="out"
+                        )
                     )
-                )
                 # A neighbourhood is more useful than a one-way slice for
                 # "how does X flow" questions: callers/importers are as
-                # relevant as callees. The result is still bounded by the BFS
-                # caps and rendered with its traversal direction.
-                outgoing.extend(
-                    self._fetch_symbol_edges(
-                        node.key, int(symbol_row["id"]), edge_types, direction="in"
+                # relevant as callees. An explicit direction narrows the walk
+                # to the requested side only.
+                if direction in {"inbound", "both"}:
+                    outgoing.extend(
+                        self._fetch_symbol_edges(
+                            node.key, int(symbol_row["id"]), edge_types, direction="in"
+                        )
                     )
-                )
 
         # Containment is structural (not a graph_edges CHECK kind): it connects
         # a type/file node to the declarations it owns so a class seed can
         # reach its methods and a module seed can reach its top-level symbols.
-        outgoing.extend(self._fetch_contained(node))
+        if direction in {"outbound", "both"}:
+            contained, containment_truncated = self._fetch_contained(node)
+            outgoing.extend(contained)
+            truncated = truncated or containment_truncated
 
         if "IMPORTS" in edge_types and node.file_path:
             relative = self._relative_path(node.file_path)
-            for importer in self._modules.get_imports(relative, max_depth=1):
-                target_path = importer["path"]
+            related: list[tuple[dict[str, Any], str]] = []
+            if direction in {"outbound", "both"}:
+                related.extend(
+                    (item, "forward") for item in self._modules.get_imports(relative, max_depth=1)
+                )
+            if direction in {"inbound", "both"}:
+                related.extend(
+                    (item, "reverse") for item in self._modules.get_importers(relative, max_depth=1)
+                )
+            seen_paths: set[str] = set()
+            for related_file, traversal in related:
+                target_path = related_file["path"]
+                if target_path in seen_paths:
+                    continue
+                seen_paths.add(target_path)
                 target_node = GraphNode(
                     key=f"file:{target_path}",
                     fqn=target_path,
@@ -861,33 +953,44 @@ class GraphQueryService:
                             target=target_node.key,
                             relation="IMPORTS",
                             confidence="EXTRACTED",
+                            direction=traversal,
                             target_raw=target_path,
                         ),
                         target_node,
                     )
                 )
-        return outgoing[:_MAX_FANOUT]
+        if len(outgoing) > _MAX_FANOUT:
+            truncated = True
+            outgoing = outgoing[:_MAX_FANOUT]
+        return outgoing, truncated
 
-    def _fetch_contained(self, node: GraphNode) -> list[tuple[GraphEdge, GraphNode]]:
-        """Return synthetic ``CONTAINS`` edges for a type or file node."""
+    def _fetch_contained(self, node: GraphNode) -> tuple[list[tuple[GraphEdge, GraphNode]], bool]:
+        """Return synthetic ``CONTAINS`` edges for a type or file node.
+
+        The boolean result reports whether the declaration list exceeded the
+        containment cap. ``LIMIT cap + 1`` distinguishes "exactly cap" from
+        "more than cap" without an extra count query.
+        """
+        limit = _MAX_FANOUT + 1
         with self._db.connect() as conn:
             if node.source == "symbol":
                 rows = conn.execute(
                     "SELECT child.* FROM symbols child "
                     "JOIN symbols parent ON child.parent_symbol_id = parent.id "
-                    "WHERE parent.fqn = ? ORDER BY child.line_start, child.id LIMIT 50;",
-                    (node.fqn,),
+                    "WHERE parent.fqn = ? ORDER BY child.line_start, child.id LIMIT ?;",
+                    (node.fqn, limit),
                 ).fetchall()
             elif node.source == "file" and node.file_path:
                 rows = conn.execute(
                     "SELECT * FROM symbols WHERE file_path = ? "
-                    "AND parent_symbol_id IS NULL ORDER BY line_start, id LIMIT 50;",
-                    (node.file_path,),
+                    "AND parent_symbol_id IS NULL ORDER BY line_start, id LIMIT ?;",
+                    (node.file_path, limit),
                 ).fetchall()
             else:
                 rows = []
+        truncated = len(rows) > _MAX_FANOUT
         result: list[tuple[GraphEdge, GraphNode]] = []
-        for row in rows:
+        for row in rows[:_MAX_FANOUT]:
             child = self._node_from_symbol(dict(row))
             result.append(
                 (
@@ -900,10 +1003,15 @@ class GraphQueryService:
                     child,
                 )
             )
-        return result
+        return result, truncated
 
     def _fetch_symbol_edges(
-        self, subject_key: str, symbol_id: int, edge_types: set[str], direction: str
+        self,
+        subject_key: str,
+        symbol_id: int,
+        edge_types: set[str],
+        direction: str,
+        conn: sqlite3.Connection | None = None,
     ) -> list[tuple[GraphEdge, GraphNode]]:
         """Return one hop of symbol edges in the requested direction.
 
@@ -911,6 +1019,14 @@ class GraphQueryService:
         direction (source symbol → target symbol); ``direction`` records
         whether the edge was traversed away from (``forward``) or towards
         (``reverse``) the queried subject.
+
+        Args:
+            subject_key: Graph-answer key of the queried subject.
+            symbol_id: Stored symbol id of the queried subject.
+            edge_types: Edge types to include.
+            direction: ``out`` for outgoing, ``in`` for incoming.
+            conn: Optional reader connection to reuse. Batch callers (impact)
+                pass one connection instead of opening one per visited node.
         """
         if not edge_types:
             return []
@@ -935,8 +1051,11 @@ class GraphQueryService:
                 "ORDER BY e.edge_type, s.fqn;"
             )
             params = [symbol_id, *sorted(edge_types)]
-        with self._db.connect() as conn:
+        if conn is not None:
             rows = conn.execute(sql, params).fetchall()
+        else:
+            with self._db.connect() as owned:
+                rows = owned.execute(sql, params).fetchall()
         result: list[tuple[GraphEdge, GraphNode]] = []
         for row in rows:
             resolved = bool(row["resolved"])
@@ -1317,6 +1436,7 @@ class GraphQueryService:
         nodes: dict[str, GraphNode] = {node.key: node}
         edges: list[GraphEdge] = []
         seen: set[tuple[str, str, str, str]] = set()
+        truncated = False
 
         for node_depth in range(max(0, min(depth, _MAX_DEPTH))):
             layer = [
@@ -1330,29 +1450,35 @@ class GraphQueryService:
                         ).fetchone()
                     if current_row is not None:
                         current_id = int(current_row["id"])
+                        outgoing_edges = self._fetch_symbol_edges(
+                            current.key, current_id, active, "out"
+                        )
+                        truncated = truncated or len(outgoing_edges) > _MAX_FANOUT
                         self._append_edges(
                             nodes,
                             edges,
                             seen,
-                            self._fetch_symbol_edges(current.key, current_id, active, "out")[
-                                :_MAX_FANOUT
-                            ],
+                            outgoing_edges[:_MAX_FANOUT],
                             node_depth,
                         )
+                        incoming_edges = self._fetch_symbol_edges(
+                            current.key, current_id, active, "in"
+                        )
+                        truncated = truncated or len(incoming_edges) > _MAX_FANOUT
                         self._append_edges(
                             nodes,
                             edges,
                             seen,
-                            self._fetch_symbol_edges(current.key, current_id, active, "in")[
-                                :_MAX_FANOUT
-                            ],
+                            incoming_edges[:_MAX_FANOUT],
                             node_depth,
                         )
+                contained, containment_truncated = self._fetch_contained(current)
+                truncated = truncated or containment_truncated
                 self._append_edges(
                     nodes,
                     edges,
                     seen,
-                    self._fetch_contained(current),
+                    contained,
                     node_depth,
                 )
                 if "IMPORTS" in active and current.file_path:
@@ -1376,6 +1502,7 @@ class GraphQueryService:
             rationale=rationale,
             doc_links=doc_links,
             outcome="resolved",
+            truncated=truncated,
             stats={
                 "depth": depth,
                 "incoming": sum(1 for e in edges if e.direction == "reverse"),
@@ -1491,16 +1618,41 @@ class GraphQueryService:
         *,
         depth: int = 3,
         max_nodes: int = 200,
+        direction: str = "inbound",
+        edge_types: set[str] | None = None,
+        include_imports: bool = True,
+        fixpoint: bool = False,
+        seed_filter: str = "all",
     ) -> ImpactAnswer:
-        """Return symbols impacted (reverse-reachable) by *changed_paths*.
+        """Return symbols reached from *changed_paths* through the graph.
 
-        Changed files map to their declared symbols; reverse BFS over
-        ``CALLS``/``INHERITS`` finds callers and subtypes, and reverse
-        ``module_edges`` traversal adds importing files even when no symbol
-        call edge exists.
+        The default is a reverse walk (callers and subtypes) capped at *depth*.
+        ``direction=outbound`` answers "what does this change depend on";
+        ``both`` widens the neighbourhood. ``fixpoint`` walks to closure
+        instead of stopping at *depth*, still bounded by *max_nodes*.
+
+        Args:
+            changed_paths: Absolute or index-relative changed paths.
+            depth: Maximum traversal depth (clipped to 4) unless *fixpoint*.
+            max_nodes: Maximum returned nodes (clipped to 200).
+            direction: ``inbound``, ``outbound``, or ``both``.
+            edge_types: Symbol edge types to traverse (default ``CALLS`` and
+                ``INHERITS``).
+            include_imports: Also traverse file-level import edges.
+            fixpoint: Walk to closure instead of stopping at *depth*.
+            seed_filter: ``all`` seeds every symbol in the changed files;
+                ``product`` drops symbols in test files.
+
+        Returns:
+            An :class:`ImpactAnswer` with the impacted symbols, files split
+            into production/test, per-symbol risk labels, and traversal
+            provenance.
         """
         depth = max(1, min(depth, _MAX_DEPTH))
         max_nodes = max(1, min(max_nodes, _MAX_NODES))
+        if direction not in {"inbound", "outbound", "both"}:
+            direction = "inbound"
+        active_types = (edge_types or set(DEFAULT_EDGE_TYPES)) & VALID_EDGE_TYPES
         changed_stored: list[str] = []
         for path in changed_paths:
             resolved = self._resolve_changed_path(path)
@@ -1510,62 +1662,95 @@ class GraphQueryService:
         seed_nodes: dict[str, GraphNode] = {}
         for stored in changed_stored:
             for symbol in self._symbols.lookup_by_file(stored):
+                if seed_filter == "product" and _is_test_file(str(symbol.get("file_path") or "")):
+                    continue
                 node = self._node_from_symbol(symbol)
                 seed_nodes[node.key] = node
+            if not include_imports:
+                continue
+            import_depth = 1 if fixpoint else depth
             for rel in self._relative_changed_paths(stored):
-                for importer in self._modules.get_importers(rel, max_depth=depth):
-                    imported_path = importer["path"]
+                related: list[dict[str, Any]] = []
+                if direction in ("inbound", "both"):
+                    related.extend(self._modules.get_importers(rel, max_depth=import_depth))
+                if direction in ("outbound", "both"):
+                    related.extend(self._modules.get_imports(rel, max_depth=import_depth))
+                for related_file in related:
+                    related_path = related_file["path"]
                     target = GraphNode(
-                        key=f"file:{imported_path}",
-                        fqn=imported_path,
-                        name=imported_path.rsplit("/", 1)[-1],
+                        key=f"file:{related_path}",
+                        fqn=related_path,
+                        name=related_path.rsplit("/", 1)[-1],
                         kind="file",
-                        file_path=imported_path,
+                        file_path=related_path,
                         line_start=None,
                         line_end=None,
                         source="file",
-                        distance=int(importer["depth"]),
+                        distance=int(related_file["depth"]),
                     )
                     seed_nodes.setdefault(target.key, target)
 
         impacted: dict[str, GraphNode] = dict(seed_nodes)
         frontier: deque[GraphNode] = deque(seed_nodes.values())
-        while frontier and len(impacted) < max_nodes:
-            node = frontier.popleft()
-            if node.source != "symbol" or node.distance >= depth:
-                continue
-            with self._db.connect() as conn:
+        truncated = False
+        # One reader connection for the whole walk: opening a fresh connection
+        # per visited node was the N+1 cost this phase removes.
+        with self._db.connect() as conn:
+            while frontier:
+                if len(impacted) >= max_nodes:
+                    truncated = True
+                    break
+                node = frontier.popleft()
+                if node.source != "symbol":
+                    continue
+                if not fixpoint and node.distance >= depth:
+                    continue
                 row = conn.execute(
                     "SELECT id FROM symbols WHERE fqn = ? LIMIT 1;", (node.fqn,)
                 ).fetchone()
-            if row is None:
-                continue
-            incoming = self._fetch_symbol_edges(
-                node.key, int(row["id"]), set(DEFAULT_EDGE_TYPES), "in"
-            )
-            for _edge, source_node in incoming:
-                if source_node.source == "external" or source_node.key in impacted:
+                if row is None:
                     continue
-                source_node = GraphNode(
-                    key=source_node.key,
-                    fqn=source_node.fqn,
-                    name=source_node.name,
-                    kind=source_node.kind,
-                    file_path=source_node.file_path,
-                    line_start=source_node.line_start,
-                    line_end=source_node.line_end,
-                    source=source_node.source,
-                    distance=node.distance + 1,
-                    signature=source_node.signature,
-                    docstring=source_node.docstring,
-                )
-                impacted[source_node.key] = source_node
-                if source_node.source == "symbol":
-                    frontier.append(source_node)
+                neighbor_edges: list[tuple[GraphEdge, GraphNode]] = []
+                if direction in ("inbound", "both"):
+                    neighbor_edges.extend(
+                        self._fetch_symbol_edges(
+                            node.key, int(row["id"]), active_types, "in", conn=conn
+                        )
+                    )
+                if direction in ("outbound", "both"):
+                    neighbor_edges.extend(
+                        self._fetch_symbol_edges(
+                            node.key, int(row["id"]), active_types, "out", conn=conn
+                        )
+                    )
+                seen_neighbors: set[str] = set()
+                for _edge, source_node in neighbor_edges:
+                    if source_node.source == "external" or source_node.key in impacted:
+                        continue
+                    if source_node.key in seen_neighbors:
+                        continue
+                    seen_neighbors.add(source_node.key)
+                    source_node = GraphNode(
+                        key=source_node.key,
+                        fqn=source_node.fqn,
+                        name=source_node.name,
+                        kind=source_node.kind,
+                        file_path=source_node.file_path,
+                        line_start=source_node.line_start,
+                        line_end=source_node.line_end,
+                        source=source_node.source,
+                        distance=node.distance + 1,
+                        signature=source_node.signature,
+                        docstring=source_node.docstring,
+                    )
+                    impacted[source_node.key] = source_node
+                    if source_node.source == "symbol":
+                        frontier.append(source_node)
 
-        ordered = self._order_nodes(impacted.values(), seed_keys=set(seed_nodes))
+            ordered = self._order_nodes(impacted.values(), seed_keys=set(seed_nodes))
+            symbol_nodes = [n for n in ordered if n.source == "symbol"]
+            fan_in = self._fan_in_counts(conn, symbol_nodes, active_types)
         file_nodes = {n.fqn for n in ordered if n.source == "file"}
-        symbol_nodes = [n for n in ordered if n.source == "symbol"]
         # Symbol paths are stored absolute while module-edge paths are
         # relative; normalise both spellings so each file appears once.
         distance_by_file: dict[str, int] = {}
@@ -1583,7 +1768,16 @@ class GraphQueryService:
         )
         test_files = [path for path in files if _is_test_file(path)]
         production_files = [path for path in files if not _is_test_file(path)]
-        tests = [n for n in symbol_nodes if n.file_path and _is_test_file(n.file_path)]
+        test_symbols = [n for n in symbol_nodes if n.file_path and _is_test_file(n.file_path)]
+        test_keys = {node.key for node in test_symbols}
+        production_symbols = [n for n in symbol_nodes if n.key not in test_keys]
+        risks: dict[str, str] = {}
+        for node in symbol_nodes:
+            risks[node.fqn] = self._impact_risk(node, fan_in.get(node.fqn, 0))
+        risk_summary = {
+            level: sum(1 for value in risks.values() if value == level)
+            for level in ("high", "medium", "low")
+        }
         return ImpactAnswer(
             changed_paths=changed_stored,
             symbols=list(seed_nodes.values()),
@@ -1591,15 +1785,191 @@ class GraphQueryService:
             files=files,
             production_files=production_files,
             test_files=test_files,
+            test_symbols=test_symbols,
+            production_symbols=production_symbols,
+            risks=risks,
+            risk_summary=risk_summary,
+            direction=direction,
+            via=sorted(active_types),
+            fixpoint=fixpoint,
+            truncated=truncated,
             summary={
                 "symbols": len(symbol_nodes),
                 "files": len(files),
                 "production_files": len(production_files),
                 "test_files": len(test_files),
-                "tests": len(tests),
+                "production_symbols": len(production_symbols),
+                "test_symbols": len(test_symbols),
+                "tests": len(test_symbols),
                 "changed_files": len(changed_stored),
+                "high_risk": risk_summary["high"],
+                "medium_risk": risk_summary["medium"],
+                "low_risk": risk_summary["low"],
             },
         )
+
+    @staticmethod
+    def _fan_in_counts(
+        conn: sqlite3.Connection,
+        nodes: list[GraphNode],
+        edge_types: set[str],
+    ) -> dict[str, int]:
+        """Return resolved incoming-edge counts for *nodes* in one query."""
+        if not nodes or not edge_types:
+            return {}
+        placeholders = ",".join("?" for _ in nodes)
+        type_placeholders = ",".join("?" for _ in edge_types)
+        rows = conn.execute(
+            "SELECT s.fqn, COUNT(*) AS n FROM graph_edges e "
+            "JOIN symbols s ON s.id = e.target_symbol_id "
+            f"WHERE e.resolved = 1 AND e.edge_type IN ({type_placeholders}) "
+            f"AND s.fqn IN ({placeholders}) GROUP BY s.fqn;",
+            [*sorted(edge_types), *(node.fqn for node in nodes)],
+        ).fetchall()
+        return {str(row["fqn"]): int(row["n"]) for row in rows}
+
+    @staticmethod
+    def _impact_risk(node: GraphNode, fan_in: int) -> str:
+        """Classify an impacted symbol's risk from fan-in and its kind.
+
+        This is a conservative heuristic, not a contract: a high fan-in symbol,
+        a type boundary, or a non-test entry point is treated as high risk.
+        """
+        if node.file_path and _is_test_file(node.file_path):
+            return "low"
+        if node.kind in _TYPE_KINDS or fan_in >= 5:
+            return "high"
+        if fan_in >= 1:
+            return "medium"
+        return "low"
+
+    def detect_changes(
+        self,
+        changed_paths: list[str] | None = None,
+        *,
+        since: str | None = None,
+        base_branch: str | None = None,
+        scope: str = "impact",
+        direction: str = "inbound",
+        depth: int = 3,
+        fixpoint: bool = False,
+        edge_types: set[str] | None = None,
+        include_imports: bool = True,
+        seed_filter: str = "all",
+        max_nodes: int = 200,
+    ) -> dict[str, Any]:
+        """Resolve changed files (optionally from git) and report their blast radius.
+
+        Args:
+            changed_paths: Explicit changed paths.
+            since: Git ref to diff against when no ``base_branch`` is given.
+            base_branch: Git ref to diff against (takes precedence over *since*).
+            scope: ``files`` returns the changed paths only; ``impact`` returns
+                the full graph result; ``tests`` narrows it to test files and
+                test symbols.
+            direction: ``inbound``, ``outbound``, or ``both``.
+            depth: Traversal depth (clipped to 4).
+            fixpoint: Walk to closure instead of stopping at *depth*.
+            edge_types: Symbol edge types to traverse.
+            include_imports: Also traverse file-level import edges.
+            seed_filter: ``all`` or ``product`` (drop test-file seeds).
+            max_nodes: Maximum returned nodes (clipped to 200).
+
+        Returns:
+            A JSON-serialisable payload. Invalid scope/ref combinations return
+            ``outcome: invalid_argument``; an empty change set returns
+            ``outcome: no_changes``.
+        """
+        if scope not in {"files", "impact", "tests"}:
+            return {
+                "outcome": "invalid_argument",
+                "error": f"unsupported scope: {scope}; use files, impact, or tests",
+            }
+        ref = base_branch or since
+        changes = list(changed_paths or [])
+        changed_source = "explicit"
+        if ref:
+            from code_search.engine.graph_surface import changed_files_since
+
+            try:
+                changes.extend(changed_files_since(self._index_root, ref))
+            except RuntimeError as exc:
+                return {"outcome": "invalid_argument", "error": str(exc)}
+            changed_source = "git"
+        deduped: list[str] = []
+        for path in changes:
+            if path not in deduped:
+                deduped.append(path)
+
+        with self._db.connect() as conn:
+            generation_row = conn.execute(
+                "SELECT value FROM index_metadata WHERE key = 'index_generation';"
+            ).fetchone()
+            generation = str(generation_row["value"]) if generation_row is not None else None
+        if not deduped:
+            return {
+                "outcome": "no_changes",
+                "scope": scope,
+                "changed_source": changed_source,
+                "since": since,
+                "base_branch": base_branch,
+                "changed_files": [],
+                "summary": {"changed_files": 0},
+                "index_generation": generation,
+            }
+
+        if scope == "files":
+            relative_changes: list[str] = []
+            for path in deduped:
+                resolved = self._resolve_changed_path(path)
+                relative_changes.append(
+                    self._relative_path(resolved) if resolved is not None else path
+                )
+            return {
+                "outcome": "resolved",
+                "scope": scope,
+                "changed_source": changed_source,
+                "since": since,
+                "base_branch": base_branch,
+                "changed_files": relative_changes,
+                "summary": {"changed_files": len(deduped)},
+                "index_generation": generation,
+            }
+
+        answer = self.impact(
+            deduped,
+            depth=depth,
+            max_nodes=max_nodes,
+            direction=direction,
+            edge_types=edge_types,
+            include_imports=include_imports,
+            fixpoint=fixpoint,
+            seed_filter=seed_filter,
+        )
+        payload = answer.as_dict()
+        payload.update(
+            {
+                "outcome": "resolved",
+                "scope": scope,
+                "changed_source": changed_source,
+                "since": since,
+                "base_branch": base_branch,
+                "changed_files": [self._relative_path(path) for path in answer.changed_paths],
+                "index_generation": generation,
+            }
+        )
+        if scope == "tests":
+            payload["impacted"] = [node.as_dict() for node in answer.test_symbols]
+            payload["files"] = answer.test_files
+            payload["summary"] = {
+                "files": len(answer.test_files),
+                "symbols": len(answer.test_symbols),
+                "changed_files": len(answer.changed_paths),
+                "high_risk": sum(
+                    1 for node in answer.test_symbols if answer.risks.get(node.fqn) == "high"
+                ),
+            }
+        return payload
 
     def _resolve_changed_path(self, path: str) -> str | None:
         """Resolve a caller-supplied changed path to its stored spelling."""
@@ -1638,8 +2008,9 @@ class GraphQueryService:
     ) -> ArchitectureReport:
         """Build a deterministic, offline architecture report.
 
-        God nodes are degree-ranked resolved symbols (test files and
-        non-entity kinds excluded). Communities come from deterministic label
+        God nodes are ranked by stored importance (falling back to raw degree
+        on an index without the importance pass); test files and non-entity
+        kinds are excluded. Communities come from deterministic label
         propagation over the resolved symbol graph. Import cycles are detected
         by DFS over resolved ``module_edges``.
         """
@@ -1649,17 +2020,19 @@ class GraphQueryService:
         with self._db.connect() as conn:
             rows = conn.execute(
                 "SELECT s.id, s.fqn, s.name, s.kind, s.file_path, s.line_start, "
+                "s.importance, "
                 "(SELECT COUNT(*) FROM graph_edges e "
                 " WHERE e.resolved = 1 AND e.source_symbol_id = s.id) + "
                 "(SELECT COUNT(*) FROM graph_edges e2 "
                 " WHERE e2.resolved = 1 AND e2.target_symbol_id = s.id) AS degree "
                 "FROM symbols s WHERE s.kind IN "
                 "('function','method','class','interface','enum','constructor') "
-                "ORDER BY degree DESC, s.fqn, s.id;"
+                "ORDER BY s.importance DESC, degree DESC, s.fqn, s.id;"
             ).fetchall()
             edge_rows = conn.execute(
                 "SELECT source_symbol_id, target_symbol_id FROM graph_edges "
                 "WHERE resolved = 1 AND target_symbol_id IS NOT NULL "
+                "AND edge_type != 'TESTS' "
                 "ORDER BY source_symbol_id, target_symbol_id LIMIT ?;",
                 (max_edges,),
             ).fetchall()
@@ -1681,6 +2054,7 @@ class GraphQueryService:
                         "kind": row["kind"],
                         "file_path": self._relative_path(str(row["file_path"] or "")),
                         "degree": node_degree,
+                        "importance": round(float(row["importance"] or 0.0), 6),
                     }
                 )
 
@@ -1743,6 +2117,262 @@ class GraphQueryService:
                 "elapsed_ms": round((time.monotonic() - start) * 1000, 1),
             },
         )
+
+    def architecture(
+        self,
+        *,
+        aspects: set[str] | None = None,
+        top_n: int = 15,
+        max_communities: int = 10,
+    ) -> dict[str, Any]:
+        """Return a bounded architecture answer for the requested aspects.
+
+        ``overview`` is the safe default: languages, directory packages, and
+        entry-point counts. The expensive sections (hotspots, clusters, cycles)
+        are only computed when requested, so an agent cannot accidentally pull a
+        whole report into its context.
+
+        Args:
+            aspects: Requested sections. ``all`` expands to every supported
+                aspect. ``None`` means ``overview``.
+            top_n: Maximum hotspots and examples per section (clipped to 50).
+            max_communities: Maximum clusters returned (clipped to 20).
+
+        Returns:
+            A JSON-serialisable payload. An unsupported aspect returns
+            ``outcome: invalid_argument`` with the supported set rather than
+            silently ignoring it.
+        """
+        requested = {aspect.strip().lower() for aspect in (aspects or {"overview"}) if aspect}
+        if "all" in requested:
+            requested = set(ARCHITECTURE_ASPECTS)
+        unsupported = sorted(requested - ARCHITECTURE_ASPECTS)
+        if unsupported:
+            return {
+                "outcome": "invalid_argument",
+                "error": f"unsupported aspect(s): {', '.join(unsupported)}",
+                "supported_aspects": sorted(ARCHITECTURE_ASPECTS),
+            }
+
+        top_n = max(1, min(top_n, 50))
+        max_communities = max(1, min(max_communities, 20))
+        start = time.monotonic()
+        # Hotspots and clusters need the full degree/community pass. Overview,
+        # structure, dependencies, entry points, and cycles do not, so the
+        # default discovery call stays cheap.
+        needs_report = bool(requested & {"hotspots", "clusters"})
+        report = (
+            self.architecture_report(top_n=top_n, max_communities=max_communities)
+            if needs_report
+            else None
+        )
+        with self._db.connect() as conn:
+            generation_row = conn.execute(
+                "SELECT value FROM index_metadata WHERE key = 'index_generation';"
+            ).fetchone()
+            generation = str(generation_row["value"]) if generation_row is not None else None
+            total_symbols = int(conn.execute("SELECT COUNT(*) AS n FROM symbols;").fetchone()["n"])
+        edge_stats = report.edge_stats if report is not None else edge_resolution_stats(self._db)
+        total_edges = sum(int(stat["total"]) for stat in edge_stats.values())
+        resolved_edges = sum(int(stat["resolved"]) for stat in edge_stats.values())
+        stats: dict[str, Any] = {
+            "symbols_extracted": total_symbols,
+            "edges_total": total_edges,
+            "edges_resolved": resolved_edges,
+            "edge_coverage": round(resolved_edges / total_edges, 3) if total_edges else 0.0,
+        }
+        if report is not None:
+            stats.update(report.stats)
+
+        payload: dict[str, Any] = {
+            "outcome": "resolved",
+            "aspects": sorted(requested),
+            "index_generation": generation,
+            "stats": stats,
+        }
+        if report is not None:
+            payload["suggested_questions"] = report.suggested_questions
+        if requested & {"overview", "structure"}:
+            payload["languages"] = self._symbol_language_counts()
+            payload["packages"] = self._package_symbol_counts(limit=max(top_n, 10))
+        if "overview" in requested or "entry_points" in requested:
+            payload["entry_points"] = self._entry_point_summary(limit=10)
+        if "dependencies" in requested:
+            payload["edge_stats"] = edge_stats
+        if "hotspots" in requested and report is not None:
+            payload["hotspots"] = report.god_nodes
+        if "clusters" in requested and report is not None:
+            payload["clusters"] = report.communities
+        if "cycles" in requested:
+            payload["cycles"] = self._import_sccs()
+            payload["cycle_semantics"] = (
+                "strongly connected components over resolved module imports; "
+                "each component contains a cycle"
+            )
+        payload["elapsed_ms"] = round((time.monotonic() - start) * 1000, 1)
+        return payload
+
+    def _symbol_language_counts(self) -> dict[str, int]:
+        """Return ``{language: symbol_count}`` in deterministic order."""
+        with self._db.connect() as conn:
+            return {
+                str(row["language"]): int(row["total"])
+                for row in conn.execute(
+                    "SELECT language, COUNT(*) AS total FROM symbols "
+                    "GROUP BY language ORDER BY language;"
+                )
+            }
+
+    def _package_symbol_counts(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Aggregate symbol counts by parent directory, most populated first."""
+        counts: dict[str, int] = {}
+        with self._db.connect() as conn:
+            for row in conn.execute(
+                "SELECT file_path, COUNT(*) AS total FROM symbols GROUP BY file_path;"
+            ):
+                relative = self._relative_path(str(row["file_path"] or ""))
+                directory = relative.rsplit("/", 1)[0] if "/" in relative else "."
+                counts[directory] = counts.get(directory, 0) + int(row["total"])
+        ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        return [{"path": path, "symbols": total} for path, total in ordered[:limit]]
+
+    def _entry_point_summary(self, *, limit: int = 10) -> dict[str, Any]:
+        """Summarise stored entry-point classifications, with a legacy fallback."""
+        from code_search.engine.graph_surface import _entry_point_reason, _has_derived_data
+
+        by_reason: dict[str, int] = {}
+        examples: list[dict[str, Any]] = []
+        with self._db.connect() as conn:
+            use_stored = _has_derived_data(conn)
+            if use_stored:
+                for row in conn.execute(
+                    "SELECT COALESCE(entry_point_reason, 'unknown') AS reason, "
+                    "COUNT(*) AS total FROM symbols WHERE is_entry_point = 1 "
+                    "GROUP BY COALESCE(entry_point_reason, 'unknown') ORDER BY reason;"
+                ):
+                    by_reason[str(row["reason"])] = int(row["total"])
+                rows = conn.execute(
+                    "SELECT s.fqn, s.name, s.kind, s.file_path, s.line_start, "
+                    "s.entry_point_reason AS reason FROM symbols s "
+                    "WHERE s.is_entry_point = 1 "
+                    "ORDER BY s.importance DESC, s.fqn LIMIT ?;",
+                    (limit,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT s.fqn, s.name, s.kind, s.file_path, s.line_start, "
+                    "p.fqn AS parent_fqn FROM symbols s "
+                    "LEFT JOIN symbols p ON p.id = s.parent_symbol_id "
+                    "WHERE s.kind IN ('function','method','constructor') "
+                    "ORDER BY s.fqn;"
+                ).fetchall()
+        if not use_stored:
+            for row in rows:
+                reason = _entry_point_reason(
+                    str(row["file_path"] or ""),
+                    str(row["name"]),
+                    str(row["kind"]),
+                    row["parent_fqn"],
+                )
+                if reason is None:
+                    continue
+                by_reason[reason] = by_reason.get(reason, 0) + 1
+                if len(examples) < limit:
+                    examples.append(
+                        {
+                            "fqn": row["fqn"],
+                            "kind": row["kind"],
+                            "name": row["name"],
+                            "file_path": self._relative_path(str(row["file_path"] or "")),
+                            "line_start": row["line_start"],
+                            "reason": reason,
+                        }
+                    )
+        else:
+            for row in rows:
+                examples.append(
+                    {
+                        "fqn": row["fqn"],
+                        "kind": row["kind"],
+                        "name": row["name"],
+                        "file_path": self._relative_path(str(row["file_path"] or "")),
+                        "line_start": row["line_start"],
+                        "reason": row["reason"],
+                    }
+                )
+        return {
+            "total": sum(by_reason.values()),
+            "by_reason": dict(sorted(by_reason.items())),
+            "examples": examples,
+            "classification": "stored" if use_stored else "phase1_heuristic",
+        }
+
+    def _import_sccs(self, max_edges: int = 20000) -> list[list[str]]:
+        """Return import cycles as strongly connected components (Tarjan).
+
+        Iterative Tarjan avoids recursion limits on large module graphs. Only
+        components with more than one module (or a self-import) are returned,
+        sorted deterministically.
+        """
+        edges = self._modules.all_edges("IMPORTS")[:max_edges]
+        adjacency: dict[str, set[str]] = {}
+        nodes: set[str] = set()
+        for edge in edges:
+            source = str(edge.get("source_path") or "")
+            target = str(edge.get("target_path") or "")
+            if not source or not target or not edge.get("resolved"):
+                continue
+            nodes.update((source, target))
+            adjacency.setdefault(source, set()).add(target)
+            adjacency.setdefault(target, set())
+
+        index_counter = 0
+        indices: dict[str, int] = {}
+        lowlink: dict[str, int] = {}
+        stack: list[str] = []
+        on_stack: set[str] = set()
+        components: list[list[str]] = []
+
+        for start in sorted(nodes):
+            if start in indices:
+                continue
+            indices[start] = lowlink[start] = index_counter
+            index_counter += 1
+            stack.append(start)
+            on_stack.add(start)
+            work: list[tuple[str, Any]] = [(start, iter(sorted(adjacency.get(start, set()))))]
+            while work:
+                node, neighbors = work[-1]
+                advanced = False
+                for neighbor in neighbors:
+                    if neighbor not in indices:
+                        indices[neighbor] = lowlink[neighbor] = index_counter
+                        index_counter += 1
+                        stack.append(neighbor)
+                        on_stack.add(neighbor)
+                        work.append((neighbor, iter(sorted(adjacency.get(neighbor, set())))))
+                        advanced = True
+                        break
+                    if neighbor in on_stack:
+                        lowlink[node] = min(lowlink[node], indices[neighbor])
+                if advanced:
+                    continue
+                work.pop()
+                if lowlink[node] == indices[node]:
+                    component: list[str] = []
+                    while True:
+                        member = stack.pop()
+                        on_stack.discard(member)
+                        component.append(member)
+                        if member == node:
+                            break
+                    if len(component) > 1 or node in adjacency.get(node, set()):
+                        components.append(sorted(component))
+                if work:
+                    parent = work[-1][0]
+                    lowlink[parent] = min(lowlink[parent], lowlink[node])
+
+        return sorted(components)[:20]
 
     @staticmethod
     def _label_propagation(
@@ -2009,7 +2639,7 @@ def render_impact_text(answer: ImpactAnswer, *, root: str | Path | None = None) 
     lines = [
         f"impact: {summary.get('symbols', 0)} symbols in "
         f"{summary.get('files', 0)} files "
-        f"({summary.get('tests', 0)} tests) from "
+        f"({summary.get('tests', summary.get('test_symbols', 0))} tests) from "
         f"{summary.get('changed_files', 0)} changed files"
     ]
     grouped: dict[str, list[GraphNode]] = {}
@@ -2031,6 +2661,125 @@ def render_impact_text(answer: ImpactAnswer, *, root: str | Path | None = None) 
             for node in grouped[path]:
                 location = f":{node.line_start}" if node.line_start is not None else ""
                 lines.append(f"    {display_symbol(node.fqn)} ({node.kind}){location}")
+    return "\n".join(lines)
+
+
+def render_changes_text(payload: dict[str, Any], *, root: str | Path | None = None) -> str:
+    """Render a ``detect_changes`` payload as compact text."""
+    outcome = payload.get("outcome")
+    if outcome == "invalid_argument":
+        return f"Invalid change request: {payload.get('error')}"
+    if outcome == "no_changes":
+        return "No changed files: pass paths or --since/--base-branch."
+    summary = payload.get("summary", {})
+    lines = [
+        f"changes ({payload.get('scope', 'impact')}, "
+        f"{payload.get('changed_source', 'explicit')}): "
+        f"{summary.get('changed_files', len(payload.get('changed_files', [])))} changed files, "
+        f"{summary.get('symbols', 0)} symbols in {summary.get('files', 0)} files"
+    ]
+    if payload.get("changed_files"):
+        lines.append("Changed:")
+        lines.extend(f"  {path}" for path in payload["changed_files"])
+    risks = payload.get("risk_summary") or {}
+    if risks:
+        lines.append(
+            "Risk: " + ", ".join(f"{level}={count}" for level, count in risks.items() if count)
+        )
+    by_file: dict[str, list[dict[str, Any]]] = {}
+    for node in payload.get("impacted", []):
+        by_file.setdefault(relative_display(node.get("file_path"), root), []).append(node)
+    for path in payload.get("files", []):
+        by_file.setdefault(path, [])
+    for label, paths in (
+        ("Production", payload.get("production_files", [])),
+        ("Tests", payload.get("test_files", [])),
+    ):
+        if not paths:
+            continue
+        lines.append(f"{label} ({len(paths)} files):")
+        for path in paths:
+            lines.append(f"  {path}")
+            for node in by_file.get(path, []):
+                risk = (payload.get("risks") or {}).get(node["fqn"], "")
+                risk_label = f", risk={risk}" if risk else ""
+                location = f":{node['line_start']}" if node.get("line_start") is not None else ""
+                lines.append(
+                    f"    {display_symbol(str(node['fqn']))} "
+                    f"({node.get('kind')}{risk_label}){location}"
+                )
+    if payload.get("truncated"):
+        lines.append("  (truncated; raise --max-nodes or lower --depth)")
+    lines.append(
+        f"Direction: {payload.get('direction')} via "
+        f"{', '.join(payload.get('via') or []) or 'none'}"
+        f"{' (fixpoint)' if payload.get('fixpoint') else ''}"
+    )
+    return "\n".join(lines)
+
+
+def render_architecture_aspects_text(payload: dict[str, Any]) -> str:
+    """Render a bounded architecture aspect payload as compact text."""
+    if payload.get("outcome") == "invalid_argument":
+        return f"Invalid architecture request: {payload.get('error')}"
+    lines = [f"Architecture ({', '.join(payload.get('aspects', []))})"]
+    stats = payload.get("stats", {})
+    if stats:
+        if "symbols" in stats:
+            lines.append(
+                f"Symbols: {int(stats.get('symbols', 0)):,} resolved of "
+                f"{int(stats.get('symbols_extracted', 0)):,}; "
+                f"edge coverage {float(stats.get('edge_coverage', 0.0)):.3f}"
+            )
+        else:
+            lines.append(
+                f"Symbols: {int(stats.get('symbols_extracted', 0)):,}; "
+                f"edge coverage {float(stats.get('edge_coverage', 0.0)):.3f}"
+            )
+    if "languages" in payload:
+        rendered = ", ".join(
+            f"{language}={count:,}" for language, count in payload["languages"].items()
+        )
+        lines.append(f"Languages: {rendered or 'none'}")
+    if "packages" in payload:
+        lines.append("Packages:")
+        for package in payload["packages"]:
+            lines.append(f"  {package['path']}: {package['symbols']:,}")
+    if "entry_points" in payload:
+        entry_points = payload["entry_points"]
+        reasons = ", ".join(
+            f"{reason}={count:,}" for reason, count in entry_points.get("by_reason", {}).items()
+        )
+        lines.append(f"Entry points: {int(entry_points.get('total', 0)):,} ({reasons or 'none'})")
+    if "edge_stats" in payload:
+        lines.append("Edge types:")
+        for edge_type, stat in sorted(payload["edge_stats"].items()):
+            lines.append(
+                f"  {edge_type:<12} {int(stat.get('total', 0)):,} "
+                f"({int(stat.get('resolved', 0)):,} resolved)"
+            )
+    if "hotspots" in payload:
+        lines.append("Hotspots:")
+        for node in payload["hotspots"]:
+            lines.append(
+                f"  {display_symbol(str(node['fqn']))} ({node['kind']}, degree {node['degree']})"
+            )
+    if "clusters" in payload:
+        lines.append(f"Clusters: {len(payload['clusters'])}")
+        for cluster in payload["clusters"]:
+            lines.append(
+                f"  {cluster.get('label_fqn') or cluster.get('label')} "
+                f"({int(cluster.get('size', 0))} members)"
+            )
+    if "cycles" in payload:
+        lines.append(f"Cycles ({payload.get('cycle_semantics', 'strongly connected components')}):")
+        for cycle in payload["cycles"]:
+            lines.append(f"  {' -> '.join(cycle)}")
+        if not payload["cycles"]:
+            lines.append("  none recorded")
+    if payload.get("suggested_questions"):
+        lines.append("Suggested questions:")
+        lines.extend(f"  - {question}" for question in payload["suggested_questions"])
     return "\n".join(lines)
 
 

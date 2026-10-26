@@ -15,14 +15,21 @@ sources:
 
 SQLite-backed schema and CRUD layer for the code graph: symbols
 (function/class/method definitions with FQN, location, docstring), typed
-directed edges (`CALLS`, `IMPORTS`, `INHERITS`, `REFERENCES`), code chunks
-with FTS5 full-text search, file-level `module_edges`, rationale comments
-(`symbol_rationale` with `rationale_fts`), offline `doc_links`, persisted
+directed edges (`CALLS`, `IMPORTS`, `INHERITS`, `IMPLEMENTS`, `REFERENCES`,
+`USAGE`, `CALL_REFERENCE`, `TESTS`), code chunks with FTS5 full-text search,
+file-level `module_edges`, rationale comments (`symbol_rationale` with
+`rationale_fts`), offline `doc_links`, derived symbol degrees
+(`symbol_degrees`), per-generation coverage (`index_coverage`), persisted
 corpus statistics (`subword_stats`/`prefix_stats`), and index metadata
 (version, status, counts). Provides thread-safe database access via
 per-thread connections, forward-migration logic for older schema versions,
 and high-level graph traversal (call graph, inheritance tree, symbol
 resolution).
+
+Edge rows carry a JSON `properties` object with resolution evidence (`via`,
+`line`, `arg_count`, `candidate_count`). Symbols carry `canonical_fqn`,
+`visibility`, `is_test`, `is_entry_point`, `entry_point_reason`, and
+`importance`, all computed by the post-index trust passes.
 
 Chunks carry an `is_test` flag with an `(is_test, content_type)` index so
 the production/test match split avoids rescanning paths. Conventional FQNs
@@ -32,9 +39,11 @@ uniqueness would silently drop symbols.
 
 # Key Constants
 
-`SCHEMA_VERSION = 16` — current schema target version (v15 added
+`SCHEMA_VERSION = 18` — current schema target version (v15 added
 `is_test`; v16 replaced the unique conventional-FQN index with a non-unique
-one). `SUBWORD_STATS_TABLE_DDL`, `PREFIX_STATS_TABLE_DDL`, `STATS_INDEXES` —
+one; v17 deduplicated unresolved edges and added `index_coverage`; v18 added
+edge `properties`, the `IMPLEMENTS`/`USAGE`/`CALL_REFERENCE`/`TESTS` edge
+types, `symbol_degrees`, and the symbol trust columns). `SUBWORD_STATS_TABLE_DDL`, `PREFIX_STATS_TABLE_DDL`, `STATS_INDEXES` —
 persisted document-frequency tables rebuilt at the end of each index run.
 `SYMBOLS_TABLE_DDL`,
 `GRAPH_EDGES_TABLE_DDL`, `CODE_CHUNKS_TABLE_DDL`, `METADATA_TABLE_DDL`,

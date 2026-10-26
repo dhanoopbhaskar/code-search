@@ -355,8 +355,20 @@ smallest containing symbol. The sample has none, so `symbol_rationale` is empty.
 
 #### Content hash
 
-Each worker also returns `sha256(source_bytes)` and a `parse_failed` flag. These
-become the incremental baseline.
+Each worker also returns `sha256(source_bytes)`, a `parse_failed` flag, and the
+tree-sitter `ERROR`/`MISSING` line ranges. These become the incremental
+baseline and the per-file coverage record.
+
+#### Coverage and generation
+
+After parsing, each file with error ranges gets an `index_coverage` row:
+`parse_partial` for recoverable syntax errors and `parse_unusable` when the
+ranges cover at least 80% of the file. Discovery also records `skipped_read`
+and `skipped_oversized` files, so "not in the graph" never has to be confused
+with "not indexed". Rows are stamped with `index_generation`, a digest of the
+index root, finish time, table counts, schema version, and index format version.
+A later `check_index_coverage` surface can therefore answer whether a gap
+belongs to the current index instead of a previous build.
 
 ### 4.4 Phase 3 — persistence (serial, batched)
 
@@ -416,12 +428,54 @@ Deferred edges are resolved after all symbols exist, in tiers
 5. `range` — target declaration range contains the call's start line.
 6. `fallback` — exactly one symbol shares the leaf name.
 
+Before the class/same-file tiers, a call's argument count filters same-named
+overloads: only candidates with the same parameter count remain. The filter is
+skipped when no candidate matches, so an unknown overload stays unresolved
+rather than attaching to the wrong one. A receiver-qualified target
+(`repository.save`) never falls through to same-file/range/fallback matching for
+a different receiver. When more than one candidate survives any tier, the edge
+is stored as `resolved = 0` with `resolution_tier = 'ambiguous'`, `target_raw`,
+and `properties.candidate_count`; the first candidate is never chosen silently.
+
 Genuine recursive self-calls (`source == target` and the call line is inside the
 symbol's own body) are kept; other self-edges are dropped. Edges that remain
 unresolved are stored only if `capture_unresolved_callees` is true (default),
 with `resolved = 0`, `target_symbol_id = NULL`, and `target_raw` carrying the raw
-callee text. The post-index **edge validation sweep** removes spurious
-self-edges, same-name mis-resolutions, and out-of-range attachments.
+callee text. Resolved edges record `properties` = `{"via": ..., "line": N,
+"arg_count": N}` as evidence, with `via` distinguishing `import`, `type_infer`,
+`same_file`, and AST-only resolution. The post-index **edge validation sweep**
+removes spurious self-edges, same-name mis-resolutions, and out-of-range
+attachments.
+
+#### Edge types
+
+`SymbolExtractor` emits `CALLS` from invocations, `REFERENCES` from type
+annotations, `CALL_REFERENCE` from callables used as values (arguments,
+assignments, bare decorators), and `USAGE` from conservative member accesses
+(`self`/`this`, imported, namespace, or typed receivers). Base clauses start as
+`INHERITS`; the indexer reclassifies a class-to-interface base as `IMPLEMENTS`
+once the target kind is known. `TESTS` is derived: every resolved production
+reference whose source symbol is in a test file and whose target is not becomes
+a test-to-production edge.
+
+#### Trust passes
+
+After the validation sweep, one write transaction rebuilds the derived facts an
+agent query relies on:
+
+1. `canonical_fqn` — project-relative `<path>::<declaration>`, additive to the
+   absolute `fqn`.
+2. `is_test` — refreshed from the shared path classifier.
+3. `TESTS` edges — replaced wholesale from resolved production references.
+4. `is_entry_point` / `entry_point_reason` — tests, `main`, constructors,
+   overrides, exported top-level declarations, annotated handlers, and configured
+   globs (`CODE_SEARCH_ENTRY_POINTS`).
+5. `importance` — the documented weighted degree over incoming `CALLS`/`USAGE`.
+6. `symbol_degrees` — resolved in/out counts per edge type, used by degree
+   filters and hotspot ranking.
+
+`index_format_version` is written last. It is separate from the SQLite schema
+version so a graph-semantics change can force a full rebuild.
 
 #### Module edges
 
@@ -497,6 +551,8 @@ Then:
 - **stale-file sweep** — removes rows for files that no longer exist or are now
   excluded (only when a full index or the discovery policy changed);
 - **edge validation sweep**;
+- **trust passes** — canonical FQNs, `TESTS` edges, entry points, importance,
+  and `symbol_degrees`;
 - **metadata writes** (see below);
 - `FreshnessChecker.mark_clean()` seeds a non-stale freshness signal.
 
@@ -506,7 +562,8 @@ Then:
 
 | Key | Value |
 |---|---|
-| `index_version` | `16` |
+| `index_version` | `18` |
+| `index_format_version` | `1` |
 | `representation_scheme_version` | `1` |
 | `index_status` | `ready` |
 | `index_layout` | `legacy` |

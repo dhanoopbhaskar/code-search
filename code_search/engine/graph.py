@@ -1,9 +1,14 @@
 """Graph database — SQLite-backed schema for symbols, code chunks, edges, and metadata.
 
 Manages:
-- ``symbols`` — function/class/method/etc. definitions with FQN, location, docstring.
-- ``graph_edges`` — typed directed edges (CALLS, IMPORTS, INHERITS, REFERENCES).
+- ``symbols`` — function/class/method/etc. definitions with FQN, location,
+  docstring, canonical FQN, entry-point classification, and importance.
+- ``graph_edges`` — typed directed edges (``CALLS``, ``IMPLEMENTS``,
+  ``INHERITS``, ``REFERENCES``, ``USAGE``, ``CALL_REFERENCE``, ``TESTS``,
+  ``IMPORTS``) with JSON resolution evidence.
+- ``symbol_degrees`` — derived resolved in/out counts per symbol and edge type.
 - ``code_chunks`` — extracted code chunks (AST or fallback) with FTS5 full-text search.
+- ``index_coverage`` — per-file parse/skip gaps scoped to an index generation.
 - ``index_metadata`` — key-value store for tracking index state and schema versions.
 """
 
@@ -28,7 +33,13 @@ from code_search.engine.symbol_resolution import (
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 18
+
+#: Graph-semantics version, separate from the SQLite schema version. Bump this
+#: when an index must be rebuilt because the meaning of stored rows changed
+#: (for example, when new edge types are produced for the same source).
+INDEX_FORMAT_VERSION = 1
+
 SYMBOLS_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS symbols (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,7 +60,13 @@ CREATE TABLE IF NOT EXISTS symbols (
     declared_rules TEXT,
     language TEXT NOT NULL,
     conventional_fqn TEXT,
+    canonical_fqn TEXT,
     parent_symbol_id INTEGER REFERENCES symbols(id),
+    visibility TEXT,
+    is_test INTEGER NOT NULL DEFAULT 0,
+    is_entry_point INTEGER NOT NULL DEFAULT 0,
+    entry_point_reason TEXT,
+    importance REAL NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -68,17 +85,47 @@ SYMBOLS_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_symbols_parent ON symbols(parent_symbol_id);",
 ]
 
+#: Indexes on columns added by the v18 migration. They are created after the
+#: migration, never by the base DDL, because an older database does not have
+#: the columns yet when ``initialize`` replays ``ALL_DDLS``.
+SYMBOL_V18_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_symbols_canonical_fqn ON symbols(canonical_fqn);",
+    "CREATE INDEX IF NOT EXISTS idx_symbols_entry_point ON symbols(is_entry_point);",
+]
+
+#: Edge types accepted by the schema.
+#:
+#: ``CALLS``/``INHERITS``/``IMPORTS``/``REFERENCES`` are the original set.
+#: ``IMPLEMENTS`` separates a class implementing an interface from ordinary
+#: type inheritance, ``CALL_REFERENCE`` records a callable used as a value,
+#: ``USAGE`` records a conservative non-call reference, and ``TESTS`` records a
+#: test symbol referencing production code.
+GRAPH_EDGE_TYPES: tuple[str, ...] = (
+    "CALLS",
+    "IMPORTS",
+    "INHERITS",
+    "IMPLEMENTS",
+    "REFERENCES",
+    "USAGE",
+    "CALL_REFERENCE",
+    "TESTS",
+)
+
 GRAPH_EDGES_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS graph_edges (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_symbol_id INTEGER NOT NULL REFERENCES symbols(id),
     target_symbol_id INTEGER REFERENCES symbols(id),
-    edge_type TEXT NOT NULL CHECK(edge_type IN ('CALLS','IMPORTS','INHERITS','REFERENCES')),
+    edge_type TEXT NOT NULL CHECK(edge_type IN (
+        'CALLS','IMPORTS','INHERITS','IMPLEMENTS','REFERENCES',
+        'USAGE','CALL_REFERENCE','TESTS'
+    )),
     source_range TEXT,
     target_range TEXT,
     resolution_tier TEXT,
     resolved INTEGER NOT NULL DEFAULT 1,
     target_raw TEXT,
+    properties TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     UNIQUE(source_symbol_id, target_symbol_id, edge_type)
 );
@@ -216,6 +263,54 @@ CREATE TABLE IF NOT EXISTS file_checksums (
 );
 """
 
+# Per-file gaps between "the file exists" and "the graph contains its code".
+# Rows are scoped to an index generation: once a new generation is published,
+# coverage from the previous generation no longer describes the graph.
+INDEX_COVERAGE_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS index_coverage (
+    file_path TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    line_ranges TEXT,
+    generation TEXT NOT NULL,
+    PRIMARY KEY(file_path, kind, generation)
+);
+"""
+
+INDEX_COVERAGE_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_coverage_kind ON index_coverage(kind);",
+    "CREATE INDEX IF NOT EXISTS idx_coverage_generation ON index_coverage(generation);",
+]
+
+# Derived degree counts, rebuilt at the end of every index run. Counts include
+# resolved edges only: an unresolved reference is evidence, not a proven
+# relationship, so dead-code and degree filters must never treat it as one.
+SYMBOL_DEGREES_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS symbol_degrees (
+    symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    edge_type TEXT NOT NULL,
+    in_count INTEGER NOT NULL DEFAULT 0,
+    out_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(symbol_id, edge_type)
+);
+"""
+
+SYMBOL_DEGREES_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_symbol_degrees_filter "
+    "ON symbol_degrees(edge_type, in_count, out_count);",
+]
+
+# SQLite treats NULL values as distinct in a UNIQUE constraint, so unresolved
+# edges (``target_symbol_id IS NULL``) are not deduplicated by the table-level
+# UNIQUE(source_symbol_id, target_symbol_id, edge_type). This partial unique
+# index closes that gap without affecting resolved edges, which may legitimately
+# share raw text (for example two overloads called with the same spelling).
+UNRESOLVED_EDGE_UNIQUE_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_unique_unresolved
+ON graph_edges(source_symbol_id, edge_type, COALESCE(target_raw, ''))
+WHERE target_symbol_id IS NULL;
+"""
+
 # File/module-level edge table. Kept separate from ``graph_edges`` so imports
 # between files can be represented without a symbol node or a schema CHECK
 # rebuild. ``source_path``/``target_path`` are index-root-relative POSIX paths.
@@ -319,6 +414,10 @@ ALL_DDLS = [
     CHUNKS_FTS_DDL,
     *CHUNKS_FTS_TRIGGERS,
     FILE_CHECKSUMS_TABLE_DDL,
+    INDEX_COVERAGE_TABLE_DDL,
+    *INDEX_COVERAGE_INDEXES,
+    SYMBOL_DEGREES_TABLE_DDL,
+    *SYMBOL_DEGREES_INDEXES,
     MODULE_EDGES_TABLE_DDL,
     *MODULE_EDGES_INDEXES,
     SYMBOL_RATIONALE_TABLE_DDL,
@@ -402,6 +501,21 @@ def _decompose_leaf(leaf: str) -> list[str]:
 
     parts = re.split(r"(?<=[a-z0-9])(?=[A-Z])|_|(?<=[A-Z])(?=[A-Z][a-z])", leaf)
     return [p.lower() for p in parts if p]
+
+
+def _edge_properties_json(value: Any) -> str:
+    """Serialise edge properties to a JSON object string.
+
+    ``properties`` is stored as ``TEXT NOT NULL DEFAULT '{}'`` so a consumer
+    can always parse it. A non-dict value is replaced with an empty object
+    rather than written as an invalid shape.
+    """
+    if not isinstance(value, dict):
+        return "{}"
+    try:
+        return json.dumps(value, sort_keys=True)
+    except (TypeError, ValueError):
+        return "{}"
 
 
 def _resolve_symbol_candidates(
@@ -751,6 +865,10 @@ class GraphDatabase:
                             self._migrate_v14(conn)
                         if existing_version <= 15:
                             self._migrate_v16(conn)
+                        if existing_version <= 16:
+                            self._migrate_v17(conn)
+                        if existing_version <= 17:
+                            self._migrate_v18(conn)
                         conn.execute(
                             "UPDATE index_metadata SET value = ? WHERE key = 'index_version';",
                             (str(SCHEMA_VERSION),),
@@ -758,6 +876,8 @@ class GraphDatabase:
                         conn.execute(
                             "UPDATE index_metadata SET value = 'stale' WHERE key = 'index_status';"
                         )
+                self._ensure_unresolved_edge_index(conn)
+                self._ensure_v18_indexes(conn)
                 conn.commit()
             finally:
                 conn.close()
@@ -981,6 +1101,200 @@ class GraphDatabase:
             "CREATE INDEX IF NOT EXISTS idx_symbols_conventional_fqn ON symbols(conventional_fqn);"
         )
 
+    def _migrate_v17(self, conn: sqlite3.Connection) -> None:
+        """Migrate a v16 (or older) database to schema v17.
+
+        Collapses duplicate unresolved edges and then creates the partial
+        unique index that keeps them collapsed. SQLite's table-level UNIQUE
+        constraint cannot deduplicate rows whose ``target_symbol_id`` is NULL,
+        so repeated external references previously inserted one row per call.
+        Coverage is stored in the additive ``index_coverage`` table created by
+        the base schema DDL.
+        """
+        logger.info("Migrating schema <= v16 -> v17")
+        GraphDatabase._dedupe_unresolved_edges(conn)
+        conn.execute(UNRESOLVED_EDGE_UNIQUE_INDEX)
+
+    def _migrate_v18(self, conn: sqlite3.Connection) -> None:
+        """Migrate a v17 (or older) database to schema v18.
+
+        Adds the edge-model and trust columns: symbol ``canonical_fqn``,
+        ``visibility``, ``is_test``, ``is_entry_point``, ``entry_point_reason``,
+        and ``importance``; edge ``properties``; and the derived
+        ``symbol_degrees`` table. ``graph_edges`` is rebuilt when its CHECK
+        constraint predates the widened edge-type set, preserving every row.
+
+        Existing symbols are backfilled so a migrated index is immediately
+        queryable: ``canonical_fqn`` is derived from the recorded index root and
+        ``is_test`` from the path classifier. The entry-point and importance
+        passes run on the next index, which the schema bump already forces.
+        """
+        logger.info("Migrating schema <= v17 -> v18")
+        symbol_columns = {r["name"] for r in conn.execute("PRAGMA table_info(symbols);").fetchall()}
+        additions = (
+            ("canonical_fqn", "TEXT"),
+            ("visibility", "TEXT"),
+            ("is_test", "INTEGER NOT NULL DEFAULT 0"),
+            ("is_entry_point", "INTEGER NOT NULL DEFAULT 0"),
+            ("entry_point_reason", "TEXT"),
+            ("importance", "REAL NOT NULL DEFAULT 0"),
+        )
+        for column, definition in additions:
+            if column not in symbol_columns:
+                conn.execute(f"ALTER TABLE symbols ADD COLUMN {column} {definition};")
+
+        if GraphDatabase._edges_need_widening(conn):
+            GraphDatabase._rebuild_edges_table(conn)
+        conn.execute(SYMBOL_DEGREES_TABLE_DDL)
+        for index in SYMBOL_DEGREES_INDEXES:
+            conn.execute(index)
+        for index in SYMBOL_V18_INDEXES:
+            conn.execute(index)
+
+        root_row = conn.execute(
+            "SELECT value FROM index_metadata WHERE key = 'index_root';"
+        ).fetchone()
+        index_root = Path(root_row["value"]) if root_row is not None else None
+        GraphDatabase._backfill_canonical_fqns(conn, index_root)
+        GraphDatabase._backfill_symbol_test_flags(conn)
+
+    @staticmethod
+    def _edges_need_widening(conn: sqlite3.Connection) -> bool:
+        """Return whether ``graph_edges`` lacks properties or a widened CHECK."""
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(graph_edges);").fetchall()}
+        if "properties" not in columns:
+            return True
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'graph_edges';"
+        ).fetchone()
+        ddl = (row["sql"] or "") if row is not None else ""
+        return "'IMPLEMENTS'" not in ddl
+
+    @staticmethod
+    def _rebuild_edges_table(conn: sqlite3.Connection) -> None:
+        """Recreate ``graph_edges`` with the v18 column set and CHECK.
+
+        SQLite cannot widen a CHECK constraint in place, so the table is
+        rebuilt. Only columns present in the old table are copied; new columns
+        take their defaults. Indexes are recreated after the old table is
+        dropped so their names are free.
+        """
+        old_columns = {
+            r["name"] for r in conn.execute("PRAGMA table_info(graph_edges);").fetchall()
+        }
+        conn.execute("ALTER TABLE graph_edges RENAME TO graph_edges_old;")
+        conn.execute(GRAPH_EDGES_TABLE_DDL)
+        copy_columns = [
+            column
+            for column in (
+                "id",
+                "source_symbol_id",
+                "target_symbol_id",
+                "edge_type",
+                "source_range",
+                "target_range",
+                "resolution_tier",
+                "resolved",
+                "target_raw",
+                "properties",
+                "created_at",
+            )
+            if column in old_columns
+        ]
+        column_list = ", ".join(copy_columns)
+        conn.execute(
+            f"INSERT INTO graph_edges ({column_list}) SELECT {column_list} FROM graph_edges_old;"
+        )
+        conn.execute("DROP TABLE graph_edges_old;")
+        for index in GRAPH_EDGES_INDEXES:
+            conn.execute(index)
+        conn.execute(UNRESOLVED_EDGE_UNIQUE_INDEX)
+
+    @staticmethod
+    def _backfill_canonical_fqns(conn: sqlite3.Connection, index_root: Path | None) -> None:
+        """Populate ``symbols.canonical_fqn`` from the recorded index root."""
+        rows = conn.execute(
+            "SELECT id, fqn, file_path FROM symbols WHERE canonical_fqn IS NULL;"
+        ).fetchall()
+        if not rows:
+            return
+        updates: list[tuple[str, int]] = []
+        for row in rows:
+            file_path = str(row["file_path"] or "")
+            fqn = str(row["fqn"] or "")
+            relative = file_path
+            if index_root is not None:
+                try:
+                    relative = (
+                        Path(file_path).resolve().relative_to(index_root.resolve()).as_posix()
+                    )
+                except (ValueError, OSError):
+                    relative = Path(file_path).as_posix()
+            canonical = f"{relative}{fqn[len(file_path) :]}" if fqn.startswith(file_path) else fqn
+            updates.append((canonical, int(row["id"])))
+        conn.executemany("UPDATE symbols SET canonical_fqn = ? WHERE id = ?;", updates)
+
+    @staticmethod
+    def _backfill_symbol_test_flags(conn: sqlite3.Connection) -> None:
+        """Populate ``symbols.is_test`` from the shared path classifier."""
+        from code_search.engine.config import _is_test_file
+
+        rows = conn.execute("SELECT DISTINCT file_path FROM symbols;").fetchall()
+        updates = [
+            (1 if _is_test_file(str(row["file_path"] or "")) else 0, row["file_path"])
+            for row in rows
+        ]
+        conn.executemany("UPDATE symbols SET is_test = ? WHERE file_path = ?;", updates)
+
+    @staticmethod
+    def _unresolved_edge_index_exists(conn: sqlite3.Connection) -> bool:
+        """Return whether the unresolved-edge partial unique index exists."""
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' "
+            "AND name = 'idx_edges_unique_unresolved';"
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def _dedupe_unresolved_edges(conn: sqlite3.Connection) -> None:
+        """Keep the oldest row per unresolved ``(source, type, raw)`` tuple.
+
+        Only rows with ``target_symbol_id IS NULL`` are touched; resolved edges
+        are left alone even when their raw text is identical.
+        """
+        conn.execute(
+            "DELETE FROM graph_edges "
+            "WHERE target_symbol_id IS NULL AND id NOT IN ("
+            "  SELECT MIN(id) FROM graph_edges "
+            "  WHERE target_symbol_id IS NULL "
+            "  GROUP BY source_symbol_id, edge_type, COALESCE(target_raw, '')"
+            ");"
+        )
+
+    def _ensure_unresolved_edge_index(self, conn: sqlite3.Connection) -> None:
+        """Create the unresolved-edge partial unique index when it is missing.
+
+        Runs on every :meth:`initialize` because an index can be absent on a
+        database whose version already claims v17 (for example one opened by an
+        older build during a rolling upgrade). Deduplication precedes creation
+        so an existing index-less database migrates cleanly.
+        """
+        if self._unresolved_edge_index_exists(conn):
+            return
+        self._dedupe_unresolved_edges(conn)
+        conn.execute(UNRESOLVED_EDGE_UNIQUE_INDEX)
+
+    @staticmethod
+    def _ensure_v18_indexes(conn: sqlite3.Connection) -> None:
+        """Create v18 column indexes on every open, not only after a migration.
+
+        The base DDL cannot create them for an older database (the columns do
+        not exist yet), and a fresh database never runs the migration, so this
+        idempotent check closes both paths.
+        """
+        for index in SYMBOL_V18_INDEXES:
+            conn.execute(index)
+
     @staticmethod
     def _column_nullable(conn: sqlite3.Connection, table: str, column: str) -> bool:
         """Return whether *column* on *table* is nullable."""
@@ -1160,12 +1474,13 @@ class EdgeStore:
         source_range: str | None = None,
         target_range: str | None = None,
         resolution_tier: str | None = None,
+        properties: dict[str, Any] | None = None,
     ) -> int | None:
         """Insert a single directed edge between two symbols.
 
-        Validates *edge_type* against ``{CALLS, IMPORTS, INHERITS,
-        REFERENCES}`` and skips self-loops (``source == target``), which are
-        not representable per the schema design.
+        Validates *edge_type* against :data:`GRAPH_EDGE_TYPES` and skips
+        self-loops (``source == target``), which are not representable per the
+        schema design.
 
         Args:
             source_symbol_id: The caller/referencing symbol id.
@@ -1174,13 +1489,13 @@ class EdgeStore:
             source_range: JSON ``[s_line, s_col, e_line, e_col]`` call range.
             target_range: JSON target range, when known.
             resolution_tier: Confidence tier (e.g. ``exact``, ``fallback``).
+            properties: Optional JSON-serialisable evidence for the edge.
 
         Returns:
             The new row id, or ``None`` when the edge is skipped or the
             insert fails.
         """
-        valid_types = {"CALLS", "IMPORTS", "INHERITS", "REFERENCES"}
-        if edge_type not in valid_types:
+        if edge_type not in GRAPH_EDGE_TYPES:
             logger.warning("Invalid edge type: %s", edge_type)
             return None
         if source_symbol_id == target_symbol_id:
@@ -1191,8 +1506,8 @@ class EdgeStore:
                 cursor = conn.execute(
                     "INSERT OR IGNORE INTO graph_edges "
                     "(source_symbol_id, target_symbol_id, edge_type, source_range, "
-                    "target_range, resolution_tier) "
-                    "VALUES (?, ?, ?, ?, ?, ?);",
+                    "target_range, resolution_tier, properties) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?);",
                     (
                         source_symbol_id,
                         target_symbol_id,
@@ -1200,6 +1515,7 @@ class EdgeStore:
                         source_range,
                         target_range,
                         resolution_tier,
+                        json.dumps(properties or {}),
                     ),
                 )
                 return cursor.lastrowid
@@ -1247,8 +1563,8 @@ class EdgeStore:
                     "INSERT OR IGNORE INTO graph_edges "
                     "(source_symbol_id, target_symbol_id, "
                     "edge_type, source_range, target_range, resolution_tier, "
-                    "resolved, target_raw) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+                    "resolved, target_raw, properties) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
                     (
                         src_id,
                         tgt_id,
@@ -1258,6 +1574,7 @@ class EdgeStore:
                         edge.get("resolution_tier"),
                         0 if edge.get("resolved") == 0 else 1,
                         edge.get("target_raw"),
+                        _edge_properties_json(edge.get("properties")),
                     ),
                 )
             except Exception as exc:
@@ -1438,8 +1755,7 @@ class EdgeStore:
 
         Uses a recursive CTE that walks ``CALLS`` edges backwards from the
         target, pruning at *max_depth* and breaking cycles via an ancestor
-        path guard. Cycle presence is additionally detected and logged at
-        debug level.
+        path guard.
 
         The CTE enumerates every simple path within the bound, so a caller
         reachable at several depths would otherwise repeat once per depth.
@@ -1484,31 +1800,6 @@ class EdgeStore:
             "ORDER BY ranked.depth, s.fqn, ranked.caller_id;",
             (symbol_id, max_depth),
         ).fetchall()
-        # Log cycle detection info
-        all_rows = conn.execute(
-            "WITH RECURSIVE callers AS ( "
-            "SELECT e.source_symbol_id AS caller_id, 1 AS depth, "
-            "'|' || e.source_symbol_id || '|' AS path "
-            "FROM graph_edges e "
-            "WHERE e.target_symbol_id = ? AND e.edge_type = 'CALLS' "
-            "UNION ALL "
-            "SELECT e.source_symbol_id, c.depth + 1, "
-            "c.path || e.source_symbol_id || '|' "
-            "FROM graph_edges e "
-            "JOIN callers c ON e.target_symbol_id = c.caller_id "
-            "WHERE e.edge_type = 'CALLS' AND c.depth < ? "
-            "AND instr(c.path, '|' || e.source_symbol_id || '|') > 0 "
-            ") "
-            "SELECT source_symbol_id, depth FROM callers c "
-            "JOIN graph_edges e ON c.caller_id = e.source_symbol_id;",
-            (symbol_id, max_depth),
-        ).fetchall()
-        if all_rows:
-            logger.debug(
-                "Cycle(s) detected in caller traversal for symbol %d at depths %s",
-                symbol_id,
-                sorted({r["depth"] for r in all_rows}),
-            )
         return self._attach_edge_signature(
             conn, symbol_id, [dict(r) for r in rows], is_callee_traversal=False
         )
@@ -1606,8 +1897,7 @@ class EdgeStore:
 
         The forward mirror of :meth:`_traverse_callers`: a recursive CTE walks
         ``CALLS`` edges from the source, pruning at *max_depth* and breaking
-        cycles via an ancestor path guard. Cycle presence is detected and
-        logged at debug level.
+        cycles via an ancestor path guard.
 
         A callee is identified by its resolved symbol id, or — when the edge
         is unresolved — by its raw target reference, so identical external
@@ -1660,31 +1950,6 @@ class EdgeStore:
             "ORDER BY ranked.depth, COALESCE(s.fqn, ranked.target_raw), ranked.callee_id;",
             (symbol_id, max_depth),
         ).fetchall()
-        # Log cycle detection info
-        all_rows = conn.execute(
-            "WITH RECURSIVE callees AS ( "
-            "SELECT e.target_symbol_id AS callee_id, 1 AS depth, "
-            "'|' || e.target_symbol_id || '|' AS path "
-            "FROM graph_edges e "
-            "WHERE e.source_symbol_id = ? AND e.edge_type = 'CALLS' "
-            "UNION ALL "
-            "SELECT e.target_symbol_id, c.depth + 1, "
-            "c.path || COALESCE(e.target_symbol_id, 'u') || '|' "
-            "FROM graph_edges e "
-            "JOIN callees c ON e.source_symbol_id = c.callee_id "
-            "WHERE e.edge_type = 'CALLS' AND c.depth < ? "
-            "AND instr(c.path, '|' || COALESCE(e.target_symbol_id, 'u') || '|') > 0 "
-            ") "
-            "SELECT target_symbol_id, depth FROM callees c "
-            "JOIN graph_edges e ON c.callee_id = e.target_symbol_id;",
-            (symbol_id, max_depth),
-        ).fetchall()
-        if all_rows:
-            logger.debug(
-                "Cycle(s) detected in callee traversal for symbol %d at depths %s",
-                symbol_id,
-                sorted({r["depth"] for r in all_rows}),
-            )
         shaped: list[dict[str, Any]] = []
         for r in rows:
             row = dict(r)
@@ -1700,13 +1965,17 @@ class EdgeStore:
         return self._attach_edge_signature(conn, symbol_id, shaped, is_callee_traversal=True)
 
     def get_subtypes(self, symbol_id: int, max_depth: int = 5) -> list[dict[str, Any]]:
-        """Return types that inherit from *symbol_id*, with minimum depth.
+        """Return types that inherit from or implement *symbol_id*, by depth.
 
-        Walks ``INHERITS`` edges **backwards** (base -> subtype) with a
-        recursive CTE: the seed matches ``target_symbol_id = symbol_id`` and
-        each recursion follows ``target_symbol_id = previous source``. The walk
-        is bounded by *max_depth* and terminated on cycles by an ancestor path
-        guard, so a self-inheriting or mutually-recursive hierarchy cannot loop.
+        Walks ``INHERITS`` and ``IMPLEMENTS`` edges **backwards** (base ->
+        subtype) with a recursive CTE: the seed matches
+        ``target_symbol_id = symbol_id`` and each recursion follows
+        ``target_symbol_id = previous source``. Traversing both types means a
+        Phase 2 index uses ``IMPLEMENTS`` directly while a pre-Phase 2 index
+        (where every base edge is ``INHERITS``) keeps working unchanged. The
+        walk is bounded by *max_depth* and terminated on cycles by an ancestor
+        path guard, so a self-inheriting or mutually-recursive hierarchy cannot
+        loop.
 
         A subtype reachable at several depths is returned once, at its
         shallowest depth, breaking equal-depth ties by the ancestor FQN path
@@ -1720,10 +1989,11 @@ class EdgeStore:
 
         Returns:
             Subtype rows ``{id, fqn, name, kind, file_path, line_start,
-            line_end, language, depth, path}`` ordered by depth, then kind,
-            then FQN, then id. ``depth`` is 1 for a direct subtype and greater
-            than 1 for an indirect one; ``path`` is the FQN chain from the
-            queried base to the subtype.
+            line_end, language, depth, path, relationship}`` ordered by depth,
+            then kind, then FQN, then id. ``depth`` is 1 for a direct subtype
+            and greater than 1 for an indirect one; ``path`` is the FQN chain
+            from the queried base to the subtype; ``relationship`` is the
+            direct edge type (``IMPLEMENTS`` or ``INHERITS``).
         """
         root = self._db
         with root.connect() as conn:
@@ -1736,25 +2006,27 @@ class EdgeStore:
             rows = conn.execute(
                 "WITH RECURSIVE subtypes AS ( "
                 "SELECT e.source_symbol_id AS sid, 1 AS depth, "
+                "e.edge_type AS relation, "
                 "'|' || e.source_symbol_id || '|' AS cpath, "
                 "s.fqn AS fqn_path "
                 "FROM graph_edges e INDEXED BY idx_edges_target_type "
                 "JOIN symbols s ON s.id = e.source_symbol_id "
-                "WHERE e.target_symbol_id = ? AND e.edge_type = 'INHERITS' "
+                "WHERE e.target_symbol_id = ? "
+                "AND e.edge_type IN ('INHERITS', 'IMPLEMENTS') "
                 "UNION ALL "
-                "SELECT e.source_symbol_id, st.depth + 1, "
+                "SELECT e.source_symbol_id, st.depth + 1, st.relation, "
                 "st.cpath || e.source_symbol_id || '|', "
                 "st.fqn_path || '>' || s.fqn "
                 "FROM graph_edges e INDEXED BY idx_edges_target_type "
                 "JOIN subtypes st ON e.target_symbol_id = st.sid "
                 "JOIN symbols s ON s.id = e.source_symbol_id "
-                "WHERE e.edge_type = 'INHERITS' AND st.depth < ? "
+                "WHERE e.edge_type IN ('INHERITS', 'IMPLEMENTS') AND st.depth < ? "
                 "AND instr(st.cpath, '|' || e.source_symbol_id || '|') = 0 "
                 ") "
                 "SELECT s.id, s.fqn, s.name, s.kind, s.file_path, s.line_start, "
-                "s.line_end, s.language, ranked.depth, ranked.fqn_path "
+                "s.line_end, s.language, ranked.depth, ranked.relation, ranked.fqn_path "
                 "FROM ( "
-                "SELECT st.sid, st.depth, st.fqn_path, "
+                "SELECT st.sid, st.depth, st.relation, st.fqn_path, "
                 "ROW_NUMBER() OVER ( "
                 "PARTITION BY st.sid ORDER BY st.depth, st.fqn_path, st.sid "
                 ") AS rn "
@@ -1776,6 +2048,7 @@ class EdgeStore:
                 "line_end": r["line_end"],
                 "language": r["language"],
                 "depth": r["depth"],
+                "relationship": r["relation"],
                 "path": [root_fqn, *str(r["fqn_path"]).split(">")],
             }
             for r in rows
@@ -1857,16 +2130,18 @@ class EdgeStore:
             symbol_id: The class/interface whose base clauses are requested.
 
         Returns:
-            Base-type rows ``{name, fqn, resolved}`` ordered by the stored
-            base name. ``name`` is the simple leaf name in either case.
+            Base-type rows ``{name, fqn, resolved, relationship}`` ordered by
+            the stored base name. ``name`` is the simple leaf name in either
+            case and ``relationship`` is ``IMPLEMENTS`` or ``INHERITS``.
         """
         with self._db.connect() as conn:
             rows = conn.execute(
                 "SELECT e.resolved AS resolved, e.target_raw AS target_raw, "
-                "s.fqn AS fqn, s.name AS name "
+                "e.edge_type AS relationship, s.fqn AS fqn, s.name AS name "
                 "FROM graph_edges e "
                 "LEFT JOIN symbols s ON s.id = e.target_symbol_id "
-                "WHERE e.source_symbol_id = ? AND e.edge_type = 'INHERITS' "
+                "WHERE e.source_symbol_id = ? "
+                "AND e.edge_type IN ('INHERITS', 'IMPLEMENTS') "
                 "ORDER BY COALESCE(s.name, e.target_raw);",
                 (symbol_id,),
             ).fetchall()
@@ -1879,6 +2154,7 @@ class EdgeStore:
                     "name": row["name"] or leaf,
                     "fqn": row["fqn"],
                     "resolved": bool(row["resolved"]),
+                    "relationship": row["relationship"],
                 }
             )
         return targets

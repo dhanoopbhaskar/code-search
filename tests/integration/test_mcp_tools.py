@@ -831,6 +831,13 @@ async def test_mcp_all_tools_work(mcp_components: dict[str, Any], indexed_repo: 
         "shortest_path",
         "explain_symbol",
         "get_impact",
+        "get_graph_schema",
+        "get_file_outline",
+        "search_symbols",
+        "find_dead_code",
+        "get_architecture",
+        "check_index_coverage",
+        "detect_changes",
     }
 
     for tool_name, args in [

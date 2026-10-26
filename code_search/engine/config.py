@@ -805,6 +805,15 @@ class Settings:
     call_graph_limit: int = field(
         default_factory=lambda: int(os.environ.get("CODE_SEARCH_CALL_GRAPH_LIMIT", "50"))
     )
+    # Configured entry-point names/globs, checked after the built-in rules.
+    # Comma-separated; matched against both the symbol name and its FQN.
+    entry_points: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            pattern.strip()
+            for pattern in os.environ.get("CODE_SEARCH_ENTRY_POINTS", "").split(",")
+            if pattern.strip()
+        )
+    )
     max_resolution_candidates: int = field(
         default_factory=lambda: int(os.environ.get("CODE_SEARCH_MAX_RESOLUTION_CANDIDATES", "10"))
     )

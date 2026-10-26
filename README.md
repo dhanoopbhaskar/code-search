@@ -8,7 +8,7 @@ An AI code context engine for air-gapped, CPU-only enterprise environments. Comb
 - **Symbol definition lookup** — resolve any symbol by fully qualified name (FQN)
 - **Call graph traversal** — navigate upstream callers and downstream callees
 - **Session-aware ranking** — recently modified files rank higher in results
-- **MCP protocol server** — expose the full search, symbol, graph, and impact toolset to MCP-compatible AI assistants
+- **MCP protocol server** — expose the full search, symbol, graph, architecture, coverage, and impact toolset to MCP-compatible AI assistants
 - **Enterprise compliance** — no outbound network calls during search or serving, secret redaction, append-only audit logging
 
 ## Requirements
@@ -231,8 +231,9 @@ code-search query "who calls ArticleRepository.save" --depth 3 --json
 |------|---------|-------------|
 | `--depth N` | `2` | Traversal depth (max: 4) |
 | `--max-nodes N` | `120` | Maximum graph nodes (max: 200) |
-| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`IMPORTS` and `REFERENCES` are opt-in) |
+| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`IMPORTS`, `REFERENCES`, `IMPLEMENTS`, `USAGE`, and `CALL_REFERENCE` are opt-in) |
 | `--token-budget N` | `1500` | Soft output budget; the answer is trimmed deterministically |
+| `--direction DIR` | `both` | `both`, `inbound` (callers/importers), or `outbound` (callees/imports) |
 | `--json` | — | Structured JSON output |
 
 ### Shortest path
@@ -246,7 +247,7 @@ code-search path "ArticleController.favoriteArticle" "ArticleRepository.save" --
 |------|---------|-------------|
 | `--undirected` | off | Traverse edges in both directions |
 | `--max-hops N` | `6` | Maximum path length (max: 6) |
-| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`CALLS`, `INHERITS`, `REFERENCES`, `IMPORTS`) |
+| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`CALLS`, `INHERITS`, `IMPLEMENTS`, `REFERENCES`, `USAGE`, `CALL_REFERENCE`, `IMPORTS`) |
 | `--json` | — | Structured JSON output |
 
 ### Explain a symbol
@@ -266,7 +267,7 @@ a network call.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--depth N` | `1` | Ego-graph depth (max: 4) |
-| `--relations LIST` | `CALLS,INHERITS` | Comma-separated relations to include (`CALLS`, `INHERITS`, `REFERENCES`, `IMPORTS`) |
+| `--relations LIST` | `CALLS,INHERITS` | Comma-separated relations to include (`CALLS`, `INHERITS`, `IMPLEMENTS`, `REFERENCES`, `USAGE`, `CALL_REFERENCE`, `IMPORTS`) |
 | `--json` | — | Structured JSON output |
 
 ### Impact analysis and architecture map
@@ -279,8 +280,35 @@ code-search map --output graph-report.md
 
 | Command | Flags | Description |
 |---|---|---|
-| `affected` | `--since REF`, `--depth N`, `--json` | Reverse-traverse callers, subtypes, and importers of changed files |
-| `map` | `--output FILE`, `--top N`, `--max-communities N`, `--json` | Write a deterministic architecture report (god nodes, communities, import cycles) |
+| `affected` | `--since REF`, `--base-branch REF`, `--scope MODE`, `--direction DIR`, `--depth N`, `--fixpoint`, `--edge-types LIST`, `--no-imports`, `--seed-filter MODE`, `--json` | Report changed files and their blast radius, with production/test buckets and per-symbol risk labels |
+| `map` | `--output FILE`, `--top N`, `--max-communities N`, `--aspects LIST`, `--json` | Write a deterministic architecture report (god nodes, communities, import cycles); `--aspects` returns a bounded section instead |
+
+### Graph discovery and coverage
+
+```bash
+code-search schema --json
+code-search outline src/main/java/com/example/article/ArticleService.java
+code-search symbols --kind class --name-pattern '.*Service' --min-degree 1 --include-entry-points
+code-search dead-code --json
+code-search coverage --scope src --json
+```
+
+| Command | Flags | Description |
+|---|---|---|
+| `schema` | `--diagnostics`, `--limit N`, `--offset N`, `--json` | Stored labels, supported/emitted edge types, tiers, unresolved targets, coverage, generation |
+| `outline` | `--kind LIST`, `--limit N`, `--offset N`, `--include-docstring`, `--json` | One file's declarations in source order with an exact total |
+| `symbols` | `--name-pattern RE`, `--qn-pattern RE`, `--kind LIST`, `--file-pattern GLOB`, `--min-degree N`, `--max-degree N`, `--edge-types LIST`, `--include-entry-points`, `--include-connected`, `--limit N`, `--offset N`, `--json` | Structural symbol search over regex/kind/file/degree, not text similarity |
+| `dead-code` | `--kinds LIST`, `--include-entry-points`, `--include-tests`, `--limit N`, `--offset N`, `--json` | Callables with no proven production reference, with confidence, test-only usage, and unresolved same-name evidence |
+| `coverage` | `--scope PREFIX`, `--max-rows N`, `--json` | Per-file or per-scope gaps (`partial`, `unusable`, `skipped`, `excluded`, `not_indexed`) with freshness and a recommended action |
+
+`schema`, `outline`, `symbols`, `dead-code`, and `coverage` have matching MCP
+tools (`get_graph_schema`, `get_file_outline`, `search_symbols`,
+`find_dead_code`, `check_index_coverage`). `get_architecture` and
+`detect_changes` complete the MCP-side discovery set. Dead-code results are
+candidates with evidence, never permission to delete code: per-row
+`incoming.unresolved_same_name` and `used_only_by_tests` show where a dynamic
+caller may keep a symbol alive. A clean coverage result means no gap was
+recorded for the current generation — not that every reference resolved.
 
 ### Repeatable queries with the query daemon
 
@@ -331,7 +359,7 @@ code-search metrics --format prometheus
 
 ### View audit logs
 
-Every search, symbol lookup, call graph, find_related, implementation-lookup, graph-query, path, explain, impact, and map query is recorded in an append-only SQLite audit log at `.context/audit.db` (rows cannot be updated or deleted). View the most recent entries:
+Every search, symbol lookup, call graph, find_related, implementation-lookup, graph-query, path, explain, impact, dead-code, and map query is recorded in an append-only SQLite audit log at `.context/audit.db` (rows cannot be updated or deleted). View the most recent entries:
 
 ```bash
 sqlite3 .context/audit.db \
@@ -339,7 +367,7 @@ sqlite3 .context/audit.db \
    FROM audit_log_entries ORDER BY id DESC LIMIT 20;"
 ```
 
-Filter by query type (`search`, `get_symbol_definition`, `get_call_neighbors`, `find_related`, `get_implementations`, `query_graph`, `shortest_path`, `explain_symbol`, `get_impact`, `map`):
+Filter by query type (`search`, `get_symbol_definition`, `get_call_neighbors`, `find_related`, `get_implementations`, `query_graph`, `shortest_path`, `explain_symbol`, `get_impact`, `map`, `get_graph_schema`, `get_file_outline`, `search_symbols`, `find_dead_code`, `get_architecture`, `check_index_coverage`, `detect_changes`):
 
 ```bash
 sqlite3 .context/audit.db \
@@ -458,7 +486,7 @@ make check
 │   ├── cli/          # CLI entry point
 │   │   └── main.py         # code-search CLI commands
 │   ├── mcp/          # MCP protocol server
-│   │   └── server.py       # FastMCP stdio server with 9 tools
+│   │   └── server.py       # FastMCP stdio server with 15 tools
 │   └── context/      # Context directory management
 │       └── __init__.py     # .context/ directory setup
 ```

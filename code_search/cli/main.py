@@ -2,7 +2,8 @@
 
 Provides subcommands:
   index, search, symbol, graph, implementations, query, path, explain,
-  affected, map, metrics, serve, list-languages, download-models, daemon
+  affected, map, schema, outline, symbols, coverage, metrics, serve,
+  list-languages, download-models, daemon
 """
 
 from __future__ import annotations
@@ -12,7 +13,6 @@ import json
 import logging
 import os
 import signal
-import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -1302,23 +1302,15 @@ def _parse_edge_types(value: str | None) -> set[str] | None:
 def _git_changed_files(root: Path, ref: str) -> list[str]:
     """Return working-tree paths changed relative to *ref*.
 
+    Delegates to the shared engine helper so the CLI and MCP resolve git
+    changes identically.
+
     Raises:
         RuntimeError: When git is unavailable or *ref* cannot be resolved.
     """
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(root), "diff", "--name-only", ref],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise RuntimeError(f"git is unavailable: {exc}") from exc
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise RuntimeError(f"git diff failed for {ref!r}: {detail}")
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    from code_search.engine.graph_surface import changed_files_since
+
+    return changed_files_since(root, ref)
 
 
 def cmd_find_related(args: argparse.Namespace) -> int:
@@ -1420,6 +1412,7 @@ def cmd_query(args: argparse.Namespace) -> int:
         edge_types=_parse_edge_types(args.edge_types),
         token_budget=args.token_budget,
         include_external=getattr(args, "include_externals", False),
+        direction=getattr(args, "direction", "both"),
     )
     from code_search.engine.graph_query import render_query_text
     from code_search.mcp.server import _freshness_signal
@@ -1558,7 +1551,22 @@ def cmd_explain(args: argparse.Namespace) -> int:
 
 
 def cmd_affected(args: argparse.Namespace) -> int:
-    """Report symbols impacted by changed files (git diff or explicit paths)."""
+    """Report changed files and their blast radius.
+
+    Resolves changed paths from explicit arguments or a git ref, then returns
+    the impacted symbols with risk labels, production/test separation, and
+    traversal provenance. Shares the payload builder with the MCP
+    ``detect_changes`` tool.
+
+    Args:
+        args: Parsed arguments; ``paths``, ``since``/``base_branch``,
+            ``scope``, ``direction``, ``depth``/``fixpoint``, ``edge_types``,
+            ``no_imports``, ``seed_filter``, and ``json`` are honoured.
+
+    Returns:
+        ``0`` on success, ``1`` when the index is not initialized or no files
+        changed, or ``2`` for an invalid scope/git ref.
+    """
     start = time.monotonic()
     _setup_logging(args.verbose)
     context_dir = _resolve_context_dir(args)
@@ -1570,18 +1578,6 @@ def cmd_affected(args: argparse.Namespace) -> int:
         print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
         return 1
 
-    index_root = comps["metadata"].get("index_root") or str(context_dir.parent)
-    changed = list(args.paths)
-    if args.since:
-        try:
-            changed.extend(_git_changed_files(Path(index_root), args.since))
-        except RuntimeError as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-    if not changed:
-        print("No changed files: pass paths or --since <git-ref>.", file=sys.stderr)
-        return 1
-
     graph_missing = _graph_not_indexed_message(comps)
     if graph_missing is not None:
         if getattr(args, "json", False):
@@ -1590,42 +1586,67 @@ def cmd_affected(args: argparse.Namespace) -> int:
             print(graph_missing, file=sys.stderr)
         return 1
 
+    index_root = str(comps["metadata"].get("index_root") or context_dir.parent)
     service = _graph_query_service(comps)
-    answer = service.impact(changed, depth=args.depth)
-    from code_search.engine.graph_query import render_impact_text
+    payload = service.detect_changes(
+        list(args.paths),
+        since=getattr(args, "since", None),
+        base_branch=getattr(args, "base_branch", None),
+        scope=getattr(args, "scope", "impact"),
+        direction=getattr(args, "direction", "inbound"),
+        depth=args.depth,
+        fixpoint=getattr(args, "fixpoint", False),
+        edge_types=_parse_edge_types(getattr(args, "edge_types", None)),
+        include_imports=not getattr(args, "no_imports", False),
+        seed_filter=getattr(args, "seed_filter", "all"),
+    )
+    from code_search.engine.graph_query import render_changes_text
     from code_search.mcp.server import _freshness_signal
 
-    if args.json:
-        payload = answer.as_dict()
+    if getattr(args, "json", False):
         payload["freshness"] = _freshness_signal(comps)
         payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
         print(json.dumps(payload, indent=2, default=str))
+    elif payload.get("outcome") in ("invalid_argument", "no_changes"):
+        print(payload.get("error") or "No changed files: pass paths or --since/--base-branch.")
+        return 2 if payload.get("outcome") == "invalid_argument" else 1
     else:
-        print(render_impact_text(answer, root=index_root))
+        print(render_changes_text(payload, root=index_root))
         _emit_stale_notice(_freshness_signal(comps))
 
     duration_ms = int((time.monotonic() - start) * 1000)
+    changed_files = payload.get("changed_files") or []
     comps["audit_db"].write_entry(
-        query_type="get_impact",
-        query_summary=", ".join(changed)[: settings.query_summary_length],
-        result_count=len(answer.impacted),
+        query_type="detect_changes",
+        query_summary=", ".join(changed_files)[: settings.query_summary_length] or "no_changes",
+        result_count=int(payload.get("summary", {}).get("symbols", 0)),
         duration_ms=duration_ms,
         redacted_count=0,
     )
     mc = comps.get("metrics_collector")
     if mc:
         mc.record_query(duration_ms)
-    return 0
+    if payload.get("outcome") == "resolved":
+        return 0
+    if payload.get("outcome") == "no_changes":
+        return 1
+    return 2
 
 
 def cmd_map(args: argparse.Namespace) -> int:
-    """Generate a deterministic architecture report for the indexed graph."""
+    """Generate a deterministic architecture report for the indexed graph.
+
+    Without ``--aspects`` this keeps the original full report (Markdown or
+    JSON). With ``--aspects`` it returns the bounded MCP
+    ``get_architecture`` payload, so both surfaces ask the same questions.
+    """
     start = time.monotonic()
     _setup_logging(args.verbose)
     context_dir = _resolve_context_dir(args)
     comps = _initialize_components(
         context_dir, settings=_settings_for_args(args), load_vectors=False
     )
+    settings = comps["settings"]
     if comps["metadata"].get_index_status() != "ready":
         print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
         return 1
@@ -1639,6 +1660,38 @@ def cmd_map(args: argparse.Namespace) -> int:
         return 1
 
     service = _graph_query_service(comps)
+    requested_aspects = getattr(args, "aspects", None)
+    if requested_aspects:
+        payload = service.architecture(
+            aspects={part.strip().lower() for part in requested_aspects.split(",") if part.strip()},
+            top_n=args.top,
+            max_communities=args.max_communities,
+        )
+        from code_search.engine.graph_query import render_architecture_aspects_text
+        from code_search.mcp.server import _freshness_signal
+
+        payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
+        if args.json:
+            payload["freshness"] = _freshness_signal(comps)
+            print(json.dumps(payload, indent=2, default=str))
+        elif payload.get("outcome") == "invalid_argument":
+            print(payload.get("error"), file=sys.stderr)
+            return 2
+        else:
+            print(render_architecture_aspects_text(payload))
+        duration_ms = int((time.monotonic() - start) * 1000)
+        comps["audit_db"].write_entry(
+            query_type="get_architecture",
+            query_summary=requested_aspects[: settings.query_summary_length],
+            result_count=len(payload.get("hotspots") or []),
+            duration_ms=duration_ms,
+            redacted_count=0,
+        )
+        mc = comps.get("metrics_collector")
+        if mc:
+            mc.record_query(duration_ms)
+        return 0 if payload.get("outcome") == "resolved" else 2
+
     report = service.architecture_report(
         top_n=args.top,
         max_communities=args.max_communities,
@@ -1669,6 +1722,328 @@ def cmd_map(args: argparse.Namespace) -> int:
     if mc:
         mc.record_query(duration_ms)
     return 0
+
+
+def cmd_schema(args: argparse.Namespace) -> int:
+    """Describe the graph schema an agent is about to query.
+
+    Reports stored node labels, supported and emitted edge types, resolution
+    tiers, symbol totals, coverage gaps, and the index generation. Shares the
+    payload builder with the MCP ``get_graph_schema`` tool.
+
+    Args:
+        args: Parsed arguments; ``diagnostics``, ``limit``, ``offset``, and
+            ``json`` are honoured.
+
+    Returns:
+        ``0`` on success, ``1`` when the index is not initialized, or ``2``
+        when the graph was not indexed.
+    """
+    start = time.monotonic()
+    _setup_logging(args.verbose)
+    context_dir = _resolve_context_dir(args)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args), load_vectors=False
+    )
+    if comps["metadata"].get_index_status() != "ready":
+        print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
+        return 1
+
+    graph_missing = _graph_not_indexed_message(comps)
+    if graph_missing is not None:
+        if getattr(args, "json", False):
+            print(json.dumps({"error": "graph_not_indexed", "message": graph_missing}))
+        else:
+            print(graph_missing, file=sys.stderr)
+        return 1
+
+    from code_search.engine.graph_surface import get_graph_schema, render_graph_schema_text
+    from code_search.mcp.server import _freshness_signal
+
+    payload = get_graph_schema(
+        comps["db"],
+        diagnostics=getattr(args, "diagnostics", False),
+        node_limit=getattr(args, "limit", 100),
+        offset=getattr(args, "offset", 0),
+    )
+    payload["index_status"] = comps["metadata"].get_index_status()
+    if getattr(args, "json", False):
+        payload["freshness"] = _freshness_signal(comps)
+        payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        print(render_graph_schema_text(payload))
+        _emit_stale_notice(_freshness_signal(comps))
+
+    duration_ms = int((time.monotonic() - start) * 1000)
+    comps["audit_db"].write_entry(
+        query_type="get_graph_schema",
+        query_summary="schema",
+        result_count=int(payload.get("node_labels_total", 0)),
+        duration_ms=duration_ms,
+        redacted_count=0,
+    )
+    mc = comps.get("metrics_collector")
+    if mc:
+        mc.record_query(duration_ms)
+    return 0
+
+
+def cmd_outline(args: argparse.Namespace) -> int:
+    """List one file's declarations in source order.
+
+    Shares the payload builder with the MCP ``get_file_outline`` tool so a file
+    outline is identical across surfaces.
+
+    Args:
+        args: Parsed arguments; ``file``, ``kind``, ``limit``, ``offset``,
+            ``include_docstring``, and ``json`` are honoured.
+
+    Returns:
+        ``0`` when the file is indexed, ``2`` when it is not, or ``1`` when the
+        index is not initialized.
+    """
+    start = time.monotonic()
+    _setup_logging(args.verbose)
+    context_dir = _resolve_context_dir(args)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args), load_vectors=False
+    )
+    settings = comps["settings"]
+    if comps["metadata"].get_index_status() != "ready":
+        print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
+        return 1
+
+    index_root = Path(comps["metadata"].get("index_root") or str(context_dir.parent))
+    kinds = [part.strip() for part in (args.kind or "").split(",") if part.strip()] or None
+    from code_search.engine.graph_surface import get_file_outline, render_file_outline_text
+    from code_search.mcp.server import _freshness_signal
+
+    payload = get_file_outline(
+        comps["db"],
+        args.file,
+        index_root=index_root,
+        kinds=kinds,
+        limit=getattr(args, "limit", 200),
+        offset=getattr(args, "offset", 0),
+        include_docstring=getattr(args, "include_docstring", False),
+    )
+    payload["index_status"] = comps["metadata"].get_index_status()
+    if getattr(args, "json", False):
+        payload["freshness"] = _freshness_signal(comps)
+        payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        print(render_file_outline_text(payload))
+        _emit_stale_notice(_freshness_signal(comps))
+
+    duration_ms = int((time.monotonic() - start) * 1000)
+    comps["audit_db"].write_entry(
+        query_type="get_file_outline",
+        query_summary=args.file[: settings.query_summary_length],
+        result_count=int(payload.get("returned", 0)),
+        duration_ms=duration_ms,
+        redacted_count=0,
+    )
+    mc = comps.get("metrics_collector")
+    if mc:
+        mc.record_query(duration_ms)
+    return 0 if payload.get("outcome") == "resolved" else 2
+
+
+def cmd_symbols(args: argparse.Namespace) -> int:
+    """Search symbols by structure: regex name/QN, kind, file, and degree.
+
+    Shares the payload builder with the MCP ``search_symbols`` tool so both
+    surfaces apply the same filters and ordering.
+
+    Args:
+        args: Parsed arguments; the structural filters, paging, and ``json``
+            are honoured.
+
+    Returns:
+        ``0`` when symbols matched, ``2`` for no match or invalid filters, or
+        ``1`` when the index is not initialized.
+    """
+    start = time.monotonic()
+    _setup_logging(args.verbose)
+    context_dir = _resolve_context_dir(args)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args), load_vectors=False
+    )
+    settings = comps["settings"]
+    if comps["metadata"].get_index_status() != "ready":
+        print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
+        return 1
+
+    index_root = Path(comps["metadata"].get("index_root") or str(context_dir.parent))
+    from code_search.engine.graph_surface import render_symbol_search_text, search_symbols
+    from code_search.mcp.server import _freshness_signal
+
+    payload = search_symbols(
+        comps["db"],
+        query=args.query,
+        name_pattern=args.name_pattern,
+        qn_pattern=args.qn_pattern,
+        kind=args.kind,
+        file_pattern=args.file_pattern,
+        min_degree=args.min_degree,
+        max_degree=args.max_degree,
+        edge_types=sorted(_parse_edge_types(args.edge_types) or []) or None,
+        exclude_entry_points=not getattr(args, "include_entry_points", False),
+        include_connected=getattr(args, "include_connected", False),
+        limit=getattr(args, "limit", 50),
+        offset=getattr(args, "offset", 0),
+        index_root=index_root,
+    )
+    payload["index_status"] = comps["metadata"].get_index_status()
+    if getattr(args, "json", False):
+        payload["freshness"] = _freshness_signal(comps)
+        payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        print(render_symbol_search_text(payload))
+        _emit_stale_notice(_freshness_signal(comps))
+
+    duration_ms = int((time.monotonic() - start) * 1000)
+    comps["audit_db"].write_entry(
+        query_type="search_symbols",
+        query_summary=(args.query or args.name_pattern or "symbols")[
+            : settings.query_summary_length
+        ],
+        result_count=int(payload.get("returned", 0)),
+        duration_ms=duration_ms,
+        redacted_count=0,
+    )
+    mc = comps.get("metrics_collector")
+    if mc:
+        mc.record_query(duration_ms)
+    return 0 if payload.get("outcome") == "resolved" else 2
+
+
+def cmd_dead_code(args: argparse.Namespace) -> int:
+    """Report callables with no proven production reference.
+
+    Shares the payload builder with the MCP ``find_dead_code`` tool. The
+    command reports candidates and their limitations; it never recommends
+    deleting code.
+
+    Args:
+        args: Parsed arguments; kinds, exclusions, paging, and ``json`` are
+            honoured.
+
+    Returns:
+        ``0`` when the query ran, ``2`` for invalid filters, or ``1`` when the
+        index is not initialized.
+    """
+    start = time.monotonic()
+    _setup_logging(args.verbose)
+    context_dir = _resolve_context_dir(args)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args), load_vectors=False
+    )
+    settings = comps["settings"]
+    if comps["metadata"].get_index_status() != "ready":
+        print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
+        return 1
+
+    index_root = Path(comps["metadata"].get("index_root") or str(context_dir.parent))
+    from code_search.engine.graph_surface import find_dead_code, render_dead_code_text
+    from code_search.mcp.server import _freshness_signal
+
+    payload = find_dead_code(
+        comps["db"],
+        kinds=getattr(args, "kinds", None),
+        include_entry_points=getattr(args, "include_entry_points", False),
+        include_tests=getattr(args, "include_tests", False),
+        limit=getattr(args, "limit", 50),
+        offset=getattr(args, "offset", 0),
+        index_root=index_root,
+    )
+    payload["index_status"] = comps["metadata"].get_index_status()
+    if getattr(args, "json", False):
+        payload["freshness"] = _freshness_signal(comps)
+        payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        print(render_dead_code_text(payload))
+        _emit_stale_notice(_freshness_signal(comps))
+
+    duration_ms = int((time.monotonic() - start) * 1000)
+    comps["audit_db"].write_entry(
+        query_type="find_dead_code",
+        query_summary=(getattr(args, "kinds", None) or "dead-code")[
+            : settings.query_summary_length
+        ],
+        result_count=int(payload.get("returned", 0)),
+        duration_ms=duration_ms,
+        redacted_count=0,
+    )
+    mc = comps.get("metrics_collector")
+    if mc:
+        mc.record_query(duration_ms)
+    return 0 if payload.get("outcome") == "resolved" else 2
+
+
+def cmd_coverage(args: argparse.Namespace) -> int:
+    """Report index gaps for requested paths/scopes, or the whole index.
+
+    Shares the payload builder with the MCP ``check_index_coverage`` tool. A
+    clean result means no gap was recorded, not that every reference resolved.
+
+    Args:
+        args: Parsed arguments; ``paths``, ``scope``, ``max_rows``, and
+            ``json`` are honoured.
+
+    Returns:
+        ``0`` when coverage metadata is available, ``2`` when it is not, or
+        ``1`` when the index is not initialized.
+    """
+    start = time.monotonic()
+    _setup_logging(args.verbose)
+    context_dir = _resolve_context_dir(args)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args), load_vectors=False
+    )
+    settings = comps["settings"]
+    if comps["metadata"].get_index_status() != "ready":
+        print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
+        return 1
+
+    index_root = Path(comps["metadata"].get("index_root") or str(context_dir.parent))
+    from code_search.engine.graph_surface import check_index_coverage, render_coverage_text
+    from code_search.mcp.server import _freshness_signal
+
+    payload = check_index_coverage(
+        comps["db"],
+        paths=list(args.paths or []),
+        scopes=list(getattr(args, "scope", None) or []),
+        index_root=index_root,
+        parser=comps.get("parser"),
+        max_rows=getattr(args, "max_rows", 500),
+    )
+    payload["index_status"] = comps["metadata"].get_index_status()
+    if getattr(args, "json", False):
+        payload["freshness"] = _freshness_signal(comps)
+        payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
+        print(json.dumps(payload, indent=2, default=str))
+    else:
+        print(render_coverage_text(payload))
+        _emit_stale_notice(_freshness_signal(comps))
+
+    duration_ms = int((time.monotonic() - start) * 1000)
+    requested_summary = ", ".join([*(args.paths or []), *(getattr(args, "scope", None) or [])])
+    comps["audit_db"].write_entry(
+        query_type="check_index_coverage",
+        query_summary=requested_summary[: settings.query_summary_length] or "all",
+        result_count=int(payload.get("summary", {}).get("returned", 0)),
+        duration_ms=duration_ms,
+        redacted_count=0,
+    )
+    mc = comps.get("metrics_collector")
+    if mc:
+        mc.record_query(duration_ms)
+    return 0 if payload.get("outcome") == "resolved" else 2
 
 
 def cmd_metrics(args: argparse.Namespace) -> int:
@@ -1807,6 +2182,13 @@ def cmd_stats(args: argparse.Namespace) -> int:
         logger.debug("stats table counts unavailable: %s", exc)
 
     age = _index_age_seconds(metadata)
+    graph_metrics: dict[str, Any] = {}
+    try:
+        from code_search.engine.graph_metrics import collect_graph_metrics
+
+        graph_metrics = collect_graph_metrics(db)
+    except Exception as exc:
+        logger.debug("graph metrics unavailable: %s", exc)
     payload: dict[str, Any] = {
         "profile": settings.runtime_profile,
         "profile_reason": settings.profile_reason(),
@@ -1821,6 +2203,7 @@ def cmd_stats(args: argparse.Namespace) -> int:
             + (vector_files.stat().st_size if vector_files.is_file() else 0)
         ),
         "counts": counts,
+        "graph": graph_metrics,
     }
     payload["total_bytes"] = (
         payload["graph_db_bytes"] + payload["vectors_bin_bytes"] + payload["vectors_meta_bytes"]
@@ -1842,6 +2225,16 @@ def cmd_stats(args: argparse.Namespace) -> int:
     print(f"  vectors.meta: {_human_bytes(int(payload['vectors_meta_bytes']))}")
     for table, count in counts.items():
         print(f"  {table}: {count:,}")
+    if graph_metrics:
+        edges = graph_metrics.get("edges", {})
+        coverage = graph_metrics.get("coverage", {})
+        print(
+            f"Graph edges:    {int(edges.get('total', 0)):,} "
+            f"(resolved {int(edges.get('resolved', 0)):,}, "
+            f"unresolved {int(edges.get('unresolved', 0)):,})"
+        )
+        print(f"Coverage gaps:  {int(coverage.get('total', 0)):,}")
+        print(f"Generation:     {graph_metrics.get('index_generation') or 'unknown'}")
     return 0
 
 
@@ -3046,6 +3439,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Include unresolved/external callee leaves (collapsed by default)",
     )
+    query_parser.add_argument(
+        "--direction",
+        choices=["both", "inbound", "outbound"],
+        default="both",
+        help="Traverse both directions (default), only callers/importers, or only callees/imports",
+    )
     query_parser.add_argument("--json", action="store_true", help="JSON output")
     query_parser.set_defaults(func=cmd_query)
 
@@ -3080,11 +3479,43 @@ def build_parser() -> argparse.ArgumentParser:
     explain_parser.set_defaults(func=cmd_explain)
 
     affected_parser = subparsers.add_parser(
-        "affected", parents=[global_args], help="Report symbols impacted by changed files"
+        "affected", parents=[global_args], help="Report changed files and their blast radius"
     )
     affected_parser.add_argument("paths", nargs="*", help="Changed file paths")
     affected_parser.add_argument("--since", help="Git ref to diff against (e.g. HEAD~1)")
-    affected_parser.add_argument("--depth", type=int, default=3, help="Reverse depth (max 4)")
+    affected_parser.add_argument(
+        "--base-branch", help="Base branch/ref to diff against (takes precedence over --since)"
+    )
+    affected_parser.add_argument(
+        "--scope",
+        choices=["files", "impact", "tests"],
+        default="impact",
+        help="Return changed files only, the full impact, or test files/symbols",
+    )
+    affected_parser.add_argument(
+        "--direction",
+        choices=["inbound", "outbound", "both"],
+        default="inbound",
+        help="Inbound finds dependents; outbound finds dependencies",
+    )
+    affected_parser.add_argument("--depth", type=int, default=3, help="Traversal depth (max 4)")
+    affected_parser.add_argument(
+        "--fixpoint", action="store_true", help="Walk to closure instead of stopping at --depth"
+    )
+    affected_parser.add_argument(
+        "--edge-types",
+        default="CALLS,INHERITS",
+        help="Comma-separated symbol edge types to traverse",
+    )
+    affected_parser.add_argument(
+        "--no-imports", action="store_true", help="Do not traverse file-level import edges"
+    )
+    affected_parser.add_argument(
+        "--seed-filter",
+        choices=["all", "product"],
+        default="all",
+        help="Seed every symbol in changed files, or only production symbols",
+    )
     affected_parser.add_argument("--json", action="store_true", help="JSON output")
     affected_parser.set_defaults(func=cmd_affected)
 
@@ -3096,8 +3527,114 @@ def build_parser() -> argparse.ArgumentParser:
     map_parser.add_argument(
         "--max-communities", type=int, default=10, help="Maximum communities to report"
     )
+    map_parser.add_argument(
+        "--aspects",
+        help=(
+            "Comma-separated bounded sections: overview, structure, dependencies, "
+            "hotspots, entry_points, clusters, cycles, or all"
+        ),
+    )
     map_parser.add_argument("--json", action="store_true", help="JSON output")
     map_parser.set_defaults(func=cmd_map)
+
+    schema_parser = subparsers.add_parser(
+        "schema", parents=[global_args], help="Describe graph labels, edge types, and coverage"
+    )
+    schema_parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="Include edge-property diagnostics (bounded)",
+    )
+    schema_parser.add_argument("--limit", type=int, default=100, help="Max node labels to return")
+    schema_parser.add_argument("--offset", type=int, default=0, help="Node-label offset")
+    schema_parser.add_argument("--json", action="store_true", help="JSON output")
+    schema_parser.set_defaults(func=cmd_schema)
+
+    outline_parser = subparsers.add_parser(
+        "outline", parents=[global_args], help="List a file's declarations in source order"
+    )
+    outline_parser.add_argument("file", help="File path (absolute or project-relative)")
+    outline_parser.add_argument("--kind", help="Comma-separated declaration kinds")
+    outline_parser.add_argument("--limit", type=int, default=200, help="Max declarations (500 max)")
+    outline_parser.add_argument("--offset", type=int, default=0, help="Declaration offset")
+    outline_parser.add_argument(
+        "--include-docstring", action="store_true", help="Include stored docstrings"
+    )
+    outline_parser.add_argument("--json", action="store_true", help="JSON output")
+    outline_parser.set_defaults(func=cmd_outline)
+
+    symbols_parser = subparsers.add_parser(
+        "symbols", parents=[global_args], help="Search symbols by structure, not text similarity"
+    )
+    symbols_parser.add_argument(
+        "query", nargs="?", help="Optional substring over name/FQN/docstring"
+    )
+    symbols_parser.add_argument("--name-pattern", help="Python regex matched against the name")
+    symbols_parser.add_argument("--qn-pattern", help="Python regex matched against the FQN")
+    symbols_parser.add_argument("--kind", help="Comma-separated declaration kinds")
+    symbols_parser.add_argument(
+        "--file-pattern", help="Glob over the file path, or 're:<regex>' for a regex"
+    )
+    symbols_parser.add_argument("--min-degree", type=int, help="Minimum resolved total degree")
+    symbols_parser.add_argument("--max-degree", type=int, help="Maximum resolved total degree")
+    symbols_parser.add_argument(
+        "--edge-types",
+        default="CALLS,INHERITS,IMPLEMENTS,REFERENCES,USAGE,CALL_REFERENCE",
+        help="Comma-separated edge types counted for degree filters",
+    )
+    symbols_parser.add_argument(
+        "--include-entry-points",
+        action="store_true",
+        help="Include test symbols, main, and constructors (excluded by default)",
+    )
+    symbols_parser.add_argument(
+        "--include-connected", action="store_true", help="Attach up to 10 neighbours per symbol"
+    )
+    symbols_parser.add_argument("--limit", type=int, default=50, help="Max symbols (200 max)")
+    symbols_parser.add_argument("--offset", type=int, default=0, help="Result offset")
+    symbols_parser.add_argument("--json", action="store_true", help="JSON output")
+    symbols_parser.set_defaults(func=cmd_symbols)
+
+    dead_code_parser = subparsers.add_parser(
+        "dead-code",
+        parents=[global_args],
+        help="Report callables with no proven production reference",
+    )
+    dead_code_parser.add_argument(
+        "--kinds",
+        default="function,method,constructor",
+        help="Comma-separated candidate kinds",
+    )
+    dead_code_parser.add_argument(
+        "--include-entry-points",
+        action="store_true",
+        help="Include classified entry points (excluded by default)",
+    )
+    dead_code_parser.add_argument(
+        "--include-tests",
+        action="store_true",
+        help="Include test symbols as candidates (excluded by default)",
+    )
+    dead_code_parser.add_argument("--limit", type=int, default=50, help="Max candidates (200 max)")
+    dead_code_parser.add_argument("--offset", type=int, default=0, help="Result offset")
+    dead_code_parser.add_argument("--json", action="store_true", help="JSON output")
+    dead_code_parser.set_defaults(func=cmd_dead_code)
+
+    coverage_parser = subparsers.add_parser(
+        "coverage",
+        parents=[global_args],
+        help="Report index coverage gaps for paths/scopes or the whole index",
+    )
+    coverage_parser.add_argument("paths", nargs="*", help="File paths to check")
+    coverage_parser.add_argument(
+        "--scope",
+        action="append",
+        default=[],
+        help="Index-relative directory prefix to aggregate (repeatable)",
+    )
+    coverage_parser.add_argument("--max-rows", type=int, default=500, help="Row cap (1000 max)")
+    coverage_parser.add_argument("--json", action="store_true", help="JSON output")
+    coverage_parser.set_defaults(func=cmd_coverage)
 
     metrics_parser = subparsers.add_parser("metrics", parents=[global_args], help="Query metrics")
     metrics_parser.add_argument(

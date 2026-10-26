@@ -72,6 +72,7 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "ARG", "PTH", "PD", "RUF"]
 "tests/fixtures/ambiguous_symbols/**" = ["N802", "I001"]
 "tests/fixtures/boilerplate_merge/**" = ["F401", "F821", "F841", "I001", "RUF022"]
 "tests/fixtures/path_penalty/**" = ["F401", "I001", "RUF022"]
+"tests/fixtures/graph_edges/**" = ["F821", "F401"]
 
 [tool.ruff.format]
 quote-style = "double"

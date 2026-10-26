@@ -29,6 +29,13 @@ AUDIT_QUERY_TYPES = frozenset(
         "explain_symbol",
         "get_impact",
         "map",
+        "get_graph_schema",
+        "get_file_outline",
+        "search_symbols",
+        "find_dead_code",
+        "get_architecture",
+        "check_index_coverage",
+        "detect_changes",
     }
 )
 
@@ -213,7 +220,7 @@ class AuditDatabase:
         Args:
             query_type: One of the :data:`AUDIT_QUERY_TYPES` values
                 (``search``, symbol/graph lookups, graph-query/path/explain,
-                impact, and ``map``).
+                impact, discovery surfaces, and ``map``).
             query_summary: Optional human-readable summary of the query.
             result_count: Number of results returned to the caller.
             duration_ms: Query processing time in milliseconds.
