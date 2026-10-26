@@ -517,6 +517,19 @@ def _edge_properties_json(value: Any) -> str:
         return "{}"
 
 
+def _call_graph_page(returned: int, total: int, limit: int, offset: int) -> dict[str, Any]:
+    """Return one direction's paging metadata for a call-graph page."""
+    has_more = offset + returned < total
+    return {
+        "returned": returned,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
+        "next_offset": offset + returned if has_more else None,
+    }
+
+
 def _resolve_symbol_candidates(
     conn: sqlite3.Connection,
     query: str,
@@ -1767,23 +1780,96 @@ class EdgeStore:
         symbol_id: int,
         direction: str = "both",
         max_depth: int = 1,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> dict[str, list[dict[str, Any]]]:
-        """Traverse callers and/or callees via recursive CTE, clipped to *max_depth*."""
+        """Traverse callers and/or callees via recursive CTE, clipped to *max_depth*.
+
+        Args:
+            symbol_id: The root symbol id.
+            direction: ``both``, ``callers``, or ``callees``.
+            max_depth: Maximum traversal depth (clipped to 5).
+            limit: Optional per-direction row cap; ``None`` returns every row.
+            offset: Zero-based row offset applied to each direction.
+        """
         result: dict[str, list[dict[str, Any]]] = {"callers": [], "callees": []}
         clipped_depth = min(max_depth, 5)
 
         with self._db.connect() as conn:
             if direction in ("both", "callers"):
-                result["callers"] = self._traverse_callers(conn, symbol_id, clipped_depth)
+                rows, _total = self._traverse_callers(
+                    conn, symbol_id, clipped_depth, limit=limit, offset=offset
+                )
+                result["callers"] = rows
 
             if direction in ("both", "callees"):
-                result["callees"] = self._traverse_callees(conn, symbol_id, clipped_depth)
+                rows, _total = self._traverse_callees(
+                    conn, symbol_id, clipped_depth, limit=limit, offset=offset
+                )
+                result["callees"] = rows
+
+        return result
+
+    def get_call_graph_page(
+        self,
+        symbol_id: int,
+        direction: str = "both",
+        max_depth: int = 1,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Return a bounded page of the call graph plus exact per-direction totals.
+
+        The page size applies to each populated direction, so ``callers`` and
+        ``callees`` always start at the same ``offset`` and stay independently
+        paginable. Totals are computed by the same recursive CTE before the
+        row cap, not by a second traversal.
+
+        Args:
+            symbol_id: The root symbol id.
+            direction: ``both``, ``callers``, or ``callees``.
+            max_depth: Maximum traversal depth (clipped to 5).
+            limit: Maximum rows returned per direction (at least 1).
+            offset: Zero-based row offset applied to each direction.
+
+        Returns:
+            ``{"callers", "callees", "paging"}`` where ``paging`` carries the
+            cap, offset, and ``returned``/``total``/``has_more``/``next_offset``
+            for each direction.
+        """
+        clipped_depth = min(max_depth, 5)
+        page_size = max(1, int(limit))
+        start = max(0, int(offset))
+        result: dict[str, Any] = {"callers": [], "callees": [], "paging": {}}
+
+        with self._db.connect() as conn:
+            if direction in ("both", "callers"):
+                callers, caller_total = self._traverse_callers(
+                    conn, symbol_id, clipped_depth, limit=page_size, offset=start
+                )
+                result["callers"] = callers
+                result["paging"]["callers"] = _call_graph_page(
+                    len(callers), caller_total, page_size, start
+                )
+            if direction in ("both", "callees"):
+                callees, callee_total = self._traverse_callees(
+                    conn, symbol_id, clipped_depth, limit=page_size, offset=start
+                )
+                result["callees"] = callees
+                result["paging"]["callees"] = _call_graph_page(
+                    len(callees), callee_total, page_size, start
+                )
 
         return result
 
     def _traverse_callers(
-        self, conn: sqlite3.Connection, symbol_id: int, max_depth: int
-    ) -> list[dict[str, Any]]:
+        self,
+        conn: sqlite3.Connection,
+        symbol_id: int,
+        max_depth: int,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
         """Return symbols that transitively call *symbol_id*, with minimum depth.
 
         Uses a recursive CTE that walks ``CALLS`` edges backwards from the
@@ -1802,9 +1888,15 @@ class EdgeStore:
             max_depth: Maximum traversal depth (already clipped).
 
         Returns:
-            Deduplicated caller rows ``{fqn, kind, file_path, line_start,
-            source_range, depth}`` ordered by depth, then FQN, then symbol id.
+            ``(rows, total)`` where rows are deduplicated caller rows
+            ``{fqn, kind, file_path, line_start, source_range, depth}`` ordered
+            by depth, then FQN, then symbol id. ``total`` is the exact count
+            before *limit*/*offset*.
         """
+        page_clause = "" if limit is None else " LIMIT ? OFFSET ?"
+        params: list[Any] = [symbol_id, max_depth]
+        if limit is not None:
+            params.extend([max(0, int(limit)), max(0, int(offset))])
         rows = conn.execute(
             "WITH RECURSIVE callers AS ( "
             "SELECT e.source_symbol_id AS caller_id, e.source_range, 1 AS depth, "
@@ -1820,7 +1912,8 @@ class EdgeStore:
             "AND instr(c.path, '|' || e.source_symbol_id || '|') = 0 "
             ") "
             "SELECT s.fqn, s.kind, s.file_path, s.line_start, "
-            "ranked.source_range, ranked.depth "
+            "ranked.source_range, ranked.depth, "
+            "COUNT(*) OVER () AS total_count "
             "FROM ( "
             "SELECT c.caller_id, c.source_range, c.depth, "
             "ROW_NUMBER() OVER ( "
@@ -1830,11 +1923,18 @@ class EdgeStore:
             ") ranked "
             "JOIN symbols s ON ranked.caller_id = s.id "
             "WHERE ranked.rn = 1 "
-            "ORDER BY ranked.depth, s.fqn, ranked.caller_id;",
-            (symbol_id, max_depth),
+            "ORDER BY ranked.depth, s.fqn, ranked.caller_id" + page_clause + ";",
+            params,
         ).fetchall()
-        return self._attach_edge_signature(
-            conn, symbol_id, [dict(r) for r in rows], is_callee_traversal=False
+        total = int(rows[0]["total_count"]) if rows else 0
+        shaped = []
+        for row in rows:
+            item = dict(row)
+            item.pop("total_count", None)
+            shaped.append(item)
+        return (
+            self._attach_edge_signature(conn, symbol_id, shaped, is_callee_traversal=False),
+            total,
         )
 
     def _attach_edge_signature(
@@ -1924,8 +2024,13 @@ class EdgeStore:
         return overloads
 
     def _traverse_callees(
-        self, conn: sqlite3.Connection, symbol_id: int, max_depth: int
-    ) -> list[dict[str, Any]]:
+        self,
+        conn: sqlite3.Connection,
+        symbol_id: int,
+        max_depth: int,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
         """Return symbols that *symbol_id* transitively calls, with minimum depth.
 
         The forward mirror of :meth:`_traverse_callers`: a recursive CTE walks
@@ -1945,11 +2050,16 @@ class EdgeStore:
             max_depth: Maximum traversal depth (already clipped).
 
         Returns:
-            Deduplicated callee rows ``{fqn, conventional_fqn, kind,
-            file_path, line_start, callee_id, target_range, depth, resolved,
-            target_raw}`` ordered by depth, then FQN (falling back to the raw
-            target), then symbol id.
+            ``(rows, total)`` where rows are deduplicated callee rows
+            ``{fqn, conventional_fqn, kind, file_path, line_start, callee_id,
+            target_range, depth, resolved, target_raw}`` ordered by depth, then
+            FQN (falling back to the raw target), then symbol id. ``total`` is
+            the exact count before *limit*/*offset*.
         """
+        page_clause = "" if limit is None else " LIMIT ? OFFSET ?"
+        params: list[Any] = [symbol_id, max_depth]
+        if limit is not None:
+            params.extend([max(0, int(limit)), max(0, int(offset))])
         rows = conn.execute(
             "WITH RECURSIVE callees AS ( "
             "SELECT e.target_symbol_id AS callee_id, e.target_range, "
@@ -1967,7 +2077,8 @@ class EdgeStore:
             ") "
             "SELECT s.fqn, s.conventional_fqn, s.kind, s.file_path, s.line_start, "
             "ranked.callee_id, ranked.target_range, ranked.depth, "
-            "ranked.resolved, ranked.target_raw "
+            "ranked.resolved, ranked.target_raw, "
+            "COUNT(*) OVER () AS total_count "
             "FROM ( "
             "SELECT c.callee_id, c.target_range, c.depth, c.resolved, c.target_raw, "
             "ROW_NUMBER() OVER ( "
@@ -1980,12 +2091,16 @@ class EdgeStore:
             ") ranked "
             "LEFT JOIN symbols s ON ranked.callee_id = s.id "
             "WHERE ranked.rn = 1 "
-            "ORDER BY ranked.depth, COALESCE(s.fqn, ranked.target_raw), ranked.callee_id;",
-            (symbol_id, max_depth),
+            "ORDER BY ranked.depth, COALESCE(s.fqn, ranked.target_raw), ranked.callee_id"
+            + page_clause
+            + ";",
+            params,
         ).fetchall()
+        total = int(rows[0]["total_count"]) if rows else 0
         shaped: list[dict[str, Any]] = []
         for r in rows:
             row = dict(r)
+            row.pop("total_count", None)
             unresolved = row.get("resolved") == 0 or row.get("fqn") is None
             row["resolved"] = not unresolved
             row["target_raw"] = row.get("target_raw") if unresolved else None
@@ -1995,7 +2110,10 @@ class EdgeStore:
                 row["file_path"] = None
                 row["line_start"] = None
             shaped.append(row)
-        return self._attach_edge_signature(conn, symbol_id, shaped, is_callee_traversal=True)
+        return (
+            self._attach_edge_signature(conn, symbol_id, shaped, is_callee_traversal=True),
+            total,
+        )
 
     def get_subtypes(self, symbol_id: int, max_depth: int = 5) -> list[dict[str, Any]]:
         """Return types that inherit from or implement *symbol_id*, by depth.

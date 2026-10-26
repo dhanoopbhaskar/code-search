@@ -45,6 +45,7 @@ def _search_args(context_dir: Path, query: str, *, json_out: bool) -> argparse.N
         no_model=False,
         verbose=False,
         context_dir=str(context_dir),
+        meta="full",
     )
 
 

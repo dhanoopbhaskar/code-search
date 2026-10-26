@@ -394,6 +394,55 @@ def test_field_qualified_call_without_import_uses_declared_type(
     assert call_edges[0]["target_fqn"] == "TokenService.check"
 
 
+def test_parameter_qualified_call_resolves_through_generic_parameter_type(
+    extractor: SymbolExtractor,
+    tmp_path: Path,
+) -> None:
+    """A call on a generic-typed parameter names the base type, not the spelling.
+
+    ``execute(ProcessContext<Order> context)`` declares the receiver's type; a
+    target of ``ProcessContext<Order>.finish`` would never match the indexed
+    ``ProcessContext`` symbol.
+    """
+    java_file = tmp_path / "Processor.java"
+    java_file.write_text(
+        "package p;\n"
+        "public class Processor {\n"
+        "    public ProcessContext<Order> execute(ProcessContext<Order> context) {\n"
+        "        context.finish();\n"
+        "        return context;\n"
+        "    }\n"
+        "}\n"
+    )
+    source = java_file.read_bytes()
+    edges = extractor.extract_edges(java_file, source)
+    targets = {e["target_fqn"] for e in edges if e["edge_type"] == "CALLS"}
+    assert "ProcessContext.finish" in targets, targets
+    assert not any("<" in target for target in targets), targets
+
+
+def test_generic_object_creation_resolves_constructed_type(
+    extractor: SymbolExtractor,
+    tmp_path: Path,
+) -> None:
+    """``new Type<Arg>()`` names *Type*, so its constructor call is addressable."""
+    java_file = tmp_path / "Workflow.java"
+    java_file.write_text(
+        "package p;\n"
+        "public class Workflow {\n"
+        "    public void run() {\n"
+        "        ProcessContext<Order> context = new DefaultProcessContextImpl<Order>();\n"
+        "        context.finish();\n"
+        "    }\n"
+        "}\n"
+    )
+    source = java_file.read_bytes()
+    edges = extractor.extract_edges(java_file, source)
+    targets = {e["target_fqn"] for e in edges if e["edge_type"] == "CALLS"}
+    assert "DefaultProcessContextImpl" in targets, targets
+    assert "ProcessContext.finish" in targets, targets
+
+
 def test_field_qualified_call_inside_lambda_chain(
     extractor: SymbolExtractor,
     tmp_path: Path,
@@ -752,6 +801,56 @@ class TestResolveNameEnvelope:
             "src/mod_a.py::Config",
             "src/mod_b.py::Config",
         }
+
+    def test_resolve_name_ambiguous_suggests_qualified_spelling(self, db: GraphDatabase) -> None:
+        """An ambiguity envelope names the best fully qualified retry spelling."""
+        store = SymbolStore(db)
+        with db.write_transaction() as conn:
+            for fqn, conventional in [
+                ("src/a.py::A.save(Article)", "com.example.a.A.save(Article)"),
+                ("src/b.py::B.save(Article)", "com.example.b.B.save(Article)"),
+            ]:
+                conn.execute(
+                    "INSERT INTO symbols (fqn, name, kind, file_path, line_start, line_end, "
+                    "column_start, column_end, language, conventional_fqn) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                    (
+                        fqn,
+                        "save",
+                        "method",
+                        fqn.rsplit("::", 1)[0],
+                        1,
+                        5,
+                        0,
+                        10,
+                        "python",
+                        conventional,
+                    ),
+                )
+        envelope = store.resolve_name("save")
+        assert envelope["kind"] == "ambiguous"
+        assert envelope["suggestion"].startswith("try com.example.")
+        assert envelope["suggestion"].endswith("save(Article)")
+
+    def test_resolve_name_prefers_unique_type_over_its_constructor(self, db: GraphDatabase) -> None:
+        """Reader lookups treat class+own-constructor as the class, not ambiguity."""
+        store = SymbolStore(db)
+        with db.write_transaction() as conn:
+            conn.execute(
+                "INSERT INTO symbols (id, fqn, name, kind, file_path, line_start, line_end, "
+                "column_start, column_end, language) VALUES "
+                "(1, 'src/A.java::A', 'A', 'class', 'src/A.java', 1, 9, 0, 10, 'java');"
+            )
+            conn.execute(
+                "INSERT INTO symbols (fqn, name, kind, file_path, line_start, line_end, "
+                "column_start, column_end, language, parent_symbol_id) VALUES "
+                "('src/A.java::A.A(int)', 'A', 'constructor', 'src/A.java', 2, 4, 2, 8, "
+                "'java', 1);"
+            )
+        assert store.resolve_name("A")["kind"] == "ambiguous"
+        envelope = store.resolve_name("A", prefer_type=True)
+        assert envelope["kind"] == "exact"
+        assert envelope["symbol"]["kind"] == "class"
 
     def test_resolve_name_envelope_exact(self, db: GraphDatabase) -> None:
         store = SymbolStore(db)

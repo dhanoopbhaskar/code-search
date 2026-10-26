@@ -192,6 +192,16 @@ def _parent_names(conn: Any, parent_ids: set[int]) -> dict[int, str]:
     return {int(row["id"]): str(row["fqn"]) for row in rows}
 
 
+def _short_symbol_name(fqn: str | None) -> str | None:
+    """Return the declaration part of a storage FQN (no file path or params)."""
+    if not fqn:
+        return None
+    name = fqn.rsplit("::", 1)[-1]
+    if "(" in name:
+        name = name.split("(", 1)[0]
+    return name
+
+
 def get_graph_schema(
     db: GraphDatabase,
     *,
@@ -303,6 +313,7 @@ def get_file_outline(
     limit: int = 200,
     offset: int = 0,
     include_docstring: bool = False,
+    include_ids: bool = False,
 ) -> dict[str, Any]:
     """Return the declarations of one indexed file in source order.
 
@@ -315,6 +326,9 @@ def get_file_outline(
         offset: Zero-based offset into the source-ordered declaration list.
         include_docstring: Include the stored docstring (off by default to save
             response tokens).
+        include_ids: Include full FQNs, conventional FQNs, absolute columns,
+            and ``parent_fqn``. The default compact row keeps the short
+            ``parent_name`` and relative line range only.
 
     Returns:
         A JSON-serialisable outline with the resolved path, declarations,
@@ -372,19 +386,24 @@ def get_file_outline(
 
     declarations: list[dict[str, Any]] = []
     for row in rows:
+        parent_name = parents.get(int(row["parent_symbol_id"])) if row["parent_symbol_id"] else None
         entry: dict[str, Any] = {
             "name": row["name"],
             "kind": row["kind"],
-            "fqn": row["fqn"],
-            "conventional_fqn": row["conventional_fqn"],
             "line_start": row["line_start"],
             "line_end": row["line_end"],
-            "column_start": row["column_start"],
-            "column_end": row["column_end"],
-            "parent_fqn": parents.get(int(row["parent_symbol_id"]))
-            if row["parent_symbol_id"]
-            else None,
+            "parent_name": _short_symbol_name(parent_name),
         }
+        if include_ids:
+            entry.update(
+                {
+                    "fqn": row["fqn"],
+                    "conventional_fqn": row["conventional_fqn"],
+                    "column_start": row["column_start"],
+                    "column_end": row["column_end"],
+                    "parent_fqn": parent_name,
+                }
+            )
         if include_docstring:
             entry["docstring"] = row["docstring"] or ""
         declarations.append(entry)
@@ -1478,11 +1497,13 @@ def render_file_outline_text(payload: dict[str, Any]) -> str:
         f"showing {payload.get('returned', 0)})"
     ]
     for symbol in payload.get("symbols", []):
-        parent = ""
-        if symbol.get("parent_fqn"):
-            parent = f" in {symbol['parent_fqn'].rsplit('::', 1)[-1]}"
+        parent = symbol.get("parent_name") or ""
+        if not parent and symbol.get("parent_fqn"):
+            parent = str(symbol["parent_fqn"]).rsplit("::", 1)[-1]
+        parent_suffix = f" in {parent}" if parent else ""
         lines.append(
-            f"  {int(symbol['line_start']):>5}  {symbol['kind']:<12} {symbol['name']}{parent}"
+            f"  {int(symbol['line_start']):>5}  "
+            f"{symbol['kind']:<12} {symbol['name']}{parent_suffix}"
         )
     if payload.get("truncated"):
         lines.append("  (truncated; increase --limit or use --offset)")

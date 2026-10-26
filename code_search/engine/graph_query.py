@@ -1615,7 +1615,7 @@ class GraphQueryService:
     ) -> ExplainAnswer:
         """Return an ego graph and metadata for *symbol*."""
         start = time.monotonic()
-        envelope = self._symbols.resolve_name(symbol)
+        envelope = self._symbols.resolve_name(symbol, prefer_type=True)
         if envelope.get("kind") == "ambiguous":
             return ExplainAnswer(
                 outcome="ambiguous",

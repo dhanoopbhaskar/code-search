@@ -1,7 +1,7 @@
 """CLI entry point for the code-search engine.
 
 Provides subcommands:
-  index, search, symbol, graph, implementations, query, path, explain,
+  index, search, ask, symbol, graph, implementations, query, path, explain,
   affected, map, schema, outline, symbols, coverage, metrics, serve,
   list-languages, download-models, daemon
 """
@@ -83,6 +83,7 @@ def _initialize_components(
     _reset_parser_warnings()
     _reset_embedding_warnings()
     settings = settings or Settings.with_context_dir(context_dir)
+    settings = settings.with_repo_expansions()
     ctx = ContextManager(settings)
     ctx.ensure()
     paths = ctx.paths
@@ -590,6 +591,13 @@ def cmd_search(args: argparse.Namespace) -> int:
     if profile_error is not None:
         return profile_error
 
+    # An explicit --matching choice IS a request for exhaustive line-wise
+    # matching. Promoting the mode here (before daemon forwarding) keeps the
+    # flag honest on every surface instead of silently ignoring it in the
+    # default ranked mode.
+    if getattr(args, "matching", None) is not None and getattr(args, "mode", "ranked") == "ranked":
+        args.mode = "exhaustive"
+
     if getattr(args, "regex", False) and getattr(args, "mode", "ranked") != "exhaustive":
         print("--regex requires --mode exhaustive", file=sys.stderr)
         return 2
@@ -682,6 +690,7 @@ def cmd_search(args: argparse.Namespace) -> int:
         matching=getattr(args, "matching", None),
         regex=getattr(args, "regex", False),
         allow_weak=bool(getattr(args, "allow_weak", False)),
+        strict=bool(getattr(args, "strict", False)),
     )
     raw_results = search_envelope["results"]
     mode = str(search_envelope.get("mode", "ranked"))
@@ -770,6 +779,19 @@ def cmd_search(args: argparse.Namespace) -> int:
             out["degraded_reason"] = search_envelope["degraded_reason"]
         if search_envelope.get("no_match") is not None:
             out["no_match"] = search_envelope["no_match"]
+        if search_envelope.get("reliable") is not None:
+            out["reliable"] = bool(search_envelope["reliable"])
+        if search_envelope.get("alternatives"):
+            from code_search.engine.response_service import compact_results
+
+            alternatives = comps["redactor"].redact_results(search_envelope["alternatives"])
+            if not explain_ranking and (compact or max_snippet_lines is not None or paths_only):
+                alternatives = compact_results(
+                    alternatives,
+                    10 if max_snippet_lines is None else max_snippet_lines,
+                    paths_only=paths_only,
+                )
+            out["alternatives"] = relativize_results(alternatives, index_root)
         if complete is not None:
             out["complete"] = complete
         if excluded:
@@ -807,7 +829,7 @@ def cmd_search(args: argparse.Namespace) -> int:
                 if (getattr(args, "pretty", False) or not getattr(args, "compact", True))
                 else None
             )
-            print(json.dumps(_envelope_out([]), indent=indent, default=str))
+            print(json.dumps(_apply_meta(_envelope_out([]), args), indent=indent, default=str))
         else:
             if explanation:
                 rescued = ", ".join(explanation.get("rescued_tiers") or []) or "none"
@@ -867,7 +889,7 @@ def cmd_search(args: argparse.Namespace) -> int:
 
     if args.json:
         indent = 2 if (getattr(args, "pretty", False) or not compact) else None
-        print(json.dumps(_envelope_out(redacted), indent=indent, default=str))
+        print(json.dumps(_apply_meta(_envelope_out(redacted), args), indent=indent, default=str))
     else:
         index_root = comps["metadata"].get("index_root") or str(context_dir.parent)
         _print_search_results(redacted, settings, root=index_root)
@@ -904,6 +926,122 @@ def cmd_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ask(args: argparse.Namespace) -> int:
+    """Answer one question by routing it to the right retrieval surface.
+
+    The router is :func:`code_search.engine.ask.ask`; this command adds the
+    shared freshness signal, an audit entry, and text/JSON rendering.
+
+    Args:
+        args: Parsed arguments; ``question``, ``limit``, ``budget``,
+            ``strict``, ``include_tests``, ``content``, ``json``, and
+            ``pretty`` are honoured.
+
+    Returns:
+        ``0`` on a resolved answer, ``2`` when the index is unavailable.
+    """
+    _setup_logging(args.verbose)
+    context_dir = _resolve_context_dir(args)
+    comps = _initialize_components(context_dir, settings=_settings_for_args(args))
+    if comps["metadata"].get_index_status() != "ready":
+        print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
+        return 2
+
+    from code_search.engine.ask import ask
+    from code_search.mcp.server import _freshness_signal
+
+    started = time.monotonic()
+    payload = ask(
+        comps,
+        args.question,
+        limit=args.limit,
+        budget=args.budget,
+        strict=bool(getattr(args, "strict", False)),
+        include_tests=bool(getattr(args, "include_tests", False)),
+        content=getattr(args, "content", None),
+    )
+    duration_ms = int((time.monotonic() - started) * 1000)
+    payload["query_time_ms"] = duration_ms
+    payload["freshness"] = _freshness_signal(comps)
+    try:
+        comps["audit_db"].write_entry(
+            query_type="ask",
+            query_summary=args.question[: comps["settings"].query_summary_length],
+            result_count=_ask_result_count(payload),
+            duration_ms=duration_ms,
+            redacted_count=0,
+        )
+    except Exception as exc:
+        logger.warning("Audit write failed: %s", exc)
+
+    if args.json:
+        indent = 2 if getattr(args, "pretty", False) else None
+        print(json.dumps(payload, indent=indent, default=str))
+    else:
+        _print_ask_text(payload)
+    return 0
+
+
+def _ask_result_count(payload: dict[str, Any]) -> int:
+    """Return the number of answer rows in an ``ask`` payload."""
+    answer = payload.get("answer")
+    if not isinstance(answer, dict):
+        return 0
+    for key in ("results", "callers", "callees", "implementations"):
+        rows = answer.get(key)
+        if isinstance(rows, list):
+            return len(rows)
+    return 1 if answer else 0
+
+
+def _print_ask_text(payload: dict[str, Any]) -> None:
+    """Print an ``ask`` payload as a short human-readable answer."""
+    answer_type = payload.get("answer_type")
+    answer = payload.get("answer") or {}
+    if answer is None or not answer:
+        print(f"No answer ({payload.get('outcome')}).")
+        for candidate in payload.get("candidates") or []:
+            print(f"  {candidate.get('fqn')}  {candidate.get('file_path')}")
+        if payload.get("suggestion"):
+            print(f"  {payload['suggestion']}")
+    elif answer_type == "definition":
+        print(
+            f"{answer.get('fqn')} [{answer.get('kind')}] "
+            f"{answer.get('file_path')}:{answer.get('line_start')}"
+        )
+        if answer.get("signature"):
+            print(f"  {answer['signature']}")
+        if answer.get("source_code"):
+            print(answer["source_code"])
+    elif answer_type in ("callers", "callees"):
+        symbol = answer.get("symbol") or {}
+        rows = answer.get(answer_type) or []
+        print(f"{answer_type.title()} of {symbol.get('fqn')} ({len(rows)}):")
+        for row in rows:
+            print(f"  {row.get('fqn')}  {row.get('file_path')}:{row.get('line_start')}")
+    elif answer_type == "implementations":
+        rows = answer.get("implementations") or []
+        print(f"Implementations of {answer.get('target')} ({answer.get('total', len(rows))}):")
+        for row in rows:
+            type_row = row.get("type") or {}
+            site = row.get("site") or {}
+            print(
+                f"  {type_row.get('fqn')}  {site.get('file_path') or type_row.get('file_path')}:"
+                f"{site.get('line_start') or type_row.get('line_start')}"
+            )
+    else:
+        rows = answer.get("results") or []
+        print(f"Results ({answer.get('total_matches', len(rows))}):")
+        for row in rows:
+            print(f"  {row.get('file_path')}:{row.get('line_start')}  {row.get('fqn')}")
+        if answer.get("no_match"):
+            print(f"No confident match ({answer.get('confidence')}).")
+    if payload.get("truncated"):
+        print("[truncated to fit the output budget]")
+    for suggestion in payload.get("next") or []:
+        print(f"next: {suggestion}")
+
+
 def cmd_symbol(args: argparse.Namespace) -> int:
     """Look up a symbol by FQN and print its definition.
 
@@ -915,8 +1053,9 @@ def cmd_symbol(args: argparse.Namespace) -> int:
         args: Parsed arguments; ``fqn`` and ``json`` are honoured.
 
     Returns:
-        A process exit code; ``0`` on success, ``1`` when the index is not
-        initialised.
+        A process exit code: ``0`` when exactly one definition resolved, ``2``
+        when nothing matched, ``3`` when the reference is ambiguous, or ``1``
+        when the index is not initialised.
     """
     import time
 
@@ -941,7 +1080,7 @@ def cmd_symbol(args: argparse.Namespace) -> int:
         print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
         return 1
 
-    envelope = comps["symbol_store"].resolve_name(args.fqn)
+    envelope = comps["symbol_store"].resolve_name(args.fqn, prefer_type=True)
     kind = envelope["kind"]
     symbol = envelope["symbol"]
     candidates = envelope["candidates"]
@@ -952,6 +1091,7 @@ def cmd_symbol(args: argparse.Namespace) -> int:
         if args.json:
             output_amb: dict[str, Any] = {
                 "found": True,
+                "matched": False,
                 "ambiguous": True,
                 "outcome": envelope.get("outcome", "ambiguous"),
                 "symbol": None,
@@ -959,9 +1099,13 @@ def cmd_symbol(args: argparse.Namespace) -> int:
                 "candidates": candidates,
                 "freshness": _freshness_signal(comps),
             }
-            print(json.dumps(output_amb, indent=2, default=str))
+            if envelope.get("suggestion"):
+                output_amb["suggestion"] = envelope["suggestion"]
+            _emit_json(args, output_amb)
         else:
             _print_ambiguous_candidates(args.fqn, candidates, root=index_root)
+            if envelope.get("suggestion"):
+                print(f"  {envelope['suggestion']}")
             _emit_stale_notice(_freshness_signal(comps))
         comps["audit_db"].write_entry(
             query_type="get_symbol_definition",
@@ -973,7 +1117,7 @@ def cmd_symbol(args: argparse.Namespace) -> int:
         mc = comps.get("metrics_collector")
         if mc:
             mc.record_query(duration_ms_entry)
-        return 0
+        return 3
 
     if symbol is None:
         duration_ms_entry = int((time.monotonic() - start) * 1000)
@@ -981,13 +1125,14 @@ def cmd_symbol(args: argparse.Namespace) -> int:
         if args.json:
             output_nf: dict[str, Any] = {
                 "found": False,
+                "matched": False,
                 "outcome": envelope.get("outcome", "not_found"),
                 "symbol": None,
                 "candidates": candidates,
                 "suggestion": bool(suggestions),
                 "freshness": _freshness_signal(comps),
             }
-            print(json.dumps(output_nf, indent=2, default=str))
+            _emit_json(args, output_nf)
         elif suggestions:
             best = suggestions[0]
             print(
@@ -1013,7 +1158,7 @@ def cmd_symbol(args: argparse.Namespace) -> int:
         mc = comps.get("metrics_collector")
         if mc:
             mc.record_query(duration_ms_entry)
-        return 0
+        return 2
 
     parent_info = None
     if symbol.get("parent_symbol_id") and symbol.get("parent_fqn"):
@@ -1026,17 +1171,48 @@ def cmd_symbol(args: argparse.Namespace) -> int:
     source_code = symbol.get("source_code") or ""
 
     redacted_source, redacted_count = comps["redactor"].redact(source_code)
+    outline_members: list[dict[str, Any]] = []
+    source_omitted = False
+    if getattr(args, "outline", False):
+        with comps["db"].connect() as conn:
+            rows = conn.execute(
+                "SELECT name, kind, line_start, line_end FROM symbols "
+                "WHERE parent_symbol_id = ? ORDER BY line_start, id LIMIT 500;",
+                (symbol["id"],),
+            ).fetchall()
+        outline_members = [
+            {
+                "name": row["name"],
+                "kind": row["kind"],
+                "line_start": row["line_start"],
+                "line_end": row["line_end"],
+            }
+            for row in rows
+        ]
+        redacted_source = ""
+        source_omitted = True
+    max_lines = getattr(args, "max_lines", None)
+    if max_lines is not None and redacted_source:
+        source_lines = redacted_source.splitlines()
+        if len(source_lines) > int(max_lines):
+            redacted_source = "\n".join(source_lines[: int(max_lines)])
+            source_omitted = True
 
     if args.json:
+        from code_search.engine.graph_query import display_symbol, relative_display
+
+        if parent_info is not None:
+            parent_info = {**parent_info, "fqn": display_symbol(str(parent_info["fqn"]))}
         output_sym: dict[str, Any] = {
             "found": True,
+            "matched": True,
             "outcome": envelope.get("outcome", "resolved"),
             "symbol": {
-                "fqn": symbol["fqn"],
+                "fqn": display_symbol(symbol["fqn"]),
                 "name": symbol["name"],
                 "kind": symbol["kind"],
                 "signature": symbol.get("signature"),
-                "file_path": symbol["file_path"],
+                "file_path": relative_display(symbol["file_path"], index_root),
                 "line_start": symbol["line_start"],
                 "line_end": symbol["line_end"],
                 "column_start": symbol["column_start"],
@@ -1044,12 +1220,14 @@ def cmd_symbol(args: argparse.Namespace) -> int:
                 "docstring": symbol.get("docstring") or "",
                 "language": symbol["language"],
                 "source_code": redacted_source,
+                "source_omitted": source_omitted,
             },
+            "outline": outline_members,
             "parent": parent_info,
             "freshness": _freshness_signal(comps),
             "query_time_ms": round((time.monotonic() - start) * 1000),
         }
-        print(json.dumps(output_sym, indent=2, default=str))
+        _emit_json(args, output_sym)
     else:
         _print_symbol_details(symbol, parent_info, redacted_source, root=index_root)
         _emit_stale_notice(_freshness_signal(comps))
@@ -1070,6 +1248,482 @@ def cmd_symbol(args: argparse.Namespace) -> int:
             mc.record_redaction(redacted_count)
 
     return 0
+
+
+def cmd_view(args: argparse.Namespace) -> int:
+    """Read a symbol or file with a compact outline/body contract.
+
+    Containers longer than 200 lines default to an outline with
+    ``source_omitted: true``; ``--body`` forces the source and ``--outline``
+    forces the member list. ``--max-lines`` and ``--budget`` bound the returned
+    text so callers can ask for a cheap read instead of a whole class body.
+
+    Args:
+        args: Parsed arguments; ``target``, ``outline``/``body``,
+            ``max_lines``, ``budget``, and ``json`` are honoured.
+
+    Returns:
+        ``0`` when resolved, ``2`` when nothing matched or the file is not
+        indexed, ``3`` when the symbol reference is ambiguous, or ``1`` when
+        the index is not initialized.
+    """
+    start = time.monotonic()
+    _setup_logging(args.verbose)
+    context_dir = _resolve_context_dir(args)
+    comps = _initialize_components(
+        context_dir, settings=_settings_for_args(args), load_vectors=False
+    )
+    settings = comps["settings"]
+    if comps["metadata"].get_index_status() != "ready":
+        print("Index not initialized. Run 'code-search index' first.", file=sys.stderr)
+        return 1
+
+    from code_search.engine.graph_query import display_symbol, relative_display
+    from code_search.engine.graph_surface import get_file_outline
+    from code_search.mcp.server import _freshness_signal
+
+    index_root = Path(comps["metadata"].get("index_root") or str(context_dir.parent))
+    target = str(args.target)
+    force_outline = bool(getattr(args, "outline", False))
+    force_body = bool(getattr(args, "body", False))
+    max_lines = getattr(args, "max_lines", None)
+    budget = getattr(args, "budget", None)
+    budget_chars = max(200, int(budget) * 4) if budget else None
+
+    payload: dict[str, Any]
+    members: list[dict[str, Any]] = []
+    symbol: dict[str, Any] | None = None
+    file_outline: dict[str, Any] | None = None
+    redacted_count = 0
+
+    looks_like_file = "::" not in target and (Path(target).suffix or Path(target).exists())
+    if looks_like_file:
+        candidate_outline = get_file_outline(comps["db"], target, index_root=index_root)
+        if candidate_outline.get("outcome") == "resolved":
+            file_outline = candidate_outline
+
+    if file_outline is not None:
+        stored_path = str(file_outline["stored_path"])
+        payload = {
+            "outcome": "resolved",
+            "answer_type": "file",
+            "file_path": file_outline["file_path"],
+            "total": file_outline["total"],
+            "symbols": file_outline["symbols"],
+            "source_code": None,
+            "source_omitted": True,
+        }
+        if force_body:
+            try:
+                payload["source_code"] = Path(stored_path).read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                payload["source_omitted"] = False
+                payload["symbols"] = []
+            except OSError:
+                payload["source_code"] = ""
+        if max_lines is not None and payload.get("source_code"):
+            lines = str(payload["source_code"]).splitlines()
+            if len(lines) > int(max_lines):
+                payload["source_code"] = "\n".join(lines[: int(max_lines)])
+                payload["truncated"] = True
+        if budget_chars is not None:
+            payload = _apply_view_budget(payload, budget_chars)
+    else:
+        envelope = comps["symbol_store"].resolve_name(target, prefer_type=True)
+        kind = envelope["kind"]
+        symbol = envelope["symbol"]
+        if kind == "ambiguous":
+            if args.json:
+                _emit_json(
+                    args,
+                    {
+                        "found": True,
+                        "matched": False,
+                        "outcome": "ambiguous",
+                        "symbol": None,
+                        "candidates": envelope["candidates"],
+                        "freshness": _freshness_signal(comps),
+                    },
+                )
+            else:
+                _print_ambiguous_candidates(target, envelope["candidates"], root=index_root)
+                if envelope.get("suggestion"):
+                    print(f"  {envelope['suggestion']}")
+            return 3
+        if symbol is None:
+            if args.json:
+                _emit_json(
+                    args,
+                    {
+                        "found": False,
+                        "matched": False,
+                        "outcome": envelope.get("outcome", "not_found"),
+                        "symbol": None,
+                        "candidates": envelope["candidates"],
+                        "freshness": _freshness_signal(comps),
+                    },
+                )
+            else:
+                print(f"Symbol not found: {target}")
+            return 2
+
+        with comps["db"].connect() as conn:
+            rows = conn.execute(
+                "SELECT name, kind, line_start, line_end FROM symbols "
+                "WHERE parent_symbol_id = ? ORDER BY line_start, id LIMIT 500;",
+                (symbol["id"],),
+            ).fetchall()
+            if not rows:
+                rows = conn.execute(
+                    "SELECT name, kind, line_start, line_end FROM symbols "
+                    "WHERE file_path = ? AND id != ? AND line_start >= ? AND line_end <= ? "
+                    "ORDER BY line_start, id LIMIT 500;",
+                    (
+                        symbol["file_path"],
+                        symbol["id"],
+                        symbol["line_start"],
+                        symbol["line_end"],
+                    ),
+                ).fetchall()
+        members = [
+            {
+                "name": row["name"],
+                "kind": row["kind"],
+                "line_start": row["line_start"],
+                "line_end": row["line_end"],
+            }
+            for row in rows
+        ]
+
+        line_count = int(symbol["line_end"]) - int(symbol["line_start"]) + 1
+        container = str(symbol.get("kind") or "") in {
+            "class",
+            "interface",
+            "enum",
+            "struct",
+            "union",
+            "trait",
+            "type",
+        }
+        outline_default = container and line_count > 200 and not force_body
+        use_outline = force_outline or outline_default
+
+        source_code: str | None = None
+        source_omitted = False
+        if use_outline:
+            source_omitted = True
+        else:
+            raw_source = symbol.get("source_code") or ""
+            source_code, redacted_count = comps["redactor"].redact(raw_source)
+            if max_lines is not None:
+                lines = source_code.splitlines()
+                if len(lines) > int(max_lines):
+                    source_code = "\n".join(lines[: int(max_lines)])
+                    source_omitted = True
+
+        payload = {
+            "outcome": "resolved",
+            "answer_type": "outline" if use_outline else "body",
+            "symbol": {
+                "fqn": display_symbol(symbol["fqn"]),
+                "name": symbol["name"],
+                "kind": symbol["kind"],
+                "file_path": relative_display(symbol.get("file_path"), index_root),
+                "line_start": symbol["line_start"],
+                "line_end": symbol["line_end"],
+            },
+            "members": members if use_outline else [],
+            "member_count": len(members),
+            "source_code": source_code,
+            "source_omitted": source_omitted,
+        }
+        if budget_chars is not None:
+            payload = _apply_view_budget(payload, budget_chars)
+
+    payload["freshness"] = _freshness_signal(comps)
+    payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
+
+    if args.json:
+        _emit_json(args, payload)
+    else:
+        print(_render_view_text(payload))
+        _emit_stale_notice(_freshness_signal(comps))
+
+    duration_ms = int((time.monotonic() - start) * 1000)
+    comps["audit_db"].write_entry(
+        query_type="view_symbol",
+        query_summary=target[: settings.query_summary_length],
+        result_count=len(members) or len(payload.get("symbols") or []),
+        duration_ms=duration_ms,
+        redacted_count=redacted_count,
+    )
+    mc = comps.get("metrics_collector")
+    if mc:
+        mc.record_query(duration_ms)
+    return 0
+
+
+def _apply_view_budget(payload: dict[str, Any], max_chars: int) -> dict[str, Any]:
+    """Trim a view payload deterministically to an approximate character budget.
+
+    Members are dropped first, then the source body is truncated. The
+    ``truncated`` flag records that the caller did not receive everything.
+    """
+    payload = dict(payload)
+    payload["budget_tokens"] = max(1, max_chars // 4)
+    members = list(payload.get("members") or [])
+    if not members and payload.get("symbols"):
+        members = list(payload["symbols"])
+        symbols_key = "symbols"
+    else:
+        symbols_key = "members"
+    while members and len(json.dumps({**payload, symbols_key: members}, default=str)) > max_chars:
+        members.pop()
+    if len(members) != len(payload.get(symbols_key) or []):
+        payload[symbols_key] = members
+        payload["member_count"] = len(members)
+        payload["truncated"] = True
+    source = payload.get("source_code")
+    if isinstance(source, str) and len(json.dumps(payload, default=str)) > max_chars:
+        overflow = len(json.dumps(payload, default=str)) - max_chars
+        keep = max(0, len(source) - overflow - 80)
+        payload["source_code"] = source[:keep]
+        payload["truncated"] = True
+    return payload
+
+
+def _render_view_text(payload: dict[str, Any]) -> str:
+    """Render a compact ``view`` payload as text."""
+    from code_search.engine.graph_query import display_symbol
+    from code_search.engine.graph_surface import render_file_outline_text
+
+    if payload.get("answer_type") == "file":
+        return render_file_outline_text(
+            {
+                "outcome": "resolved",
+                "file_path": payload.get("file_path"),
+                "total": payload.get("total", 0),
+                "returned": len(payload.get("symbols") or []),
+                "symbols": payload.get("symbols") or [],
+                "truncated": payload.get("truncated", False),
+            }
+        )
+    symbol = payload.get("symbol") or {}
+    lines = [
+        f"view: {display_symbol(str(symbol.get('fqn', '')))} ({symbol.get('kind')}) "
+        f"@ {symbol.get('file_path')}:{symbol.get('line_start')}-{symbol.get('line_end')}"
+    ]
+    members = payload.get("members") or []
+    if members:
+        lines.append(f"  members ({payload.get('member_count', len(members))}):")
+        for member in members:
+            lines.append(
+                f"    {int(member['line_start']):>5}  {member['kind']:<12} {member['name']}"
+            )
+    if payload.get("source_omitted") and payload.get("answer_type") == "outline":
+        lines.append("  source omitted; pass --body to read it")
+    source = payload.get("source_code")
+    if source:
+        lines.extend(str(source).splitlines())
+    if payload.get("truncated"):
+        lines.append("  (truncated by --budget/--max-lines)")
+    return "\n".join(lines)
+
+
+def _json_indent(args: argparse.Namespace) -> int | None:
+    """Return the JSON indent for *args* (compact unless --pretty)."""
+    return 2 if getattr(args, "pretty", False) else None
+
+
+def _apply_meta(payload: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    """Apply the ``--meta short|full`` contract to a JSON payload.
+
+    Short mode collapses the multi-field freshness signal to one status value
+    and drops the model-status block. Both remain available with
+    ``--meta full`` for diagnostics and audit-oriented clients.
+    """
+    if getattr(args, "meta", "short") == "full":
+        return payload
+    freshness = payload.get("freshness")
+    if isinstance(freshness, dict):
+        if freshness.get("stale"):
+            payload["freshness"] = "stale"
+        elif freshness.get("index_status"):
+            payload["freshness"] = str(freshness["index_status"])
+        else:
+            payload["freshness"] = "current"
+    payload.pop("model_status", None)
+    return payload
+
+
+def _emit_json(args: argparse.Namespace, payload: dict[str, Any]) -> None:
+    """Print *payload* as compact JSON (or pretty with ``--pretty``)."""
+    print(json.dumps(_apply_meta(payload, args), indent=_json_indent(args), default=str))
+
+
+def _compact_impact_payload(payload: dict[str, Any], root: str | Path | None) -> dict[str, Any]:
+    """Collapse the duplicated impact views into one canonical symbol list.
+
+    The engine payload repeats every impacted symbol in ``impacted``,
+    ``production_symbols``, ``test_symbols``, ``parents``, and ``risks``. The
+    CLI emits one row per symbol with its derived risk/test flags, then keeps
+    the file and summary views.
+    """
+    from code_search.engine.config import _is_test_file
+    from code_search.engine.graph_query import display_symbol, relative_display
+
+    risks = payload.get("risks") or {}
+    parents = payload.get("parents") or {}
+    rows: list[dict[str, Any]] = []
+    for node in payload.get("impacted") or []:
+        fqn = str(node.get("fqn") or "")
+        file_path = node.get("file_path")
+        relation = (parents.get(fqn) or {}).get("relation")
+        parent = (parents.get(fqn) or {}).get("parent")
+        rows.append(
+            {
+                "fqn": display_symbol(fqn),
+                "name": node.get("name"),
+                "kind": node.get("kind"),
+                "file": relative_display(file_path, root),
+                "line": node.get("line_start"),
+                "risk": risks.get(fqn),
+                "test": bool(file_path and _is_test_file(str(file_path))),
+                **({"via": relation} if relation else {}),
+                **({"parent": display_symbol(str(parent))} if parent else {}),
+            }
+        )
+    compact: dict[str, Any] = {
+        "outcome": payload.get("outcome"),
+        "scope": payload.get("scope"),
+        "changed_files": payload.get("changed_files"),
+        "symbols": rows,
+        "files": payload.get("files"),
+        "production_files": payload.get("production_files"),
+        "test_files": payload.get("test_files"),
+        "summary": payload.get("summary"),
+        "risk_summary": payload.get("risk_summary"),
+        "direction": payload.get("direction"),
+        "via": payload.get("via"),
+        "fixpoint": payload.get("fixpoint"),
+        "truncated": payload.get("truncated"),
+    }
+    return {key: value for key, value in compact.items() if value is not None}
+
+
+def _compact_explain_payload(
+    payload: dict[str, Any],
+    root: str | Path | None,
+    *,
+    max_chars: int | None = None,
+) -> dict[str, Any]:
+    """Replace repeated long FQNs in an explain payload with short node ids.
+
+    A ``legend`` maps each id back to the display FQN, so the answer stays
+    lossless while the edge list stays small. ``max_chars`` trims edges first
+    and then unreferenced nodes, preserving a valid graph.
+    """
+    from code_search.engine.graph_query import display_symbol, relative_display
+
+    nodes = list(payload.get("nodes") or [])
+    ids: dict[str, str] = {}
+    for index, node in enumerate(nodes, start=1):
+        ids[str(node.get("key") or node.get("fqn"))] = f"n{index}"
+    row_by_id: dict[str, dict[str, Any]] = {}
+    for node in nodes:
+        node_id = ids[str(node.get("key") or node.get("fqn"))]
+        row_by_id[node_id] = {
+            "id": node_id,
+            "name": node.get("name"),
+            "kind": node.get("kind"),
+            "file": relative_display(node.get("file_path"), root),
+            "line": node.get("line_start"),
+            "distance": node.get("distance"),
+        }
+    edges: list[dict[str, Any]] = []
+    for edge in payload.get("edges") or []:
+        source = ids.get(str(edge.get("source")))
+        target = ids.get(str(edge.get("target")))
+        if source is None or target is None:
+            continue
+        edges.append(
+            {
+                "from": source,
+                "to": target,
+                "relation": edge.get("relation"),
+                "confidence": edge.get("confidence"),
+                "direction": edge.get("direction"),
+                **({"tier": edge["resolution_tier"]} if edge.get("resolution_tier") else {}),
+            }
+        )
+    symbol = payload.get("symbol") or {}
+    seed_key = str(symbol.get("key") or symbol.get("fqn"))
+    legend: dict[str, str] = {}
+    for node in nodes:
+        node_id = ids[str(node.get("key") or node.get("fqn"))]
+        legend[node_id] = display_symbol(str(node.get("fqn") or ""))
+    compact: dict[str, Any] = {
+        "outcome": payload.get("outcome"),
+        "symbol": (
+            {
+                "id": ids.get(seed_key),
+                "name": symbol.get("name"),
+                "kind": symbol.get("kind"),
+                "signature": symbol.get("signature"),
+                "file": relative_display(symbol.get("file_path"), root),
+                "line": symbol.get("line_start"),
+            }
+            if symbol
+            else None
+        ),
+        "nodes": list(row_by_id.values()),
+        "edges": edges,
+        "legend": legend,
+        "rationale": [
+            {
+                "kind": item.get("kind"),
+                "file": relative_display(str(item.get("file_path")), root),
+                "line": item.get("line_start"),
+                "text": str(item.get("text") or "")[:160],
+            }
+            for item in payload.get("rationale") or []
+        ],
+        "doc_links": [
+            {
+                "file": relative_display(str(link.get("doc_file_path")), root),
+                "line": link.get("doc_line_start"),
+                "method": link.get("method"),
+                "score": link.get("score"),
+            }
+            for link in payload.get("doc_links") or []
+        ],
+        "truncated": payload.get("truncated"),
+        "stats": payload.get("stats"),
+    }
+    if max_chars is not None:
+        while edges and len(json.dumps(compact, default=str)) > max_chars:
+            edges.pop()
+            compact["edges"] = edges
+            compact["truncated"] = True
+        while len(compact["nodes"]) > 1 and len(json.dumps(compact, default=str)) > max_chars:
+            compact["nodes"].pop()
+            compact["truncated"] = True
+        referenced = {
+            endpoint for edge in compact["edges"] for endpoint in (edge.get("from"), edge.get("to"))
+        }
+        compact["nodes"] = [row for row in compact["nodes"] if row["id"] in referenced]
+        if compact["symbol"] and compact["symbol"].get("id") not in {
+            row["id"] for row in compact["nodes"]
+        }:
+            compact["nodes"].insert(0, row_by_id.get(compact["symbol"]["id"], {}))
+        compact["legend"] = {
+            key: value
+            for key, value in compact["legend"].items()
+            if key in {row["id"] for row in compact["nodes"]}
+        }
+        compact["budget_tokens"] = max(1, max_chars // 4)
+    return {key: value for key, value in compact.items() if value is not None}
 
 
 def cmd_graph(args: argparse.Namespace) -> int:
@@ -1120,6 +1774,9 @@ def cmd_graph(args: argparse.Namespace) -> int:
 
     direction = args.direction
     depth = min(args.depth, settings.max_graph_depth)
+    requested_limit = getattr(args, "limit", None)
+    limit = requested_limit if requested_limit is not None else settings.call_graph_limit
+    offset = max(0, int(getattr(args, "offset", 0)))
     payload = _call_neighbors_payload(
         comps["symbol_store"],
         comps["edge_store"],
@@ -1129,11 +1786,14 @@ def cmd_graph(args: argparse.Namespace) -> int:
         comps.get("freshness"),
         args.transitive,
         comps["db"],
+        limit=limit,
+        offset=offset,
     )
     data = json.loads(payload)
     symbol = data.get("symbol")
     callers = data.get("callers") or []
     callees = data.get("callees") or []
+    paging = data.get("paging")
     index_root = comps["metadata"].get("index_root") or str(context_dir.parent)
     from code_search.engine.graph_query import edge_resolution_stats
 
@@ -1155,7 +1815,7 @@ def cmd_graph(args: argparse.Namespace) -> int:
     if args.json:
         data.setdefault("freshness", _freshness_signal(comps))
         data["query_time_ms"] = round((time.monotonic() - start) * 1000)
-        print(json.dumps(data, indent=2, default=str))
+        _emit_json(args, data)
     elif direction == "implements":
         _print_implementations(data, args.fqn, root=index_root)
         _emit_stale_notice(_freshness_signal(comps))
@@ -1166,7 +1826,7 @@ def cmd_graph(args: argparse.Namespace) -> int:
         print(f"Symbol not found: {args.fqn}")
         _emit_stale_notice(_freshness_signal(comps))
     else:
-        _print_graph_results(symbol, callers, callees, root=index_root)
+        _print_graph_results(symbol, callers, callees, root=index_root, paging=paging)
         for edge_type, stats in coverage.items():
             print(
                 f"{edge_type}: {stats['ratio'] / 10:.0f}% resolved "
@@ -1190,6 +1850,8 @@ def cmd_graph(args: argparse.Namespace) -> int:
 
     if direction == "implements":
         total_results = len(data.get("implementations") or [])
+    elif paging:
+        total_results = sum(int(section.get("total", 0)) for section in paging.values())
     else:
         total_results = len(callers) + len(callees)
     duration_ms = int((time.monotonic() - start) * 1000)
@@ -1205,7 +1867,9 @@ def cmd_graph(args: argparse.Namespace) -> int:
     if mc:
         mc.record_query(duration_ms)
 
-    return 0
+    if symbol is not None:
+        return 0
+    return 3 if data.get("candidates") else 2
 
 
 def cmd_implementations(args: argparse.Namespace) -> int:
@@ -1256,7 +1920,7 @@ def cmd_implementations(args: argparse.Namespace) -> int:
     if args.json:
         result["freshness"] = _freshness_signal(comps)
         result["query_time_ms"] = round((time.monotonic() - start) * 1000)
-        print(json.dumps(result, indent=2, default=str))
+        _emit_json(args, result)
     else:
         _print_implementations(result, args.fqn, root=index_root)
         _emit_stale_notice(_freshness_signal(comps))
@@ -1352,7 +2016,7 @@ def cmd_find_related(args: argparse.Namespace) -> int:
     payload["results"] = results
 
     if args.json:
-        print(json.dumps(payload, indent=2, default=str))
+        _emit_json(args, payload)
     elif payload.get("error"):
         print(payload["error"], file=sys.stderr)
     else:
@@ -1421,7 +2085,7 @@ def cmd_query(args: argparse.Namespace) -> int:
         payload = answer.as_dict()
         payload["freshness"] = _freshness_signal(comps)
         payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
-        print(json.dumps(payload, indent=2, default=str))
+        _emit_json(args, payload)
     else:
         root = comps["metadata"].get("index_root") or str(context_dir.parent)
         print(render_query_text(answer, root=root))
@@ -1477,7 +2141,7 @@ def cmd_path(args: argparse.Namespace) -> int:
         payload = answer.as_dict()
         payload["freshness"] = _freshness_signal(comps)
         payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
-        print(json.dumps(payload, indent=2, default=str))
+        _emit_json(args, payload)
     else:
         print(render_path_text(answer))
         _emit_stale_notice(_freshness_signal(comps))
@@ -1526,13 +2190,20 @@ def cmd_explain(args: argparse.Namespace) -> int:
     from code_search.engine.graph_query import render_explain_text
     from code_search.mcp.server import _freshness_signal
 
+    root = comps["metadata"].get("index_root") or str(context_dir.parent)
     if args.json:
         payload = answer.as_dict()
+        if not getattr(args, "full", False):
+            budget = getattr(args, "budget", None)
+            payload = _compact_explain_payload(
+                payload,
+                root,
+                max_chars=max(200, int(budget) * 4) if budget else None,
+            )
         payload["freshness"] = _freshness_signal(comps)
         payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
-        print(json.dumps(payload, indent=2, default=str))
+        _emit_json(args, payload)
     else:
-        root = comps["metadata"].get("index_root") or str(context_dir.parent)
         print(render_explain_text(answer, root=root))
         _emit_stale_notice(_freshness_signal(comps))
 
@@ -1547,7 +2218,11 @@ def cmd_explain(args: argparse.Namespace) -> int:
     mc = comps.get("metrics_collector")
     if mc:
         mc.record_query(duration_ms)
-    return 0 if answer.outcome == "resolved" else 2
+    if answer.outcome == "resolved":
+        return 0
+    if answer.outcome == "ambiguous":
+        return 3
+    return 2
 
 
 def cmd_affected(args: argparse.Namespace) -> int:
@@ -1604,9 +2279,14 @@ def cmd_affected(args: argparse.Namespace) -> int:
     from code_search.mcp.server import _freshness_signal
 
     if getattr(args, "json", False):
+        payload = (
+            payload
+            if getattr(args, "full", False)
+            else _compact_impact_payload(payload, index_root)
+        )
         payload["freshness"] = _freshness_signal(comps)
         payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
-        print(json.dumps(payload, indent=2, default=str))
+        _emit_json(args, payload)
     elif payload.get("outcome") in ("invalid_argument", "no_changes"):
         print(payload.get("error") or "No changed files: pass paths or --since/--base-branch.")
         return 2 if payload.get("outcome") == "invalid_argument" else 1
@@ -1673,7 +2353,7 @@ def cmd_map(args: argparse.Namespace) -> int:
         payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
         if args.json:
             payload["freshness"] = _freshness_signal(comps)
-            print(json.dumps(payload, indent=2, default=str))
+            _emit_json(args, payload)
         elif payload.get("outcome") == "invalid_argument":
             print(payload.get("error"), file=sys.stderr)
             return 2
@@ -1701,7 +2381,7 @@ def cmd_map(args: argparse.Namespace) -> int:
     if args.json:
         payload = report.as_dict()
         payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
-        print(json.dumps(payload, indent=2, default=str))
+        _emit_json(args, payload)
     else:
         markdown = render_architecture_markdown(report)
         if args.output:
@@ -1770,7 +2450,7 @@ def cmd_schema(args: argparse.Namespace) -> int:
     if getattr(args, "json", False):
         payload["freshness"] = _freshness_signal(comps)
         payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
-        print(json.dumps(payload, indent=2, default=str))
+        _emit_json(args, payload)
     else:
         print(render_graph_schema_text(payload))
         _emit_stale_notice(_freshness_signal(comps))
@@ -1827,12 +2507,13 @@ def cmd_outline(args: argparse.Namespace) -> int:
         limit=getattr(args, "limit", 200),
         offset=getattr(args, "offset", 0),
         include_docstring=getattr(args, "include_docstring", False),
+        include_ids=getattr(args, "fqn", False),
     )
     payload["index_status"] = comps["metadata"].get_index_status()
     if getattr(args, "json", False):
         payload["freshness"] = _freshness_signal(comps)
         payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
-        print(json.dumps(payload, indent=2, default=str))
+        _emit_json(args, payload)
     else:
         print(render_file_outline_text(payload))
         _emit_stale_notice(_freshness_signal(comps))
@@ -1900,7 +2581,7 @@ def cmd_symbols(args: argparse.Namespace) -> int:
     if getattr(args, "json", False):
         payload["freshness"] = _freshness_signal(comps)
         payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
-        print(json.dumps(payload, indent=2, default=str))
+        _emit_json(args, payload)
     else:
         print(render_symbol_search_text(payload))
         _emit_stale_notice(_freshness_signal(comps))
@@ -1964,7 +2645,7 @@ def cmd_dead_code(args: argparse.Namespace) -> int:
     if getattr(args, "json", False):
         payload["freshness"] = _freshness_signal(comps)
         payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
-        print(json.dumps(payload, indent=2, default=str))
+        _emit_json(args, payload)
     else:
         print(render_dead_code_text(payload))
         _emit_stale_notice(_freshness_signal(comps))
@@ -2026,7 +2707,7 @@ def cmd_coverage(args: argparse.Namespace) -> int:
     if getattr(args, "json", False):
         payload["freshness"] = _freshness_signal(comps)
         payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
-        print(json.dumps(payload, indent=2, default=str))
+        _emit_json(args, payload)
     else:
         print(render_coverage_text(payload))
         _emit_stale_notice(_freshness_signal(comps))
@@ -2096,7 +2777,7 @@ def cmd_cypher(args: argparse.Namespace) -> int:
     if getattr(args, "json", False):
         payload["freshness"] = _freshness_signal(comps)
         payload["query_time_ms"] = round((time.monotonic() - start) * 1000, 1)
-        print(json.dumps(payload, indent=2, default=str))
+        _emit_json(args, payload)
     else:
         print(render_cypher_text(payload))
         _emit_stale_notice(_freshness_signal(comps))
@@ -2376,8 +3057,22 @@ def cmd_serve(args: argparse.Namespace) -> int:
         begin_warmup()
 
     server = create_server(comps)
-    with air_gap_enforcement():
-        server.run(transport="stdio")
+    live_index = None
+    if getattr(args, "watch", False):
+        from code_search.engine.index_service import LiveIndexUpdater
+
+        try:
+            live_index = LiveIndexUpdater(comps)
+            live_index.start()
+        except Exception as exc:
+            logger.warning("Live index watcher failed to start: %s", exc)
+            live_index = None
+    try:
+        with air_gap_enforcement():
+            server.run(transport="stdio")
+    finally:
+        if live_index is not None:
+            live_index.stop()
     return 0
 
 
@@ -2585,6 +3280,7 @@ def _print_graph_results(
     callers: list[dict[str, Any]],
     callees: list[dict[str, Any]],
     root: str | Path | None = None,
+    paging: dict[str, Any] | None = None,
 ) -> None:
     """Print a call graph as caller/callee lists with arrow glyphs.
 
@@ -2593,18 +3289,26 @@ def _print_graph_results(
         callers: Dicts describing symbols that call the root.
         callees: Dicts describing symbols the root calls.
         root: Indexed repository root used to relativize locations.
+        paging: Optional per-direction paging metadata from the shared payload.
     """
     from code_search.engine.graph_query import display_symbol, relative_display
 
+    def _heading(label: str, key: str, rows: list[dict[str, Any]]) -> str:
+        section = (paging or {}).get(key) or {}
+        total = int(section.get("total", len(rows)))
+        if total > len(rows):
+            return f"{label} ({len(rows)} of {total}; next --offset {section.get('next_offset')}):"
+        return f"{label} ({len(rows)}):"
+
     print(f"Call graph for: {display_symbol(symbol['fqn'])}\n")
     if callers:
-        print(f"Callers ({len(callers)}):")
+        print(_heading("Callers", "callers", callers))
         for c in callers:
             sig = _compact_signature(c.get("target_signature"))
             location = relative_display(c.get("file_path"), root)
             print(f"  \u2190 {display_symbol(c['fqn']):<45} {location}:{c['line_start']}{sig}")
     if callees:
-        print(f"Callees ({len(callees)}):")
+        print(_heading("Callees", "callees", callees))
         for c in callees:
             sig = _compact_signature(c.get("target_signature"))
             location = relative_display(c.get("file_path"), root)
@@ -2841,19 +3545,22 @@ def cmd_daemon(args: argparse.Namespace) -> int:
 
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     log_path = context_dir / "code-search-daemon.log"
+    command = [
+        _sys.executable,
+        "-m",
+        "code_search.cli.main",
+        "--context-dir",
+        str(context_dir),
+        "daemon",
+        "run",
+        "--port",
+        str(socket_path),
+    ]
+    if getattr(args, "watch", False):
+        command.append("--watch")
     with log_path.open("a", buffering=1) as log_handle:
         proc = subprocess.Popen(
-            [
-                _sys.executable,
-                "-m",
-                "code_search.cli.main",
-                "--context-dir",
-                str(context_dir),
-                "daemon",
-                "run",
-                "--port",
-                str(socket_path),
-            ],
+            command,
             stdout=log_handle,
             stderr=log_handle,
             start_new_session=True,
@@ -2872,7 +3579,9 @@ def cmd_daemon_run(args: argparse.Namespace) -> int:
     from code_search.engine.daemon import default_socket_path, run_daemon_foreground
 
     socket_path = Path(args.port) if args.port else default_socket_path(context_dir)
-    return run_daemon_foreground(context_dir, socket_path, args.verbose)
+    return run_daemon_foreground(
+        context_dir, socket_path, args.verbose, watch=bool(getattr(args, "watch", False))
+    )
 
 
 def _daemon_performance_hint(context_dir: Path) -> str | None:
@@ -3019,6 +3728,8 @@ def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
     """Forward search/symbol/graph to a running daemon; returns exit code or None."""
     from code_search.engine.daemon import DaemonClient, default_socket_path
 
+    if getattr(args, "no_startup_check", False):
+        return None
     context_dir = _resolve_context_dir(args)
     socket_path = default_socket_path(context_dir)
     if not DaemonClient.is_running(socket_path):
@@ -3040,6 +3751,7 @@ def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
                     "matching": getattr(args, "matching", None),
                     "regex": getattr(args, "regex", False),
                     "allow_weak": bool(getattr(args, "allow_weak", False)),
+                    "strict": bool(getattr(args, "strict", False)),
                     "compact": getattr(args, "compact", True),
                     "max_snippet_lines": getattr(args, "max_snippet_lines", None),
                     "paths_only": getattr(args, "paths_only", False),
@@ -3059,6 +3771,8 @@ def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
                     "direction": args.direction,
                     "depth": args.depth,
                     "transitive": args.transitive,
+                    "limit": getattr(args, "limit", None),
+                    "offset": getattr(args, "offset", 0),
                 },
             )
         elif command == "find-related":
@@ -3078,6 +3792,7 @@ def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
 
             payload["results"] = relativize_results(payload["results"], root)
         if args.json:
+            payload = _apply_meta(payload, args)
             indent = (
                 2
                 if (getattr(args, "pretty", False) or not getattr(args, "compact", True))
@@ -3160,6 +3875,14 @@ def _try_forward_to_daemon(args: argparse.Namespace) -> int | None:
             elif command == "implementations":
                 _print_implementations(payload, args.fqn, root=root)
                 _emit_stale_notice(payload.get("freshness") or {})
+        if command == "symbol":
+            if payload.get("symbol"):
+                return 0
+            return 3 if payload.get("ambiguous") else 2
+        if command == "graph" and args.direction != "implements":
+            if payload.get("symbol"):
+                return 0
+            return 3 if payload.get("ambiguous") else 2
         return 0
     except Exception as exc:
         logger.debug("Daemon forwarding failed: %s", exc)
@@ -3354,12 +4077,25 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument(
         "--pretty",
         action="store_true",
+        default=argparse.SUPPRESS,
         help="Pretty-print compact JSON (default is single-line)",
+    )
+    search_parser.add_argument(
+        "--meta",
+        choices=["short", "full"],
+        default="short",
+        help="Metadata detail: short (default) collapses freshness and omits model_status",
     )
     search_parser.add_argument(
         "--allow-weak",
         action="store_true",
         help="Return the weak ranked pool even when the extra abstention gate fires",
+    )
+    search_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Abstain when the top result is low-confidence, not a definition, "
+        "and poorly covered by the query terms",
     )
     search_parser.add_argument("--limit", type=int, default=10, help="Max results (max 50)")
     search_parser.add_argument(
@@ -3397,10 +4133,10 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument(
         "--matching",
         choices=["literal", "all_tokens", "any_token"],
-        default="all_tokens",
-        help="Exhaustive matching semantics: literal (verbatim substring), "
-        "all_tokens (AND, default), or any_token (OR); applies only in "
-        "--mode exhaustive",
+        default=None,
+        help="Exact matching semantics: literal (verbatim substring), "
+        "all_tokens (AND), or any_token (OR). Supplying it implies "
+        "--mode exhaustive (default exhaustive semantics: all_tokens)",
     )
     search_parser.add_argument(
         "--regex",
@@ -3434,11 +4170,54 @@ def build_parser() -> argparse.ArgumentParser:
     )
     search_parser.set_defaults(func=cmd_search)
 
+    ask_parser = subparsers.add_parser(
+        "ask",
+        parents=[global_args],
+        help="Ask one question; route it to the right surface",
+    )
+    ask_parser.add_argument(
+        "question", help="Natural-language question, identifier, or quoted literal"
+    )
+    ask_parser.add_argument("--limit", type=int, default=10, help="Max answer rows (max 50)")
+    ask_parser.add_argument("--budget", type=int, default=1200, help="Soft output budget in tokens")
+    ask_parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Abstain from low-confidence ranked answers",
+    )
+    ask_parser.add_argument(
+        "--include-tests", action="store_true", help="Include test files in search answers"
+    )
+    ask_parser.add_argument(
+        "--content",
+        choices=["code", "config", "docs", "all", "code_focused"],
+        default=None,
+        help="Content-type scope for search answers",
+    )
+    ask_parser.add_argument("--json", action="store_true", help="JSON output")
+    ask_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
+    ask_parser.set_defaults(func=cmd_ask)
+
     symbol_parser = subparsers.add_parser(
         "symbol", parents=[global_args], help="Look up symbol by FQN"
     )
     symbol_parser.add_argument("fqn", help="Fully qualified name")
     symbol_parser.add_argument("--json", action="store_true", help="JSON output")
+    symbol_parser.add_argument(
+        "--outline",
+        action="store_true",
+        help="Return member declarations instead of the source body",
+    )
+    symbol_parser.add_argument(
+        "--max-lines", type=int, default=None, help="Maximum source lines to return"
+    )
+    symbol_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
+    symbol_parser.add_argument(
+        "--meta",
+        choices=["short", "full"],
+        default="short",
+        help="Metadata detail: short (default) or full freshness/model status",
+    )
     symbol_parser.set_defaults(func=cmd_symbol)
 
     graph_parser = subparsers.add_parser("graph", parents=[global_args], help="Traverse call graph")
@@ -3461,7 +4240,26 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Expand transitively to --depth; omit for direct-only",
     )
+    graph_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Maximum rows returned per direction (default: call_graph_limit, 50)",
+    )
+    graph_parser.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        help="Zero-based row offset per direction for the next page",
+    )
     graph_parser.add_argument("--json", action="store_true", help="JSON output")
+    graph_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
+    graph_parser.add_argument(
+        "--meta",
+        choices=["short", "full"],
+        default="short",
+        help="Metadata detail: short (default) or full freshness",
+    )
     graph_parser.add_argument(
         "--explain-unresolved",
         action="store_true",
@@ -3545,6 +4343,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated relations to include (CALLS, INHERITS, IMPORTS, REFERENCES)",
     )
     explain_parser.add_argument("--json", action="store_true", help="JSON output")
+    explain_parser.add_argument(
+        "--budget", type=int, default=None, help="Approximate output-token budget"
+    )
+    explain_parser.add_argument(
+        "--full", action="store_true", help="Emit the full payload instead of short ids"
+    )
+    explain_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
+    explain_parser.add_argument(
+        "--meta",
+        choices=["short", "full"],
+        default="short",
+        help="Metadata detail: short (default) or full freshness",
+    )
     explain_parser.set_defaults(func=cmd_explain)
 
     affected_parser = subparsers.add_parser(
@@ -3586,6 +4397,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seed every symbol in changed files, or only production symbols",
     )
     affected_parser.add_argument("--json", action="store_true", help="JSON output")
+    affected_parser.add_argument(
+        "--full", action="store_true", help="Emit the duplicated engine payload views"
+    )
+    affected_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
+    affected_parser.add_argument(
+        "--meta",
+        choices=["short", "full"],
+        default="short",
+        help="Metadata detail: short (default) or full freshness",
+    )
     affected_parser.set_defaults(func=cmd_affected)
 
     map_parser = subparsers.add_parser(
@@ -3629,8 +4450,47 @@ def build_parser() -> argparse.ArgumentParser:
     outline_parser.add_argument(
         "--include-docstring", action="store_true", help="Include stored docstrings"
     )
+    outline_parser.add_argument(
+        "--fqn",
+        action="store_true",
+        help="Include full FQNs, columns, and parent FQNs (compact rows by default)",
+    )
     outline_parser.add_argument("--json", action="store_true", help="JSON output")
+    outline_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
+    outline_parser.add_argument(
+        "--meta",
+        choices=["short", "full"],
+        default="short",
+        help="Metadata detail: short (default) or full freshness",
+    )
     outline_parser.set_defaults(func=cmd_outline)
+
+    view_parser = subparsers.add_parser(
+        "view",
+        parents=[global_args],
+        help="Read a symbol or file as an outline or bounded body",
+    )
+    view_parser.add_argument("target", help="Symbol reference or file path")
+    mode_group = view_parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--outline", action="store_true", help="List declarations/members instead of the body"
+    )
+    mode_group.add_argument("--body", action="store_true", help="Print the source body")
+    view_parser.add_argument(
+        "--max-lines", type=int, default=None, help="Maximum source lines in the body"
+    )
+    view_parser.add_argument(
+        "--budget", type=int, default=None, help="Approximate output-token budget"
+    )
+    view_parser.add_argument("--json", action="store_true", help="JSON output")
+    view_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
+    view_parser.add_argument(
+        "--meta",
+        choices=["short", "full"],
+        default="short",
+        help="Metadata detail: short (default) or full freshness",
+    )
+    view_parser.set_defaults(func=cmd_view)
 
     symbols_parser = subparsers.add_parser(
         "symbols", parents=[global_args], help="Search symbols by structure, not text similarity"
@@ -3662,6 +4522,13 @@ def build_parser() -> argparse.ArgumentParser:
     symbols_parser.add_argument("--limit", type=int, default=50, help="Max symbols (200 max)")
     symbols_parser.add_argument("--offset", type=int, default=0, help="Result offset")
     symbols_parser.add_argument("--json", action="store_true", help="JSON output")
+    symbols_parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON")
+    symbols_parser.add_argument(
+        "--meta",
+        choices=["short", "full"],
+        default="short",
+        help="Metadata detail: short (default) or full freshness",
+    )
     symbols_parser.set_defaults(func=cmd_symbols)
 
     dead_code_parser = subparsers.add_parser(
@@ -3729,6 +4596,11 @@ def build_parser() -> argparse.ArgumentParser:
     metrics_parser.set_defaults(func=cmd_metrics)
 
     serve_parser = subparsers.add_parser("serve", parents=[global_args], help="Start MCP server")
+    serve_parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Watch the indexed tree and incrementally re-index changed files",
+    )
     serve_parser.set_defaults(func=cmd_serve)
 
     list_parser = subparsers.add_parser(
@@ -3740,6 +4612,11 @@ def build_parser() -> argparse.ArgumentParser:
         "start", parents=[global_args], help="Start the daemon (alias for 'daemon start')"
     )
     start_parser.add_argument("--port", help="Unix socket path")
+    start_parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Watch the indexed tree and incrementally re-index changed files",
+    )
     start_parser.set_defaults(func=cmd_start)
 
     status_parser = subparsers.add_parser(
@@ -3775,6 +4652,11 @@ def build_parser() -> argparse.ArgumentParser:
     daemon_sub = daemon_parser.add_subparsers(dest="daemon_action", required=True)
     daemon_start = daemon_sub.add_parser("start", parents=[global_args], help="Start the daemon")
     daemon_start.add_argument("--port", help="Unix socket path")
+    daemon_start.add_argument(
+        "--watch",
+        action="store_true",
+        help="Watch the indexed tree and incrementally re-index changed files",
+    )
     daemon_stop = daemon_sub.add_parser("stop", parents=[global_args], help="Stop the daemon")
     daemon_stop.add_argument("--port", help="Unix socket path")
     daemon_status_parser = daemon_sub.add_parser(
@@ -3792,6 +4674,11 @@ def build_parser() -> argparse.ArgumentParser:
         "run", parents=[global_args], help="Run the daemon in the foreground"
     )
     daemon_run.add_argument("--port", help="Unix socket path")
+    daemon_run.add_argument(
+        "--watch",
+        action="store_true",
+        help="Watch the indexed tree and incrementally re-index changed files",
+    )
     daemon_run.set_defaults(func=cmd_daemon_run)
     daemon_parser.set_defaults(func=cmd_daemon)
 

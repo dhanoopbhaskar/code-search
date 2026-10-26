@@ -37,6 +37,21 @@ _BUILTIN_EXPANSIONS: dict[str, list[str]] = {
     "owner": ["owns", "ownership"],
     "authenticate": ["login", "authentication"],
     "authentication": ["login", "authenticate"],
+    # Enterprise domain packs: these queries are common in commerce/order
+    # repositories, where the prose vocabulary and the code vocabulary barely
+    # overlap. Entries are deliberately narrow (no transitive cascade) so a
+    # generic word does not pull unrelated subsystems into retrieval.
+    "order": ["cart", "checkout", "purchase"],
+    "cart": ["order", "basket", "checkout"],
+    "checkout": ["cart", "order", "payment"],
+    "offer": ["promotion", "discount", "coupon"],
+    "promotion": ["offer", "discount", "coupon"],
+    "discount": ["offer", "promotion", "coupon"],
+    "fulfillment": ["shipping", "shipment", "delivery"],
+    "shipping": ["fulfillment", "shipment", "delivery"],
+    "tax": ["taxation", "taxable"],
+    "workflow": ["activity", "process", "pipeline"],
+    "activity": ["workflow", "process", "task"],
 }
 
 
@@ -55,8 +70,10 @@ def _tokens(text: str) -> list[str]:
 def _tokens_fuzzy_match(query_tokens: list[str], key_tokens: list[str]) -> bool:
     """Return whether *key_tokens* appears as a contiguous fuzzy match in *query_tokens*.
 
-    A token matches a key token exactly, or by a >=4-char prefix overlap so a
-    typo like ``cros`` matches ``cross`` (case-insensitive).
+    A token matches a key token exactly, or by a >=4-char prefix overlap (with
+    at most two extra characters) so a typo like ``cros`` matches ``cross``
+    without letting a short common word (``check`` -> ``checkout``) pull an
+    unrelated domain expansion into the query.
     """
     if not key_tokens:
         return False
@@ -66,7 +83,12 @@ def _tokens_fuzzy_match(query_tokens: list[str], key_tokens: list[str]) -> bool:
             qt = query_tokens[start + i]
             if qt == kt:
                 continue
-            if len(qt) >= 4 and len(kt) >= 4 and (qt.startswith(kt) or kt.startswith(qt)):
+            if (
+                len(qt) >= 4
+                and len(kt) >= 4
+                and abs(len(qt) - len(kt)) <= 2
+                and (qt.startswith(kt) or kt.startswith(qt))
+            ):
                 continue
             matched = False
             break

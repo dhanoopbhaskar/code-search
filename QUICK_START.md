@@ -130,7 +130,7 @@ code-search search "database connection pool" --language java --no-include-tests
 | `--include-tests` / `--no-include-tests` | `false` | Include/exclude test files (excluded by default; indexed tests are only searchable with `--include-tests`) |
 | `--mode {ranked,exhaustive,enumerate}` | `ranked` | Hybrid ranking, exhaustive line scan, or named symbol-kind enumeration (for example "list all controllers") |
 | `--content {code,config,docs,all,code_focused}` | intent inference | Content axis; code-shaped queries (including multi-word construct nouns such as `login handler`) default to `code`, documentation-shaped queries widen to `all`, and other queries use `code_focused` (code + config, docs excluded) |
-| `--matching {literal,all_tokens,any_token}` | `all_tokens` | Exhaustive matching semantics (`--mode exhaustive` only); `literal` treats the whole query as one verbatim substring |
+| `--matching {literal,all_tokens,any_token}` | `all_tokens` | Exact matching semantics. Supplying it implies `--mode exhaustive`, so `--matching literal` alone returns the verbatim-substring set and count |
 | `--regex` | off | Treat the query as a Python regular expression (`--mode exhaustive` only); invalid patterns return an `invalid_regex` explanation |
 | `--no-startup-check` | off | Skip transparent daemon auto-start for this invocation; repeat CLI use is fastest with an already-running `code-search daemon start` |
 | `--no-model` | off | Skip the vector model and fuse lexical signals only; the response is labelled `lexical_degraded` |
@@ -180,13 +180,33 @@ Look up a symbol by fully qualified name (FQN).
 ```bash
 code-search symbol "myproject.auth.jwt.validate_token"
 code-search symbol "io.spring.application.UserService.createUser" --json
+code-search symbol "ArticleService" --outline
 ```
 
 Java method lookups accept a signature so the exact overload resolves:
 `code-search symbol "com.example.security.TokenService.generateToken(Map<String,Object>,String)"`.
-A bare overloaded name (e.g. `generateToken`) returns all overloads as an `ambiguous`
-set, each candidate carrying a `signature {arity, param_types}` object. Unknown,
-malformed, or empty names return `found: false` instead of an error.
+Qualified stored parameter types and Java primitives/boxed types match their
+short spellings (`Boolean` = `boolean`, `org.example.Order` = `Order`). A bare
+overloaded name (e.g. `generateToken`) returns all overloads as an `ambiguous`
+set, each candidate carrying a `signature {arity, param_types}` object, plus a
+`try <qualified form>` suggestion. Unknown, malformed, or empty names return
+`found: false` instead of an error. Exit codes are `0` resolved, `2` not found,
+and `3` ambiguous.
+
+### `code-search view`
+
+Read a symbol or file with a compact outline/body contract.
+
+```bash
+code-search view "ArticleService"
+code-search view "ArticleService" --outline
+code-search view src/main/java/com/example/ArticleService.java --body --max-lines 80
+code-search view "ArticleService" --budget 2000 --json
+```
+
+Containers longer than 200 lines default to an outline with
+`source_omitted: true`; use `--body` to force the source. `--max-lines` caps the
+body and `--budget` trims members/source to an approximate token budget.
 
 ### `code-search graph`
 
@@ -203,9 +223,17 @@ code-search graph "myproject.auth.jwt.validate_token" --transitive --depth 2
 | `--direction` | `both` | `both`, `callers`, `callees`, or `implements` |
 | `--depth N` | `1` | Transitive expansion bound used with `--transitive` (max: 5) |
 | `--transitive` | off | Expand transitively to `--depth`; omit for direct-only |
+| `--limit N` | `call_graph_limit` (`50`) | Maximum rows per direction; the response's `paging` object reports the exact total and next offset |
+| `--offset N` | `0` | Row offset per direction for the next page |
 | `--json` | — | JSON output |
 
 `--direction implements` returns the static implementations of the referenced interface method in the `implementations` key (with `callers`/`callees` empty), sharing the dedicated lookup's rule and order.
+
+Receiver-qualified calls resolve through declared field, parameter, and local
+types; generic spellings are reduced to the base type (`ProcessContext<Order>`
+names `ProcessContext`). Calls through an interface method also carry derived
+`CALLS` edges to each implementing method, so path and impact reach the
+concrete implementation.
 
 ### `code-search implementations`
 
@@ -826,9 +854,13 @@ code-search search "validate token" \
 
 `--paths-only` returns only `file_path`, line range, the short symbol name, and
 classification fields. `--max-snippet-lines 0` omits content entirely;
-`--pretty` restores indented JSON. `--allow-weak` bypasses the extra
-abstention gate. `--no-daemon` (formerly `--no-startup-check`) serves one
-invocation in-process.
+`--pretty` restores indented JSON. JSON is compact by default, and `--meta
+short` (the default) collapses `freshness` to one value and omits
+`model_status`; pass `--meta full` when diagnosing model state. `--allow-weak`
+bypasses the extra abstention gate. `--strict` does the opposite: a low-
+confidence ranked pool with no definition hit and poor query coverage becomes
+`no_match`, with the weak rows preserved under `alternatives`. `--no-daemon`
+(formerly `--no-startup-check`) serves one invocation in-process.
 
 `code-search stats --format json` reports the effective profile, layout,
 freshness mode, index age, and per-store sizes. It also reports a `graph`

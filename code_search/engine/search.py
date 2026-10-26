@@ -8,10 +8,14 @@ Provides three layers:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
+import shutil
+import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, cast
 
@@ -1182,6 +1186,7 @@ class HybridSearch:
         self._vocab_by_language: dict[str, set[str]] | None = None
         self._analysis: QueryAnalysis | None = None
         self._test_paths_cache: list[str] | None = None
+        self._content_type_cache: dict[str, str] = {}
         if no_model:
             logger.debug("HybridSearch running in --no-model fast path")
 
@@ -1370,6 +1375,7 @@ class HybridSearch:
         matching: str | None = None,
         regex: bool = False,
         allow_weak: bool = False,
+        strict: bool = False,
     ) -> dict[str, Any]:
         """Run the full hybrid search pipeline and stamp the per-request timer.
 
@@ -1403,6 +1409,10 @@ class HybridSearch:
             regex: Exhaustive-only regular-expression mode; *query* is compiled
                 as a Python regex instead of being tokenized. Ignored outside
                 exhaustive mode.
+            strict: When true, a low-confidence ranked pool with no definition
+                hit and informative coverage below
+                ``exact_token_coverage_min`` becomes a ``no_match`` envelope
+                with the weak rows under ``alternatives``.
 
         Returns:
             The search envelope with ``query_time_ms`` attached. Every envelope
@@ -1472,9 +1482,79 @@ class HybridSearch:
                 envelope["results"] = filtered
                 if envelope.get("truncated") is not None:
                     envelope["truncated"] = envelope.get("total_matches", 0) > len(filtered)
+        if strict and envelope.get("mode") == "ranked":
+            envelope = self._strict_abstention(envelope, query)
         envelope["query_time_ms"] = round((time.monotonic() - start) * 1000, 3)
         self._stamp_model_status(envelope, was_warm)
         return envelope
+
+    def _strict_abstention(self, envelope: dict[str, Any], query: str) -> dict[str, Any]:
+        """Return a ``no_match`` envelope when *strict* confidence is too weak.
+
+        The gate fires only when the top row is low-confidence, no returned row
+        is a definition, and the query's informative sub-words are poorly
+        covered by the returned rows. The weak rows are preserved under
+        ``alternatives`` so a caller that opted into strict mode can still
+        inspect them.
+
+        Args:
+            envelope: The ranked or rescue envelope produced for *query*.
+            query: The raw user query.
+
+        Returns:
+            The original envelope when it is trustworthy, else a ``no_match``
+            envelope carrying the original rows as alternatives.
+        """
+        results = envelope.get("results") or []
+        if not results:
+            return envelope
+        top_band = results[0].get("confidence_band")
+        if top_band != "low":
+            return envelope
+        if any(r.get("is_definition") for r in results):
+            return envelope
+        informative = self._bm25.informative_tokens(query)
+        coverage = self._informative_coverage(informative, results)
+        floor = self._settings.exact_token_coverage_min
+        if coverage >= floor:
+            return envelope
+        rejected = self._no_match_envelope(
+            bool(envelope.get("vector_health")),
+            [],
+            query,
+            envelope.get("content") or "all",
+            reason="strict_low_confidence",
+        )
+        rejected["alternatives"] = results
+        rejected["total_matches"] = envelope.get("total_matches", len(results))
+        rejected["no_match_signals"] = {
+            "confidence": top_band,
+            "coverage": round(coverage, 3),
+            "coverage_floor": floor,
+            "definition_hit": False,
+        }
+        return rejected
+
+    @staticmethod
+    def _informative_coverage(informative: list[str], results: list[dict[str, Any]]) -> float:
+        """Return the fraction of *informative* sub-words present in the top rows.
+
+        Args:
+            informative: The query's informative sub-words.
+            results: The returned ranked rows.
+
+        Returns:
+            Coverage in ``[0, 1]``; ``0.0`` when the query has no informative
+            words.
+        """
+        if not informative:
+            return 0.0
+        top = results[:5]
+        present = 0
+        for word in informative:
+            if any(word in (row.get("content") or "").lower() for row in top):
+                present += 1
+        return present / len(informative)
 
     def _token_savings(self, results: list[dict[str, Any]]) -> dict[str, Any]:
         """Estimate tokens returned versus reading the whole files.
@@ -2207,6 +2287,7 @@ class HybridSearch:
             "confidence": envelope_band(confidence_buckets),
             "explanation": None,
             "best_effort": True,
+            "reliable": envelope_band(confidence_buckets) != "low",
             "no_match": False,
             "content": content,
             "token_savings": self._token_savings(results),
@@ -3952,6 +4033,7 @@ class HybridSearch:
                 "confidence": envelope_band(bands),
             },
             "best_effort": True,
+            "reliable": envelope_band(bands) != "low",
             "content": content,
         }
 
@@ -4077,6 +4159,7 @@ class HybridSearch:
                 "confidence": envelope_band(bands),
             },
             "best_effort": True,
+            "reliable": envelope_band(bands) != "low",
             "content": content,
         }
 
@@ -4112,6 +4195,7 @@ class HybridSearch:
                 "confidence": "none",
             },
             "best_effort": True,
+            "reliable": False,
             "no_match": True,
             "content": content,
         }
@@ -4343,6 +4427,115 @@ class HybridSearch:
             self._test_paths_cache = self._test_file_paths()
         return self._test_paths_cache
 
+    def _content_type_for(self, stored_path: str) -> str:
+        """Return the classified content type for *stored_path*, cached.
+
+        Classification uses the path only, so the value is stable for the life
+        of the loaded index. The cache is cleared by :meth:`reset_caches`.
+        """
+        cached = self._content_type_cache.get(stored_path)
+        if cached is None:
+            cached = classify_content_type(stored_path).value
+            self._content_type_cache[stored_path] = cached
+        return cached
+
+    @staticmethod
+    def _ripgrep_path() -> str | None:
+        """Return the ``rg`` executable when available, else ``None``."""
+        return shutil.which("rg")
+
+    def _ripgrep_literal(
+        self,
+        files: list[tuple[str, Path]],
+        needle: str,
+    ) -> list[dict[str, Any]] | None:
+        """Return per-line literal matches for *files* using ``rg --json``.
+
+        *files* is ``(stored_path, resolved_path)`` in deterministic order.
+        The return value is a list of ``{stored_path, line_number, line,
+        occurrences}`` rows, or ``None`` when ripgrep is unavailable, fails, or
+        times out. A ``None`` result makes the caller fall back to the Python
+        scan, so a broken/absent binary never changes the answer.
+
+        Explicit paths are passed in batches to stay below the platform
+        argument-length limit. ``--no-ignore`` is intentional: the index has
+        already decided which files are in scope, and an explicit path must not
+        be skipped because of a repository ignore rule.
+        """
+        executable = self._ripgrep_path()
+        if executable is None or not files:
+            return None
+        stored_by_resolved: dict[str, str] = {str(resolved): stored for stored, resolved in files}
+        resolved_paths = list(stored_by_resolved)
+        matches: list[dict[str, Any]] = []
+        flags = ["--json", "--no-config", "--no-ignore", "--hidden", "--text", "--no-messages"]
+        if not self._settings.exhaustive_case_sensitive:
+            flags.append("--ignore-case")
+        # A literal needle is passed with ``-F`` so regex metacharacters in a
+        # query such as ``save(Article)`` are matched verbatim.
+        base = [executable, *flags, "--fixed-strings", "--", needle]
+        batch_size = 500
+        for start in range(0, len(resolved_paths), batch_size):
+            batch = resolved_paths[start : start + batch_size]
+            try:
+                proc = subprocess.run(
+                    [*base, *batch],
+                    capture_output=True,
+                    text=True,
+                    timeout=self._settings.exhaustive_rg_timeout_s,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                logger.debug("ripgrep exhaustive scan failed: %s", exc)
+                return None
+            if proc.returncode not in (0, 1):
+                logger.debug(
+                    "ripgrep exhaustive scan exited %s: %s",
+                    proc.returncode,
+                    proc.stderr.strip(),
+                )
+                return None
+            for raw in proc.stdout.splitlines():
+                try:
+                    event = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") != "match":
+                    continue
+                data = event.get("data") or {}
+                path_text = (data.get("path") or {}).get("text")
+                if not isinstance(path_text, str):
+                    continue
+                stored = stored_by_resolved.get(path_text)
+                if stored is None:
+                    continue
+                line_number = int(data.get("line_number") or 0)
+                text = (data.get("lines") or {}).get("text") or ""
+                if text.endswith("\n"):
+                    text = text[:-1]
+                if text.endswith("\r"):
+                    text = text[:-1]
+                occurrences = len(data.get("submatches") or [])
+                matches.append(
+                    {
+                        "stored_path": stored,
+                        "line_number": line_number,
+                        "line": text,
+                        "occurrences": occurrences,
+                    }
+                )
+        order = {stored: index for index, (stored, _resolved) in enumerate(files)}
+        matches.sort(key=lambda row: (order.get(row["stored_path"], 1 << 30), row["line_number"]))
+        return matches
+
+    def _read_indexed_file(self, resolved: Path) -> str | None:
+        """Read one indexed file for the exhaustive scan (thread-pool safe)."""
+        try:
+            return resolved.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            logger.debug("Exhaustive scan could not read %s: %s", resolved, exc)
+            return None
+
     def _count_test_matches(self, query: str, content: str) -> int:
         """Count query-matching chunks that live in test files.
 
@@ -4530,7 +4723,27 @@ class HybridSearch:
         except Exception as exc:
             logger.debug("Exhaustive index-root lookup failed: %s", exc)
 
-        test_rows: set[str] = set(self._test_file_paths()) if not include_tests else set()
+        test_rows: set[str] = set(self._cached_test_file_paths()) if not include_tests else set()
+        included: list[tuple[str, Path, str | None]] = []
+        for stored_path in indexed_files:
+            if stored_path in test_rows:
+                continue
+            if content in ("code", "config", "docs") and (
+                self._content_type_for(stored_path) != content
+            ):
+                continue
+            if content == DEFAULT_CONTENT_SCOPE and self._content_type_for(stored_path) == "docs":
+                continue
+            resolved = (
+                normalize_indexed_path(stored_path, index_root) if index_root else Path(stored_path)
+            )
+            if resolved is None or not resolved.is_file():
+                continue
+            file_lang = _language_for_file(resolved) if language else None
+            if language and file_lang != language:
+                continue
+            included.append((stored_path, resolved, file_lang))
+
         results: list[dict[str, Any]] = []
         total = 0
         occurrences_per_line: list[int] = []
@@ -4544,112 +4757,120 @@ class HybridSearch:
 
         count_occurrences = matching_semantics == "literal" and len(search_terms) == 1
         scan_needle = search_terms[0] if count_occurrences else None
-        for stored_path in indexed_files:
-            if stored_path in test_rows:
-                continue
-            if (
-                content in ("code", "config", "docs")
-                and classify_content_type(stored_path).value != content
-            ):
-                continue
-            if (
-                content == DEFAULT_CONTENT_SCOPE
-                and classify_content_type(stored_path).value == "docs"
-            ):
-                continue
-            resolved = (
-                normalize_indexed_path(stored_path, index_root) if index_root else Path(stored_path)
+
+        def _result_row(
+            stored_path: str,
+            line_no: int,
+            line: str,
+            occurrences: int,
+            file_lang: str | None,
+        ) -> dict[str, Any]:
+            return {
+                "file_path": stored_path,
+                "line_number": line_no,
+                "line_content": line,
+                "line_start": line_no,
+                "line_end": line_no,
+                "content": line,
+                "fqn": "",
+                "language": file_lang,
+                "content_type": self._content_type_for(stored_path),
+                "score": 1.0,
+                "is_test_file": _is_test_file(stored_path),
+                "is_non_canonical": _is_non_canonical(stored_path),
+                "vector_degraded": not vector_health,
+                "redacted_count": 0,
+                "confidence": 1.0,
+                "confidence_band": "high",
+                "occurrences": occurrences,
+            }
+
+        rg_matches = (
+            self._ripgrep_literal(
+                [(stored, resolved) for stored, resolved, _lang in included], scan_needle
             )
-            if resolved is None or not resolved.is_file():
-                continue
-            try:
-                text = resolved.read_text(encoding="utf-8", errors="replace")
-            except OSError as exc:
-                logger.debug("Exhaustive scan could not read %s: %s", resolved, exc)
-                continue
-            file_lang = _language_for_file(resolved) if language else None
-            if language and file_lang != language:
-                continue
-            if count_occurrences and scan_needle is not None:
-                if self._settings.exhaustive_case_sensitive:
-                    counted = count_occurrences_per_line(text, scan_needle)
-                else:
-                    counted = count_occurrences_per_line(text.lower(), scan_needle.lower())
-                lines = text.splitlines()
-                for idx, line_no in enumerate(counted["line_numbers"]):
-                    occurrences = counted["per_line"][idx]
-                    line = lines[line_no - 1] if 1 <= line_no <= len(lines) else ""
-                    total += occurrences
-                    occurrences_per_line.append(occurrences)
-                    occurrence_line_numbers.append(line_no)
-                    if len(results) >= cap:
-                        continue
-                    results.append(
-                        {
-                            "file_path": stored_path,
-                            "line_number": line_no,
-                            "line_content": line,
-                            "line_start": line_no,
-                            "line_end": line_no,
-                            "content": line,
-                            "fqn": "",
-                            "language": file_lang,
-                            "content_type": classify_content_type(stored_path).value,
-                            "score": 1.0,
-                            "is_test_file": _is_test_file(stored_path),
-                            "is_non_canonical": _is_non_canonical(stored_path),
-                            "vector_degraded": not vector_health,
-                            "redacted_count": 0,
-                            "confidence": 1.0,
-                            "confidence_band": "high",
-                            "occurrences": occurrences,
-                        }
-                    )
-                continue
-            for line_no, line in enumerate(text.splitlines(), start=1):
-                if pattern is not None:
-                    matches = pattern.findall(line)
-                    matched = bool(matches)
-                    occurrences = len(matches)
-                else:
-                    occurrences = 1
-                    if self._settings.exhaustive_case_sensitive:
-                        if require_all:
-                            matched = all(t in line for t in search_terms)
-                        else:
-                            matched = any(t in line for t in search_terms)
-                    else:
-                        if require_all:
-                            matched = all(t in line.lower() for t in search_lower)
-                        else:
-                            matched = any(t in line.lower() for t in search_lower)
-                if not matched:
+            if count_occurrences and scan_needle is not None
+            else None
+        )
+        if rg_matches is not None:
+            languages = {stored: file_lang for stored, _resolved, file_lang in included}
+            for match in rg_matches:
+                occurrences = int(match["occurrences"])
+                if occurrences <= 0:
                     continue
-                total += 1
+                total += occurrences
+                occurrences_per_line.append(occurrences)
+                occurrence_line_numbers.append(int(match["line_number"]))
                 if len(results) >= cap:
                     continue
                 results.append(
-                    {
-                        "file_path": stored_path,
-                        "line_number": line_no,
-                        "line_content": line,
-                        "line_start": line_no,
-                        "line_end": line_no,
-                        "content": line,
-                        "fqn": "",
-                        "language": file_lang,
-                        "content_type": classify_content_type(stored_path).value,
-                        "score": 1.0,
-                        "is_test_file": _is_test_file(stored_path),
-                        "is_non_canonical": _is_non_canonical(stored_path),
-                        "vector_degraded": not vector_health,
-                        "redacted_count": 0,
-                        "confidence": 1.0,
-                        "confidence_band": "high",
-                        "occurrences": occurrences,
-                    }
+                    _result_row(
+                        str(match["stored_path"]),
+                        int(match["line_number"]),
+                        str(match["line"]),
+                        occurrences,
+                        languages.get(str(match["stored_path"])),
+                    )
                 )
+        else:
+
+            def _scan_file(
+                item: tuple[str, Path, str | None],
+            ) -> tuple[str, str | None, str | None]:
+                stored_path, resolved, file_lang = item
+                return stored_path, self._read_indexed_file(resolved), file_lang
+
+            workers = min(8, max(1, len(included)))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                scanned = pool.map(_scan_file, included) if included else []
+                for stored_path, text, file_lang in scanned:
+                    if text is None:
+                        continue
+                    if count_occurrences and scan_needle is not None:
+                        if self._settings.exhaustive_case_sensitive:
+                            counted = count_occurrences_per_line(text, scan_needle)
+                        else:
+                            counted = count_occurrences_per_line(text.lower(), scan_needle.lower())
+                        lines = text.splitlines()
+                        for idx, line_no in enumerate(counted["line_numbers"]):
+                            occurrences = counted["per_line"][idx]
+                            line = lines[line_no - 1] if 1 <= line_no <= len(lines) else ""
+                            total += occurrences
+                            occurrences_per_line.append(occurrences)
+                            occurrence_line_numbers.append(line_no)
+                            if len(results) >= cap:
+                                continue
+                            results.append(
+                                _result_row(stored_path, line_no, line, occurrences, file_lang)
+                            )
+                        continue
+                    for line_no, line in enumerate(text.splitlines(), start=1):
+                        if pattern is not None:
+                            matches = pattern.findall(line)
+                            matched = bool(matches)
+                            occurrences = len(matches)
+                        else:
+                            occurrences = 1
+                            if self._settings.exhaustive_case_sensitive:
+                                if require_all:
+                                    matched = all(t in line for t in search_terms)
+                                else:
+                                    matched = any(t in line for t in search_terms)
+                            else:
+                                if require_all:
+                                    matched = all(t in line.lower() for t in search_lower)
+                                else:
+                                    matched = any(t in line.lower() for t in search_lower)
+                        if not matched:
+                            continue
+                        total += 1
+                        if len(results) >= cap:
+                            continue
+                        results.append(
+                            _result_row(stored_path, line_no, line, occurrences, file_lang)
+                        )
         truncated = total > len(results)
+
         envelope = {
             "results": results,
             "total_count": total,
@@ -4993,6 +5214,7 @@ class HybridSearch:
         self._vocab_by_language = None
         self._analysis = None
         self._test_paths_cache = None
+        self._content_type_cache = {}
         self._bm25.invalidate_corpus()
 
     def need_index(self) -> bool:

@@ -271,31 +271,123 @@ def _candidate_normalized(candidate: dict[str, Any]) -> str | None:
 
 
 def _parent_matches(candidate: dict[str, Any], parent_qualifier: str | None) -> bool:
-    """Return whether the query's qualifier matches the candidate's parent."""
+    """Return whether the query's qualifier matches the candidate's parent.
+
+    ``symbols.parent_name`` is the primary signal. A parent-less row can still
+    be qualified by a module or file-relative container encoded in its FQN
+    (for example a module-qualified top-level function), so the candidate's
+    ``fqn``/``conventional_fqn`` container is checked as a fallback.
+    """
     if not parent_qualifier:
         return False
     parent_name = candidate.get("parent_name")
-    if not parent_name:
-        return False
-    qualifier_leaf = parent_qualifier.rsplit(".", 1)[-1]
-    if "::" in qualifier_leaf:
-        qualifier_leaf = qualifier_leaf.rsplit("::", 1)[-1]
-    if qualifier_leaf == parent_name or parent_qualifier == parent_name:
-        return True
-    return parent_qualifier.endswith("." + parent_name) or parent_qualifier.endswith(
-        "::" + parent_name
-    )
+    if parent_name:
+        qualifier_leaf = parent_qualifier.rsplit(".", 1)[-1]
+        if "::" in qualifier_leaf:
+            qualifier_leaf = qualifier_leaf.rsplit("::", 1)[-1]
+        if qualifier_leaf == parent_name or parent_qualifier == parent_name:
+            return True
+        if parent_qualifier.endswith("." + parent_name) or parent_qualifier.endswith(
+            "::" + parent_name
+        ):
+            return True
+    for key in ("fqn", "conventional_fqn"):
+        value = candidate.get(key)
+        if not isinstance(value, str) or not value:
+            continue
+        container = strip_params(value)
+        if "::" in container:
+            container = container.split("::", 1)[-1]
+        if "." not in container:
+            continue
+        container = container.rsplit(".", 1)[0]
+        if (
+            container == parent_qualifier
+            or container.endswith("." + parent_qualifier)
+            or parent_qualifier.endswith("." + container)
+        ):
+            return True
+    return False
+
+
+#: Java primitives and their boxed/wrapper spellings. Signatures are compared
+#: on the canonical lower-case primitive name so ``boolean`` and ``Boolean``
+#: (and ``java.lang.Boolean``) are the same parameter type.
+_PRIMITIVE_ALIASES: dict[str, str] = {
+    "bool": "boolean",
+    "boolean": "boolean",
+    "byte": "byte",
+    "char": "char",
+    "character": "char",
+    "short": "short",
+    "int": "int",
+    "integer": "int",
+    "long": "long",
+    "float": "float",
+    "double": "double",
+    "void": "void",
+}
+
+
+def _canonical_type_name(type_name: str) -> str:
+    """Return a comparison key for one parameter type.
+
+    Qualified names reduce to their leaf (``org.example.Order`` -> ``Order``),
+    generic wrappers never reach this helper (they are erased during parsing),
+    and Java primitives/boxed types collapse to one spelling (``Boolean`` and
+    ``java.lang.Boolean`` -> ``boolean``). Array suffixes are preserved so
+    ``String`` and ``String[]`` stay distinct.
+    """
+    text = type_name.strip()
+    suffix = ""
+    while text.endswith("[]"):
+        suffix += "[]"
+        text = text[: -len("[]")]
+    if text.endswith("..."):
+        text = text[:-3]
+    leaf = text.rsplit(".", 1)[-1].rsplit("$", 1)[-1]
+    canonical = _PRIMITIVE_ALIASES.get(leaf.lower(), leaf)
+    return canonical + suffix
+
+
+def _candidate_param_types(candidate: dict[str, Any]) -> list[str] | None:
+    """Return the candidate's parsed parameter types, if any."""
+    sig = candidate.get("signature")
+    if not isinstance(sig, dict):
+        return None
+    param_types = sig.get("param_types")
+    if isinstance(param_types, list):
+        return [str(item) for item in param_types]
+    normalized = sig.get("normalized")
+    if isinstance(normalized, str):
+        return [item for item in normalized.split(",") if item]
+    return None
 
 
 def _signature_matches(candidate: dict[str, Any], query_sig: dict[str, Any] | None) -> bool:
-    """Return whether *candidate*'s signature equals the supplied one."""
+    """Return whether *candidate*'s parameter types equal the supplied ones.
+
+    Comparison is arity-first, then canonical type names: qualified stored
+    types match their unqualified spelling, and Java primitives match their
+    boxed equivalents. When a candidate has only the legacy ``normalized``
+    string, that string is compared after the same canonicalisation.
+    """
     if not query_sig:
         return False
-    normalized = _candidate_normalized(candidate)
-    if normalized is None:
+    if _candidate_arity(candidate) != query_sig.get("arity"):
         return False
-    return _candidate_arity(candidate) == query_sig.get("arity") and normalized == query_sig.get(
-        "normalized"
+    candidate_types = _candidate_param_types(candidate)
+    query_types = query_sig.get("param_types")
+    if not isinstance(query_types, list):
+        normalized = query_sig.get("normalized")
+        return isinstance(normalized, str) and _candidate_normalized(candidate) == normalized
+    if candidate_types is None:
+        return False
+    if len(candidate_types) != len(query_types):
+        return False
+    return all(
+        _canonical_type_name(candidate_type) == _canonical_type_name(query_type)
+        for candidate_type, query_type in zip(candidate_types, query_types, strict=False)
     )
 
 
@@ -458,10 +550,13 @@ def resolve_with_signature(
 ) -> ResolutionResult:
     """Signature-aware overload disambiguation.
 
-    A supplied signature is a ranking signal, never an auto-select filter. A
-    unique signature-consistent overload resolves; several return the ranked
-    candidate list; a signature inconsistent with every overload falls back to
-    the ranked list (never a contradicting declaration as resolved).
+    A parent qualifier narrows the same-named declarations first, so
+    ``OrderService.findOrderById(Long)`` cannot lose to an unrelated class's
+    overload. Within that scope, a unique parameter-type match resolves;
+    qualified stored types and Java primitives match their short/boxed
+    spellings. Several matches stay ambiguous with the ranked candidate list,
+    and a signature inconsistent with every scope candidate never resolves a
+    contradicting declaration.
 
     Args:
         reference: The parsed caller reference (with ``signature`` populated).
@@ -491,15 +586,44 @@ def resolve_with_signature(
         )
 
     name_rows = [c for c in candidates if c.get("name") == reference.leaf]
-    matched = [c for c in name_rows if _signature_matches(c, reference.signature)]
-    if matched:
-        if len(matched) == 1:
-            return ResolutionResult(matched[0], [], "exact")
+    if not name_rows:
+        return ResolutionResult(None, [], "not_found")
+
+    scoped = name_rows
+    if reference.parent_qualifier:
+        parent_rows = [
+            candidate
+            for candidate in name_rows
+            if _parent_matches(candidate, reference.parent_qualifier)
+        ]
+        if parent_rows:
+            scoped = parent_rows
+        elif any(candidate.get("parent_name") for candidate in name_rows):
+            # A qualifier that matches no parent must never resolve an
+            # unrelated same-named declaration, even with a signature.
+            return ResolutionResult(None, [], "not_found")
+
+    matched = [c for c in scoped if _signature_matches(c, reference.signature)]
+    if len(matched) == 1:
+        return ResolutionResult(matched[0], [], "exact")
+    if len(matched) > 1:
         return ResolutionResult(
             None, _rank_candidates(matched, reference, max_candidates), "ambiguous"
         )
-    if name_rows:
+
+    arity = reference.signature.get("arity") if reference.signature else None
+    if isinstance(arity, int):
+        # Arity narrows the ranked list, but never silently selects a
+        # contradictory type: the caller explicitly named types, so a unique
+        # arity match with different types remains ambiguous.
+        arity_rows = [c for c in scoped if _candidate_arity(c) == arity]
+        if len(arity_rows) > 1:
+            return ResolutionResult(
+                None, _rank_candidates(arity_rows, reference, max_candidates), "ambiguous"
+            )
+
+    if scoped:
         return ResolutionResult(
-            None, _rank_candidates(name_rows, reference, max_candidates), "ambiguous"
+            None, _rank_candidates(scoped, reference, max_candidates), "ambiguous"
         )
     return ResolutionResult(None, [], "not_found")

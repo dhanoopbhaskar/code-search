@@ -45,7 +45,10 @@ from code_search.engine.graph import (
     ModuleEdgeStore,
     RationaleStore,
 )
-from code_search.engine.graph_passes import rebuild_derived_graph_data
+from code_search.engine.graph_passes import (
+    derive_interface_dispatch_edges,
+    rebuild_derived_graph_data,
+)
 from code_search.engine.parser import ASTParser
 from code_search.engine.parser import _is_lockfile as _is_lockfile_path
 from code_search.engine.search import identify_subwords
@@ -96,6 +99,167 @@ _MAX_COVERAGE_RANGES = 50
 def _chunked(items: list[str], size: int) -> list[list[str]]:
     """Split *items* into consecutive sublists of at most *size* elements."""
     return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def _base_type_name(raw: str | None) -> str:
+    """Reduce a declared/base type reference to its simple leaf name.
+
+    Strips generic arguments before the last ``.``/``::`` segment so
+    ``java.util.List<Order>`` and ``ExtensionManager<Handler>`` both name a
+    type symbol by its declaration name.
+    """
+    if not raw:
+        return ""
+    text = raw.strip()
+    if "<" in text:
+        text = text.split("<", 1)[0].strip()
+    for separator in ("::", "."):
+        if separator in text:
+            text = text.rsplit(separator, 1)[-1]
+    return text.strip()
+
+
+class _TypeHierarchy:
+    """In-memory type ancestry used while resolving receiver-qualified calls.
+
+    A call such as ``extensionManager.getProxy()`` names the declared field
+    type, but ``getProxy`` may be declared on a superclass or interface. The
+    hierarchy mirrors the edges being persisted in this run, including the
+    unresolved cross-file bases that are still waiting for their own
+    resolution, so a method inherited from a supertype can be found without a
+    second indexing pass.
+    """
+
+    def __init__(
+        self,
+        types_by_name: dict[str, list[dict[str, str]]],
+        bases_by_fqn: dict[str, set[str]],
+    ) -> None:
+        self._types_by_name = types_by_name
+        self._bases_by_fqn = bases_by_fqn
+
+    def ancestor_name_levels(
+        self,
+        class_part: str,
+        class_leaf: str,
+        source_path: str,
+    ) -> list[set[str]]:
+        """Return ancestor type names nearest-first for *class_part*.
+
+        Args:
+            class_part: The receiver's declared type as written in the call
+                target (a simple name or an import-path spelling).
+            class_leaf: The final segment of *class_part*.
+            source_path: The caller's file, used to disambiguate a same-file
+                type from an unrelated same-named one.
+
+        Returns:
+            One set of type simple names per ancestry level. An empty list
+            means the declared type is unknown or ambiguous; callers then keep
+            the reference unresolved rather than guessing.
+        """
+        start = self._resolve_start(class_part, class_leaf, source_path)
+        if start is None:
+            return []
+        levels: list[set[str]] = []
+        frontier = {start}
+        seen = {start}
+        for _ in range(6):
+            next_fqns: set[str] = set()
+            next_names: set[str] = set()
+            for fqn in frontier:
+                for base in sorted(self._bases_by_fqn.get(fqn, ())):
+                    for info in self._types_by_name.get(base, ()):
+                        base_fqn = info["fqn"]
+                        if base_fqn in seen:
+                            continue
+                        seen.add(base_fqn)
+                        next_fqns.add(base_fqn)
+                        next_names.add(info["name"])
+            if not next_names:
+                break
+            levels.append(next_names)
+            frontier = next_fqns
+        return levels
+
+    def _resolve_start(
+        self,
+        class_part: str,
+        class_leaf: str,
+        source_path: str,
+    ) -> str | None:
+        """Return the type FQN *class_part* names, or ``None`` when ambiguous."""
+        candidates = self._types_by_name.get(class_leaf, [])
+        if not candidates:
+            return None
+        if "." in class_part or "::" in class_part:
+            for info in candidates:
+                conventional = info.get("conventional_fqn") or ""
+                if conventional and conventional == class_part:
+                    return info["fqn"]
+            dotted_path = class_part.replace("::", ".").replace(".", "/")
+            path_matches = [info for info in candidates if info["file_path"].endswith(dotted_path)]
+            if len(path_matches) == 1:
+                return path_matches[0]["fqn"]
+        same_file = [info for info in candidates if info["file_path"] == source_path]
+        if len(same_file) == 1:
+            return same_file[0]["fqn"]
+        if len(candidates) == 1:
+            return candidates[0]["fqn"]
+        return None
+
+
+def _build_type_hierarchy(
+    conn: Any,
+    pending_edges: list[dict[str, Any]],
+) -> _TypeHierarchy:
+    """Build the type-ancestry map for cross-file edge resolution.
+
+    Uses persisted symbols and inheritance edges plus the still-pending
+    cross-file bases from this run. Each base is stored by simple type name, so
+    an import-map spelling (``pkg.Base``) and a bare base (``Base``) match the
+    same declared type.
+    """
+    types_by_name: dict[str, list[dict[str, str]]] = {}
+    type_fqns: set[str] = set()
+    placeholders = ",".join("?" for _ in _TYPE_DECLARATION_KINDS)
+    for row in conn.execute(
+        f"SELECT fqn, name, kind, file_path, conventional_fqn FROM symbols "
+        f"WHERE kind IN ({placeholders});",
+        tuple(sorted(_TYPE_DECLARATION_KINDS)),
+    ):
+        info = {
+            "fqn": str(row["fqn"]),
+            "name": str(row["name"]),
+            "file_path": str(row["file_path"] or ""),
+            "conventional_fqn": str(row["conventional_fqn"] or ""),
+        }
+        type_fqns.add(info["fqn"])
+        types_by_name.setdefault(info["name"], []).append(info)
+
+    bases_by_fqn: dict[str, set[str]] = {}
+    for row in conn.execute(
+        "SELECT src.fqn AS source_fqn, tgt.name AS base_name "
+        "FROM graph_edges e "
+        "JOIN symbols src ON src.id = e.source_symbol_id "
+        "JOIN symbols tgt ON tgt.id = e.target_symbol_id "
+        "WHERE e.edge_type IN ('INHERITS', 'IMPLEMENTS') AND e.resolved = 1 "
+        "AND e.target_symbol_id IS NOT NULL;"
+    ):
+        base = _base_type_name(row["base_name"])
+        if base:
+            bases_by_fqn.setdefault(str(row["source_fqn"]), set()).add(base)
+
+    for edge in pending_edges:
+        if edge.get("edge_type") not in ("INHERITS", "IMPLEMENTS"):
+            continue
+        source_fqn = str(edge.get("source_fqn") or "")
+        if source_fqn not in type_fqns:
+            continue
+        base = _base_type_name(edge.get("target_fqn") or edge.get("target_raw"))
+        if base:
+            bases_by_fqn.setdefault(source_fqn, set()).add(base)
+    return _TypeHierarchy(types_by_name, bases_by_fqn)
 
 
 # Reports a human-readable status message for a single, non-iterable pipeline
@@ -1284,6 +1448,7 @@ class IndexOrchestrator:
                     batch_edges: list[dict[str, Any]] = []
                     name_rows_cache: dict[str, list[Any]] = {}
                     kind_cache: dict[int, str] = {}
+                    type_hierarchy = _build_type_hierarchy(conn, unresolved_edges)
                     for edge in unresolved_edges:
                         edge_src_id: int | None = src_ids.get(edge.get("source_fqn", ""))
                         src_tier: str | None = "exact"
@@ -1321,6 +1486,7 @@ class IndexOrchestrator:
                                 ),
                                 arg_count=edge.get("arg_count"),
                                 name_rows_cache=name_rows_cache,
+                                type_hierarchy=type_hierarchy,
                             )
                         if edge_tgt_id is None:
                             if not self._settings.capture_unresolved_callees:
@@ -1495,6 +1661,15 @@ class IndexOrchestrator:
                 self._metadata.set_int("corpus_chunk_count", corpus_chunks)
             except Exception as exc:
                 logger.warning("Corpus statistics rebuild failed: %s", exc)
+
+            # Interface dispatch: a receiver declared with an interface type
+            # resolves to the interface method. Add the implementation
+            # call targets before validation so paths and impact reach the code
+            # that actually handles the call.
+            try:
+                derive_interface_dispatch_edges(self._db)
+            except Exception as exc:
+                logger.warning("Interface dispatch pass failed: %s", exc)
 
             # Post-index edge validation sweep: remove spurious self-edges,
             # same-name mis-resolutions, and out-of-range
@@ -2421,6 +2596,7 @@ class IndexOrchestrator:
         receiver_qualified: bool = False,
         arg_count: int | None = None,
         name_rows_cache: dict[str, list[Any]] | None = None,
+        type_hierarchy: _TypeHierarchy | None = None,
     ) -> tuple[int | None, str | None, int]:
         """Resolve *symbol_fqn* against persisted symbols with evidence.
 
@@ -2450,6 +2626,10 @@ class IndexOrchestrator:
             name_rows_cache: Optional per-run cache of ``name -> symbol rows``.
                 Candidate rows depend only on the leaf name, so reusing them
                 avoids re-querying the same common names for every edge.
+            type_hierarchy: Optional in-memory ancestry for the receiver's
+                declared type. When the method is not declared on the type
+                itself, it is looked up on the nearest supertype or interface;
+                without it the inherited method stays unresolved.
         """
         if not symbol_fqn:
             return None, None, 0
@@ -2517,6 +2697,20 @@ class IndexOrchestrator:
                 return int(qualified[0]["id"]), "conventional", 1
             if len(qualified) > 1:
                 return None, "ambiguous", len(qualified)
+            if receiver_qualified and type_hierarchy is not None:
+                # The declared receiver type may inherit the method from a
+                # superclass or implement it from an interface
+                # (``extensionManager.getProxy()``). Walk the ancestry
+                # nearest-first and attach only a unique declaration at the
+                # closest level.
+                for level in type_hierarchy.ancestor_name_levels(
+                    class_part, class_leaf or "", source_path
+                ):
+                    inherited = [r for r in rows if r["parent_name"] in level]
+                    if len(inherited) == 1:
+                        return int(inherited[0]["id"]), "type_infer", 1
+                    if len(inherited) > 1:
+                        return None, "ambiguous", len(inherited)
 
         if class_part is not None and receiver_qualified:
             # A receiver-qualified call target (e.g. ``repository.save`` or

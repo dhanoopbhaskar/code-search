@@ -739,6 +739,44 @@ class TestCallGraphDeduplication:
         assert foo_rows[0]["depth"] == 2
         assert foo_rows[0]["target_raw"] == "ext.foo"
 
+    def test_call_graph_page_bounds_rows_and_reports_exact_total(
+        self, db: GraphDatabase, edge_store: EdgeStore
+    ) -> None:
+        """A wide fan-in is paged; totals describe the full traversal."""
+        specs = [("m.t", "t")] + [(f"m.c{i}", f"c{i}") for i in range(5)]
+        ids = self._seed(db, specs)
+        edge_store.insert_edges_batch(
+            [
+                {
+                    "source_symbol_id": ids[f"m.c{i}"],
+                    "target_symbol_id": ids["m.t"],
+                    "edge_type": "CALLS",
+                    "source_range": f"[{i + 1},0,{i + 1},5]",
+                }
+                for i in range(5)
+            ]
+        )
+
+        first = edge_store.get_call_graph_page(ids["m.t"], direction="callers", limit=2, offset=0)
+        second = edge_store.get_call_graph_page(ids["m.t"], direction="callers", limit=2, offset=2)
+
+        assert [c["fqn"] for c in first["callers"]] == ["m.c0", "m.c1"]
+        assert first["paging"]["callers"] == {
+            "returned": 2,
+            "total": 5,
+            "limit": 2,
+            "offset": 0,
+            "has_more": True,
+            "next_offset": 2,
+        }
+        assert [c["fqn"] for c in second["callers"]] == ["m.c2", "m.c3"]
+        assert second["paging"]["callers"]["next_offset"] == 4
+
+        last = edge_store.get_call_graph_page(ids["m.t"], direction="callers", limit=2, offset=4)
+        assert [c["fqn"] for c in last["callers"]] == ["m.c4"]
+        assert last["paging"]["callers"]["has_more"] is False
+        assert last["paging"]["callers"]["next_offset"] is None
+
 
 class TestInheritanceTraversal:
     """Reverse (``get_subtypes``) and forward (``get_ancestors``) walks."""

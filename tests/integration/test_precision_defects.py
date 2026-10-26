@@ -78,6 +78,26 @@ class TestUS2Overload:
         arities = {c["signature"]["arity"] for c in envelope["candidates"]}
         assert arities == {1, 2}, envelope["candidates"]
 
+    def test_parent_scope_precedes_same_signature_on_another_class(
+        self, indexed_overload_symbols: dict[str, Any]
+    ) -> None:
+        """``ArticleService.save(Article)`` must not lose to ArticleRepository.save."""
+        envelope = indexed_overload_symbols["symbol_store"].resolve_name(
+            "ArticleService.save(Article)"
+        )
+        assert envelope["kind"] == "exact", envelope
+        assert envelope["symbol"]["name"] == "save"
+        assert envelope["symbol"]["file_path"].endswith("ArticleService.java")
+
+    def test_generic_parameter_spelling_resolves(
+        self, indexed_overload_symbols: dict[str, Any]
+    ) -> None:
+        envelope = indexed_overload_symbols["symbol_store"].resolve_name(
+            "ArticleService.save(Article,Profile,List<Tag>)"
+        )
+        assert envelope["kind"] == "exact", envelope
+        assert envelope["symbol"]["signature"]["arity"] == 3
+
 
 @pytest.mark.integration
 class TestCallGraph:
