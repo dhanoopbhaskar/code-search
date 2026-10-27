@@ -131,7 +131,7 @@ def resolve_stored_path(candidate: Path, conn: IndexConnection) -> str | None:
     when no indexed file matches — the caller falls through to the existing
     not-found outcome.
     """
-    candidate_str = str(candidate)
+    candidate_str = portable_path(candidate)
     row = conn.execute(
         "SELECT DISTINCT file_path FROM code_chunks WHERE file_path = ? LIMIT 1;",
         (candidate_str,),
