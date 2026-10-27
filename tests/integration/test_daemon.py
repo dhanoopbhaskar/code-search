@@ -296,7 +296,9 @@ def test_search_cold_path_returns_results_without_legacy_hint(
     rc = cmd_search(_search_args(context_dir, "validate token", json_out=False))
     captured = capsys.readouterr()
     assert rc == 0
-    assert captured.out.strip()
+    top_hit = Path(envelope["results"][0]["file_path"]).name
+    assert "Score" in captured.out and "File" in captured.out, "the result table must render"
+    assert top_hit in captured.out, "the rendered table must list the top-ranked file"
 
 
 def test_search_warm_path_omits_performance_hint(

@@ -41,7 +41,7 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_FAST_EMBEDDING_MODEL` | `potion-base-2M` | Model used when `model_profile=fast`. |
 | `CODE_SEARCH_FAST_EMBEDDING_DIM` | `64` | Embedding dimensionality for the fast profile. |
 | `CODE_SEARCH_EMBED_TEXT_MAX_CHARS` | `2000` | Max characters of enclosing-context + chunk content passed to the embedding model. |
-| `CODE_SEARCH_WARMUP_WAIT_S` | `5.0` | Bounded wait for the embedding model before the first query falls back to the reduced lexical path; `0` disables the wait. |
+| `CODE_SEARCH_WARMUP_WAIT_S` | `5.0` | Bounded wait for the embedding model when a cold query's gate rejection is caused by the still-loading model; on success the request answers on the hybrid path instead of the reduced lexical path. `0` disables the wait. |
 | `CODE_SEARCH_STARTUP_WAIT_S` | `10.0` | How long a client waits for a freshly spawned daemon to answer `ping` before falling back to an in-process invocation. |
 
 # Relevance Threshold

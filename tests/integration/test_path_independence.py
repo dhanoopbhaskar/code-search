@@ -1,9 +1,15 @@
 """Ranking must not depend on where the repository is checked out.
 
-The keyword index deliberately excludes the absolute file path from the scored
-text: FTS5 length normalisation counts every token in a row, so a checkout
-directory named after a query term used to reweight every chunk. Path lookup
-has its own index (`paths_fts`), which these tests also keep honest.
+Two signal families used to read the stored absolute path: FTS5 length
+normalisation, which counted every token of ``file_path``/``fqn``, and the
+re-ranker's path-shape heuristics (usage penalty, docs/config tiers, module
+cohesion, vendor/minified demotion). A checkout directory named after a query
+term therefore reweighted chunks that had nothing to do with the query.
+
+These tests index the same corpus under a neutral and a query-shaped ancestor
+directory and require identical rankings *and* scores, on both the lexical and
+the hybrid path. Path lookup has its own index (``paths_fts``), which the last
+test keeps honest.
 """
 
 from __future__ import annotations
@@ -21,25 +27,57 @@ def _index(repo: Path) -> dict[str, Any]:
     """Index the transparency corpus at *repo* and return its components."""
     shutil.copytree(FIXTURES_DIR / "transparency", repo)
     comps = _indexed_components(repo, repo / ".context", settings_kwargs={"index_prose": True})
-    # Warm the model so both runs take the same ranked path.
+    # Warm the model so the hybrid run has a dense arm to fuse.
     comps["search"].search("warm", limit=1)
     return comps
 
 
-@pytest.mark.parametrize("query", ["article documentation", "how do comments get created"])
-def test_ranking_ignores_the_checkout_path(tmp_path: Path, query: str) -> None:
-    """The same corpus ranks identically under query-like ancestor directories."""
-    rankings: dict[str, list[str]] = {}
-    for name in ("test_baseline_repo", "test_article_documentation"):
+def _ranking(comps: dict[str, Any], query: str, *, no_model: bool) -> list[tuple[str, float]]:
+    """Return ``(relative path, score)`` pairs for *query* best-first."""
+    from code_search.engine.search import HybridSearch
+
+    search = comps["search"]
+    if no_model:
+        search = HybridSearch(
+            comps["db"],
+            comps["vector_index"],
+            comps["embedding_gen"],
+            comps["settings"],
+            no_model=True,
+        )
+    envelope = search.search(query, limit=10, content="all")
+    root: Path = comps["repo"]
+    return [
+        (Path(result["file_path"]).relative_to(root).as_posix(), round(float(result["score"]), 6))
+        for result in envelope["results"]
+    ]
+
+
+#: Ancestor directory names that used to reweight the corpus: two carrying the
+#: query terms, and two that are themselves classification vocabulary
+#: (``vendor`` → non-canonical/third-party, ``tests`` → test file).
+_LAYOUTS = ("test_baseline_repo", "test_article_documentation", "vendor", "tests")
+
+
+@pytest.mark.parametrize("no_model", [False, True], ids=["hybrid", "lexical"])
+@pytest.mark.parametrize("query", ["article documentation", "deployment"])
+def test_ranking_ignores_the_checkout_path(tmp_path: Path, query: str, no_model: bool) -> None:
+    """The same corpus ranks identically under path-shaped ancestor directories.
+
+    Scores are compared, not just ordering: the re-ranker's penalties are
+    multiplicative, so a path leak rescaled every result while leaving the
+    order intact for some queries.
+    """
+    baseline: list[tuple[str, float]] | None = None
+    for name in _LAYOUTS:
         repo = tmp_path / name / "corpus"
         repo.parent.mkdir()
         comps = _index(repo)
-        envelope = comps["search"].search(query, limit=10)
-        rankings[name] = [
-            Path(result["file_path"]).relative_to(repo).as_posix() for result in envelope["results"]
-        ]
-
-    assert rankings["test_baseline_repo"] == rankings["test_article_documentation"]
+        ranking = _ranking(comps, query, no_model=no_model)
+        if baseline is None:
+            baseline = ranking
+        else:
+            assert ranking == baseline, f"ranking changed under {name}/"
 
 
 def test_exact_filename_query_still_resolves(tmp_path: Path) -> None:

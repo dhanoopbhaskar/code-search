@@ -51,6 +51,7 @@ from code_search.engine.graph_passes import (
 )
 from code_search.engine.parser import ASTParser
 from code_search.engine.parser import _is_lockfile as _is_lockfile_path
+from code_search.engine.paths import repo_relative_path
 from code_search.engine.search import identify_subwords
 from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
@@ -485,13 +486,7 @@ def _resolve_chunk_fqn(chunk: dict[str, Any], symbols: list[dict[str, Any]]) -> 
 
 def _relative_path(file_path: str, root_path: Path | None) -> str:
     """Return *file_path* relative to *root_path*, or unchanged when outside it."""
-    if not file_path or root_path is None:
-        return file_path
-    try:
-        relative = Path(os.path.relpath(file_path, root_path)).as_posix()
-    except ValueError:
-        return file_path
-    return file_path if relative.startswith("..") else relative
+    return repo_relative_path(file_path, root_path)
 
 
 def _relative_fqn(fqn: str, file_path: str, root_path: Path | None) -> str:

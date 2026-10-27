@@ -128,3 +128,24 @@ def test_sql_reclassifies_to_config() -> None:
 def test_file_role_members() -> None:
     assert FileRole.DOCS.value == "docs"
     assert FileRole.ANALYSIS.value == "analysis"
+
+
+def test_path_class_of_ignores_the_checkout_location() -> None:
+    """The path-shape arms must not read the checkout directory.
+
+    A clone under ``vendor/`` or ``tests/`` would otherwise classify every
+    chunk as non-canonical or test, demoting the whole result set.
+    """
+    stored = "/home/ci/vendor/corpus/src/foo.ts"
+    db = DBDouble(BarrelConnection(5))
+    assert PathClass.of(db, stored) == PathClass.NON_CANONICAL
+    assert PathClass.of(db, stored, signal_path="src/foo.ts") == PathClass.CANONICAL
+
+
+def test_path_class_of_signal_path_keeps_the_barrel_lookup() -> None:
+    """The barrel check still queries the stored spelling, not the signal path."""
+    stored = "/home/ci/vendor/corpus/src/__init__.py"
+    assert (
+        PathClass.of(DBDouble(BarrelConnection(0)), stored, signal_path="src/__init__.py")
+        == PathClass.BARREL
+    )

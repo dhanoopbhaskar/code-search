@@ -1,8 +1,10 @@
+from pathlib import Path
 from typing import Any
 
 import pytest
 
-from code_search.engine.classification import PathClass
+from code_search.engine.classification import FileRole, PathClass
+from code_search.engine.config import Settings
 from code_search.engine.reranking import Reranker, demote_test_file_candidates
 
 
@@ -422,3 +424,111 @@ def test_docs_intent_lifts_prose_over_close_code(reranker: Reranker) -> None:
     ]
     reranked = reranker.rerank(results, query="how to deploy")
     assert reranked[0]["chunk_id"] == 31
+
+
+class _RootRow:
+    """Row stub answering ``IndexMetadataStore.get`` for the index root."""
+
+    def __init__(self, root: str) -> None:
+        self._root = root
+
+    def fetchone(self) -> dict[str, str] | None:
+        return {"value": self._root}
+
+
+class _RootConnection:
+    """Connection stub that reports *root* as the recorded ``index_root``."""
+
+    def __init__(self, root: str) -> None:
+        self._root = root
+
+    def execute(self, _sql: str, _params: Any = None) -> _RootRow:
+        return _RootRow(self._root)
+
+    def __enter__(self) -> "_RootConnection":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        pass
+
+
+class _RootedDB:
+    """Fake graph database that only needs to answer the index-root lookup."""
+
+    def __init__(self, root: Path) -> None:
+        self._root = str(root)
+
+    def connect(self) -> _RootConnection:
+        return _RootConnection(self._root)
+
+    def write_transaction(self) -> _RootConnection:
+        return _RootConnection(self._root)
+
+
+def _docs_pool(root: Path, docs_content: str) -> list[dict[str, Any]]:
+    """Build a definition plus a non-definition docs chunk under *root*."""
+    article = root / "src" / "Article.java"
+    docs = root / "docs" / "DEPLOYMENT.md"
+    return [
+        {
+            "chunk_id": 1,
+            "file_path": str(article),
+            "fqn": f"{article}::Article",
+            "content": "class Article {}",
+            "score": 2.0,
+            "is_definition": True,
+            "is_test_file": False,
+            "content_type": "code",
+            "file_role": FileRole.CODE,
+        },
+        {
+            "chunk_id": 2,
+            "file_path": str(docs),
+            "fqn": f"{docs}::## Deployment notes",
+            "content": docs_content,
+            "score": 1.0,
+            "is_definition": False,
+            "is_test_file": False,
+            "content_type": "docs",
+            "file_role": FileRole.DOCS,
+        },
+    ]
+
+
+@pytest.mark.parametrize("parent", ["repo", "test_article_documentation"])
+def test_usage_penalty_ignores_the_checkout_directory(tmp_path: Path, parent: str) -> None:
+    """A checkout directory named after a query term must not demote chunks.
+
+    The usage-penalty haystack includes the chunk FQN, which embeds the
+    absolute file path. Matching the concept there made the 0.85 penalty fire
+    on every prose chunk when the repository was cloned into a directory such
+    as ``test_article_documentation``.
+    """
+    root = tmp_path / parent / "corpus"
+    settings = Settings(context_dir=tmp_path)
+    reranker = Reranker(_RootedDB(root), settings=settings)  # type: ignore[arg-type]
+
+    results = _docs_pool(root, "Connection pool settings and timeouts.")
+    reranked = reranker.rerank(results, query="article documentation")
+    docs = next(r for r in reranked if r["chunk_id"] == 2)
+
+    expected = settings.docs_content_boost * settings.docs_project_boost
+    assert docs["score"] == pytest.approx(expected)
+
+
+def test_usage_penalty_still_applies_to_content_mentions(tmp_path: Path) -> None:
+    """A prose chunk that genuinely references the concept is still demoted."""
+    root = tmp_path / "repo" / "corpus"
+    settings = Settings(context_dir=tmp_path)
+    reranker = Reranker(_RootedDB(root), settings=settings)  # type: ignore[arg-type]
+
+    results = _docs_pool(root, "## What happens when an article is saved")
+    reranked = reranker.rerank(results, query="article documentation")
+    docs = next(r for r in reranked if r["chunk_id"] == 2)
+
+    expected = (
+        settings.docs_content_boost
+        * settings.docs_project_boost
+        * settings.identifier_usage_penalty
+    )
+    assert docs["score"] == pytest.approx(expected)

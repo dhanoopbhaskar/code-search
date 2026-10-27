@@ -33,10 +33,6 @@ def _docs_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [r for r in results if r.get("content_type") == "docs"]
 
 
-def _code_names(results: list[dict[str, Any]]) -> set[str]:
-    return {Path(r["file_path"]).name for r in results if r.get("content_type") == "code"}
-
-
 def _disabled_search(comps: dict[str, Any]) -> HybridSearch:
     settings = dataclasses.replace(comps["settings"], intent_scope_enabled=False)
     return HybridSearch(comps["db"], comps["vector_index"], comps["embedding_gen"], settings)
@@ -74,10 +70,8 @@ class TestDocsIntentReachability:
         assert envelope["content"] == "all"
         assert envelope["scope"]["origin"] == "inferred"
         assert envelope["scope"]["signal"] is not None
-        # Widening must not drop the code results the code-focused pass found.
-        # Config/prose chunks compete for the same limited slots, so they are
-        # not part of the reachability contract.
-        assert _code_names(explicit_default["results"]) <= _names(envelope["results"])
+        # Widening must not drop anything the code-focused pass found.
+        assert _names(explicit_default["results"]) <= _names(envelope["results"])
 
     def test_mixed_code_and_docs_tokens_do_not_hide_code(
         self, indexed_transparency: dict[str, Any]
