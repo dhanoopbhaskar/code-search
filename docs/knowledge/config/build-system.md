@@ -24,7 +24,7 @@ for air-gapped deployment.
 
 Core (`[project.dependencies]`): `tree-sitter` plus per-language grammars
 (`tree-sitter-python`, `-java`, `-javascript`, `-typescript`, `-c-sharp`,
-`-cpp`, `-bash`, `-yaml`, `-go`, `-kotlin`, `-toml`), `model2vec` (embeddings), `rank-bm25`,
+`-cpp`, `-bash`, `-yaml`, `-go`, `-kotlin`, `-groovy`, `-toml`), `model2vec` (embeddings), `rank-bm25`,
 `pathspec` (`.gitignore` matching), `fastmcp` (MCP server), `watchdog`
 (file watching).
 
