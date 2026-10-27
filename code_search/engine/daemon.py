@@ -402,6 +402,14 @@ class QueryDaemon:
             with suppress(Exception):
                 self._live_index.stop()
             self._live_index = None
+        if NAMED_PIPE_TRANSPORT and self._server is not None:
+            # A pipe listener has no ``shutdown``; a client connection is what
+            # unblocks ``accept`` so the loop can observe the cleared flag.
+            # The accepted connection carries no request and is discarded.
+            with suppress(Exception):
+                from multiprocessing.connection import Client
+
+                Client(str(self._socket_path), family="AF_PIPE").close()
         with self._stop_lock:
             server, self._server = self._server, None
             if server is not None:

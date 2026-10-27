@@ -177,7 +177,7 @@ def test_mtime_only_touch_self_heals_baseline(tmp_path: Path) -> None:
     with env["db"].connect() as conn:
         row = conn.execute(
             "SELECT size, file_mtime_ns FROM file_checksums WHERE file_path = ?;",
-            (str(target),),
+            (target.as_posix(),),
         ).fetchone()
     assert row is not None
     st_after = target.stat()
@@ -267,7 +267,7 @@ def test_missing_stat_baseline_self_heals(tmp_path: Path) -> None:
     with env["db"].write_transaction() as conn:
         conn.execute(
             "UPDATE file_checksums SET size = NULL, file_mtime_ns = NULL WHERE file_path = ?;",
-            (str(env["repo"] / "src" / "mod.py"),),
+            ((env["repo"] / "src" / "mod.py").as_posix(),),
         )
 
     signal = env["checker"].signal()
@@ -276,7 +276,7 @@ def test_missing_stat_baseline_self_heals(tmp_path: Path) -> None:
     with env["db"].connect() as conn:
         row = conn.execute(
             "SELECT size, file_mtime_ns FROM file_checksums WHERE file_path = ?;",
-            (str(env["repo"] / "src" / "mod.py"),),
+            ((env["repo"] / "src" / "mod.py").as_posix(),),
         ).fetchone()
     st = (env["repo"] / "src" / "mod.py").stat()
     assert row["size"] == st.st_size

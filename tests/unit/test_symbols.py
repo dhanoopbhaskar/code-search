@@ -203,7 +203,7 @@ def test_walk_edges_consistent_fqn_format(extractor: SymbolExtractor, tmp_path: 
     assert len(edges) >= 1
     for edge in edges:
         assert "::" in edge["source_fqn"]
-        assert str(py_file) in edge["source_fqn"]
+        assert py_file.as_posix() in edge["source_fqn"]
 
 
 def test_exact_match_first_lookup(db: GraphDatabase) -> None:
@@ -1161,7 +1161,9 @@ def test_typescript_interface_and_type_alias_classification(
         expected = {"User", "Admin"} if path.name.endswith(".ts") else {"Props"}
         assert expected.issubset(names), f"grammar-name FQNs expected {expected}, got {names}"
         for s in symbols:
-            assert s["fqn"].startswith(f"{path}::"), f"grammar-name FQN required: {s['fqn']}"
+            assert s["fqn"].startswith(f"{path.as_posix()}::"), (
+                f"grammar-name FQN required: {s['fqn']}"
+            )
 
     chunks = parser.get_chunks_for_file(ts_file, ts_file.read_bytes())
     interface_chunks = [c for c in chunks if c.get("chunk_node_type") == "interface_declaration"]
@@ -1187,7 +1189,7 @@ def test_typescript_components_default_export_and_thunks(
 
     assert {"ArticlesViewer", "fetchArticles", source_file.stem}.issubset(names)
     assert {s["kind"] for s in symbols} <= {"function", "variable"}
-    assert all(s["fqn"].startswith(f"{source_file}::") for s in symbols)
+    assert all(s["fqn"].startswith(f"{source_file.as_posix()}::") for s in symbols)
 
 
 def test_typescript_duplicate_fqns_are_qualified(

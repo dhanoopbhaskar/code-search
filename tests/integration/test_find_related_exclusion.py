@@ -49,7 +49,7 @@ def test_find_related_excludes_anchor_file_by_default(transparency_comps: dict[s
     assert results, "expected a non-empty cross-file related set"
     assert len(results) <= 5
     for item in results:
-        assert item["file_path"] != str(anchor), (
+        assert item["file_path"] != anchor.as_posix(), (
             f"neighbour {item['chunk_id']} must not come from the anchor file {anchor}"
         )
         assert item["same_file"] is False
@@ -72,7 +72,7 @@ def test_find_related_same_file_only_is_labeled_not_silent(
     with comps["db"].connect() as conn:
         chunks = conn.execute(
             "SELECT id FROM code_chunks WHERE file_path = ? ORDER BY id;",
-            (str(anchor),),
+            (anchor.as_posix(),),
         ).fetchall()
     assert len(chunks) >= 2, "the anchor file must hold at least two chunks"
     anchor_line = 18

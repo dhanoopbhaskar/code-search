@@ -361,7 +361,7 @@ def test_content_hash_diffing_skips_unchanged_files(tmp_path: Path) -> None:
     with db.connect() as conn:
         stored = conn.execute(
             "SELECT checksum FROM file_checksums WHERE file_path = ?;",
-            (str(repo / "src" / "mod.py"),),
+            ((repo / "src" / "mod.py").as_posix(),),
         ).fetchone()
     assert stored is not None
     assert stored["checksum"] == new_hash
@@ -438,7 +438,7 @@ def test_content_hash_diffing_detects_orphans(tmp_path: Path) -> None:
             for r in conn.execute("SELECT DISTINCT file_path FROM symbols;").fetchall()
         }
     assert symbols_after < symbols_before
-    assert str(repo / "src" / "delete_me.py") not in remaining_paths
+    assert (repo / "src" / "delete_me.py").as_posix() not in remaining_paths
 
 
 def test_stale_sweep_removes_all_rows_for_deleted_file(
@@ -457,7 +457,7 @@ def test_stale_sweep_removes_all_rows_for_deleted_file(
         deleted_sym_ids = [
             r["id"]
             for r in conn.execute(
-                "SELECT id FROM symbols WHERE file_path = ?;", (str(deleted_file),)
+                "SELECT id FROM symbols WHERE file_path = ?;", (deleted_file.as_posix(),)
             ).fetchall()
         ]
         edges_before = conn.execute("SELECT COUNT(*) AS n FROM graph_edges;").fetchone()["n"]
@@ -471,19 +471,19 @@ def test_stale_sweep_removes_all_rows_for_deleted_file(
     with db.connect() as conn:
         chunk_rows = conn.execute(
             "SELECT COUNT(*) AS n FROM code_chunks WHERE file_path = ?;",
-            (str(deleted_file),),
+            (deleted_file.as_posix(),),
         ).fetchone()["n"]
         fts_rows = conn.execute(
             "SELECT COUNT(*) AS n FROM paths_fts WHERE file_path = ?;",
-            (str(deleted_file),),
+            (deleted_file.as_posix(),),
         ).fetchone()["n"]
         sym_rows = conn.execute(
             "SELECT COUNT(*) AS n FROM symbols WHERE file_path = ?;",
-            (str(deleted_file),),
+            (deleted_file.as_posix(),),
         ).fetchone()["n"]
         checksum_rows = conn.execute(
             "SELECT COUNT(*) AS n FROM file_checksums WHERE file_path = ?;",
-            (str(deleted_file),),
+            (deleted_file.as_posix(),),
         ).fetchone()["n"]
         ph = ",".join("?" for _ in deleted_sym_ids)
         edge_rows = conn.execute(
