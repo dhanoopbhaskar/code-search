@@ -1,10 +1,10 @@
 ---
 type: Class
 title: "Settings"
-description: "Central configuration dataclass with 168 CODE_SEARCH_* environment-variable-backed fields and runtime-profile presets."
+description: "Central configuration dataclass with 176 CODE_SEARCH_* environment-variable-backed fields, platform-derived defaults, and runtime-profile presets."
 resource: code_search/engine/config.py#Settings
 tags: [config, settings, dataclass]
-generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-27T14:20:00Z }
 status: draft
 sources:
   - resource: code_search/engine/config.py
@@ -13,7 +13,7 @@ sources:
 
 # Overview
 
-Central configuration dataclass with 168 fields, each overridable via a
+Central configuration dataclass with 176 fields, each overridable via a
 `CODE_SEARCH_*` environment variable. Loaded once via `Settings.from_env()`
 and threaded through nearly every engine component. `runtime_profile`
 (`standard`/`small`) supplies defaults for `index_layout`
@@ -58,3 +58,4 @@ concept summarises the major field groups.
 | `with_context_dir(context_dir: Path \| None) -> Settings` | Build `Settings` with an explicit context directory override. |
 | `resolve_context_dir() -> Path` | Return the absolute, created context directory path. |
 | `profile_reason() -> str` | Explain how the effective layout and freshness mode were chosen, naming the profile and any explicit overrides. |
+| `with_repo_expansions() -> Settings` | Return settings that prefer a repository's own `.code-search/expansions.json` pack, unless an explicit `CODE_SEARCH_EXPANSION_FILE` already chose one. |

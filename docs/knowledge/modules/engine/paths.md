@@ -1,10 +1,10 @@
 ---
 type: Module
 title: "engine.paths"
-description: "Path normalization and stored-path resolution for find-related and symbol lookups, including case-insensitive filesystem canonicalisation."
+description: "Path normalization and stored-path resolution for find-related and symbol lookups: case-insensitive filesystem canonicalisation and repo-relative, location-independent spellings."
 resource: code_search/engine/paths.py
 tags: [engine, paths, find-related]
-generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-27T14:20:00Z }
 status: draft
 sources:
   - resource: code_search/engine/paths.py
@@ -25,10 +25,20 @@ case-variant input (`src/authservice.java`) to the on-disk spelling
 filesystem cannot resolve are left untouched, and an ambiguous
 case-insensitive match keeps the caller's spelling.
 
+Two further rules keep the index independent of where the repository is
+checked out: stored paths are always written in POSIX spelling
+([`portable_path`](../../functions/portable_path.md)) because they are compared
+as substrings, embedded in FQNs, and ranked by shape; and ranking signals see
+the repo-relative spelling
+([`repo_relative_path`](../../functions/repo_relative_path.md)) so a checkout
+inside a directory named after a query term cannot floor every chunk's score.
+
 # Key Functions
 
 - [`normalize_indexed_path`](../../functions/normalize_indexed_path.md) — resolve a path against the indexed repo root, collapsing symlinks and `../` segments.
 - [`resolve_stored_path`](../../functions/resolve_stored_path.md) — return the stored `code_chunks.file_path` spelling for a candidate path.
+- [`portable_path`](../../functions/portable_path.md) — render a path in POSIX spelling, so one separator convention reaches the index on every platform.
+- [`repo_relative_path`](../../functions/repo_relative_path.md) — return a stored path relative to the indexed root (unchanged when it lies outside), so path-shape ranking signals never observe the checkout location.
 
 # Internal Helpers
 

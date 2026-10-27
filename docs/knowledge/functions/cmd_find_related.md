@@ -1,7 +1,7 @@
 ---
 type: Function
 title: "cmd_find_related"
-description: "Handler for the find-related subcommand: prints chunks semantically related to a file/line anchor."
+description: "Handler for the `find-related` subcommand: prints chunks semantically related to a file/line anchor."
 resource: code_search/cli/main.py#cmd_find_related
 tags: [cli, command, related]
 generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }

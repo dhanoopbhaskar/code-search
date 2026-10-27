@@ -1,10 +1,10 @@
 ---
 type: Module
 title: "engine.graph"
-description: "SQLite schema and CRUD layer for the code graph: symbols, typed edges, code chunks (FTS5), corpus statistics, and index metadata."
+description: "SQLite schema and CRUD layer for the code graph: symbols, typed edges, code chunks (FTS5 keyword and path indexes), corpus statistics, coverage, and index metadata."
 resource: code_search/engine/graph.py
 tags: [engine, graph, database, storage]
-generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-27T14:20:00Z }
 status: draft
 sources:
   - resource: code_search/engine/graph.py
@@ -39,17 +39,21 @@ uniqueness would silently drop symbols.
 
 # Key Constants
 
-`SCHEMA_VERSION = 18` — current schema target version (v15 added
+`SCHEMA_VERSION = 19` — current schema target version (v15 added
 `is_test`; v16 replaced the unique conventional-FQN index with a non-unique
 one; v17 deduplicated unresolved edges and added `index_coverage`; v18 added
 edge `properties`, the `IMPLEMENTS`/`USAGE`/`CALL_REFERENCE`/`TESTS` edge
-types, `symbol_degrees`, and the symbol trust columns). `SUBWORD_STATS_TABLE_DDL`, `PREFIX_STATS_TABLE_DDL`, `STATS_INDEXES` —
+types, `symbol_degrees`, and the symbol trust columns; v19 made the keyword
+index independent of the checkout location by scoring `code_chunks.fqn_rel`
+only and moving path lookup into a separate `paths_fts` table).
+`SUBWORD_STATS_TABLE_DDL`, `PREFIX_STATS_TABLE_DDL`, `STATS_INDEXES` —
 persisted document-frequency tables rebuilt at the end of each index run.
 `SYMBOLS_TABLE_DDL`,
 `GRAPH_EDGES_TABLE_DDL`, `CODE_CHUNKS_TABLE_DDL`, `METADATA_TABLE_DDL`,
 `FILE_CHECKSUMS_TABLE_DDL`, `MODULE_EDGES_TABLE_DDL`,
 `SYMBOL_RATIONALE_TABLE_DDL`, `RATIONALE_FTS_DDL`, `DOC_LINKS_TABLE_DDL`,
-`ALL_DDLS` — SQL schema definitions. `CHUNKS_FTS_TRIGGER_NAMES` names the
+`INDEX_COVERAGE_TABLE_DDL`, `SYMBOL_DEGREES_TABLE_DDL`, `ALL_DDLS` — SQL
+schema definitions. `CHUNKS_FTS_TRIGGER_NAMES` names the
 three `chunks_fts` triggers that full builds suspend.
 
 # Key Classes
@@ -75,7 +79,20 @@ Private helpers implement fuzzy symbol resolution
 Resolution first runs indexed exact lookups and only falls back to
 leading-wildcard suffix matching when no exact row exists.
 
-`_migrate_v16` replaces the unique conventional-FQN index, and
+`_migrate_v16` replaces the unique conventional-FQN index; `_migrate_v19`
+backfills `fqn_rel`/`path_rel` and rebuilds `chunks_fts`/`paths_fts` so a
+pre-v19 database self-heals instead of silently losing path lookup. Every open
+also creates the v18 column indexes, the unresolved-edge partial unique index,
+and drops edge indexes that duplicate a composite index prefix.
 [`run_post_index_maintenance`](../../types/GraphDatabase.md) performs
 `chunks_fts` optimize, `ANALYZE`, WAL truncation, and (on a full rebuild)
 `VACUUM`.
+
+Connections are tuned from settings (`CODE_SEARCH_SQLITE_CACHE_KIB`,
+`CODE_SEARCH_SQLITE_MMAP_BYTES`, `CODE_SEARCH_SQLITE_TEMP_STORE_MEMORY`), and
+any committed graph write calls
+[`invalidate_adjacency_cache`](../../functions/invalidate_adjacency_cache.md) so
+a reader never walks a stale snapshot. `GraphDatabase.db_path` exposes the file
+path that keys that cache, and
+[`EdgeStore.get_call_graph_page`](../../types/EdgeStore.md) returns one bounded
+page of callers/callees with exact per-direction totals.

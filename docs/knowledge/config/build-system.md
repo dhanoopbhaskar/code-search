@@ -4,7 +4,7 @@ title: "Build System"
 description: "pyproject.toml dependencies, Makefile targets, and packaging scripts."
 resource: pyproject.toml
 tags: [config, build, packaging]
-generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:45:38Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-27T14:20:00Z }
 status: draft
 sources:
   - resource: pyproject.toml
@@ -67,6 +67,7 @@ script backed by [`main`](../functions/main.md).
 | `make bundle-deps` | Same as `bundle`, including offline dependency wheels. |
 | `make download-deps` | Download dependency wheels into `wheelhouse/` for offline install. |
 | `make check` / `lint` / `format` / `typecheck` / `test` | Run quality gates via `scripts/check.py` (with the matching flag). |
+| `make eval` | Run the agent-surface regression eval (`scripts/regression_eval.py`) against `REPO` (default `test-repo`): payload budgets, overload resolution, exhaustive latency versus `rg`, and strict abstention. |
 | `make eval-utility` | Run the cold/warm tool-utility harness (`tests/evaluation/tool_utility_eval.py`); needs a local corpus, optionally via `REPO=`. |
 | `make clean` | Remove build artifacts (`build/`, `*.egg-info`, `__pycache__`). |
 | `make distclean` | `clean` plus `dist/`, `wheelhouse/`, tox/nox and coverage caches. |
@@ -84,8 +85,24 @@ script backed by [`main`](../functions/main.md).
 - `scripts/benchmark.sh` — offline search-robustness/transparency
   benchmark driver: re-indexes a corpus and runs the S1–S10/E1–E5 battery
   (no pytest invocation).
+- `scripts/regression_eval.py` — asserts the agent-facing contracts (payload
+  budgets, overload resolution, exhaustive latency relative to `rg`, strict
+  abstention, optional labelled precision@5) by running the real CLI with
+  `--no-daemon`; invoked by `make eval` and not collected by pytest.
+- `scripts/benchmark_graph.py` — records wall-clock graph-query baselines
+  (`query` at depths 2/3, `path`, `impact`, caller traversal, architecture,
+  Cypher, index build) for a repository or a `--synthetic-symbols` graph, so
+  two runs can be compared.
 - `scripts/check_comment_refs.py` — validates that in-code comment
   references stay consistent (repo-specific lint helper).
+
+# Continuous Integration
+
+`.github/workflows/ci.yml` runs the quality gate on a
+`ubuntu-latest`/`macos-latest`/`windows-latest` matrix, installing `ripgrep`
+per platform (apt, brew, choco) because the exhaustive-search backend prefers
+it. The two performance budgets (match-boost overhead and cold-start latency)
+run on Linux only.
 
 # See Also
 

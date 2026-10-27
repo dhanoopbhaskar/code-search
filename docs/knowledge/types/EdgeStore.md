@@ -1,10 +1,10 @@
 ---
 type: Class
 title: "EdgeStore"
-description: "High-level CRUD for call-graph edges and traversal queries."
+description: "High-level CRUD for typed graph edges, evidence properties, and bounded call-graph traversal with paging."
 resource: code_search/engine/graph.py#EdgeStore
 tags: [graph, edges, traversal]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-27T14:20:00Z }
 status: draft
 sources:
   - resource: code_search/engine/graph.py
@@ -21,12 +21,13 @@ High-level CRUD for call-graph edges and traversal queries. Defined in
 | Method | Description |
 |---|---|
 | `__init__(db: GraphDatabase, settings: Settings \| None = None) -> None` | Initialize the edge store over a graph database. |
-| `insert_edge(source_symbol_id: int, target_symbol_id: int, edge_type: str, source_range: str \| None = None, target_range: str \| None = None, resolution_tier: str \| None = None) -> int \| None` | Insert a single directed edge between two symbols. |
+| `insert_edge(source_symbol_id: int, target_symbol_id: int, edge_type: str, source_range: str \| None = None, target_range: str \| None = None, resolution_tier: str \| None = None, properties: dict[str, Any] \| None = None) -> int \| None` | Insert a single directed edge between two symbols, recording JSON resolution evidence (`via`, `line`, `arg_count`, `candidate_count`) in *properties*. |
 | `insert_edges_batch(edges: list[dict[str, Any]], conn: sqlite3.Connection \| None = None) -> None` | Insert many edges at once, guarding against spurious self-edges; reuse *conn* when given, otherwise open and commit a transaction. |
 | `run_edge_validation_sweep() -> dict[str, int]` | Post-index edge validation sweep. |
 | `resolve_symbol_definition(fqn: str) -> tuple[dict[str, Any] \| None, list[dict[str, Any]]]` | Resolve *fqn* to `(symbol, candidates)` with source code populated. |
 | `get_symbol_definition(fqn: str) -> dict[str, Any] \| None` | Look up a symbol by FQN, returning its definition + source code + parent info. |
-| `get_call_graph(symbol_id: int, direction: str = 'both', max_depth: int = 1) -> dict[str, list[dict[str, Any]]]` | Traverse callers and/or callees via recursive CTE, clipped to *max_depth*. |
+| `get_call_graph(symbol_id: int, direction: str = 'both', max_depth: int = 1, limit: int \| None = None, offset: int = 0) -> dict[str, list[dict[str, Any]]]` | Traverse callers and/or callees via recursive CTE, clipped to *max_depth* and optionally paged. |
+| `get_call_graph_page(symbol_id: int, direction: str = 'both', max_depth: int = 1, limit: int = 50, offset: int = 0) -> dict[str, Any]` | Return one bounded page of the call graph plus exact per-direction totals, so a caller can page without re-counting. |
 | `get_subtypes(symbol_id: int, max_depth: int = 5) -> list[dict[str, Any]]` | Return types that inherit from *symbol_id*, with minimum depth. |
 | `get_ancestors(symbol_id: int, max_depth: int = 5) -> list[dict[str, Any]]` | Return the class ancestors of *symbol_id*, nearest base first. |
 | `get_inheritance_targets(symbol_id: int) -> list[dict[str, Any]]` | Return the declared `INHERITS` targets of *symbol_id* as `{name, fqn, resolved}`, reading `target_raw` for unresolved edges. |

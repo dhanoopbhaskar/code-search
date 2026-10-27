@@ -1,10 +1,10 @@
 ---
 type: Module
 title: "engine.config"
-description: "Settings dataclass (env-var driven), runtime-profile presets, language configuration overlay, and path-based file classification helpers."
+description: "Settings dataclass (env-var driven) with runtime-profile presets, platform-derived defaults, language configuration overlay, and path-based file classification helpers."
 resource: code_search/engine/config.py
 tags: [engine, config, settings]
-generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-27T14:20:00Z }
 status: draft
 sources:
   - resource: code_search/engine/config.py
@@ -34,11 +34,30 @@ reference.
 # Key Classes
 
 - [`LanguageConfig`](../../types/LanguageConfig.md) — merges user JSON overrides into built-in language definitions.
-- [`Settings`](../../types/Settings.md) — the frozen dataclass carrying 168 tunable fields.
+- [`Settings`](../../types/Settings.md) — the frozen dataclass carrying 176 tunable fields.
 
 # Key Functions
 
 - [`load_language_config`](../../functions/load_language_config.md) — load custom language configuration from JSON.
+
+# Derived Defaults
+
+Two knobs are derived rather than fixed, because the right value depends on the
+host:
+
+- `graph_cache_max_bytes` (`_graph_cache_bytes_default`) — an explicit
+  `CODE_SEARCH_GRAPH_CACHE_MAX_BYTES` wins (`0` disables the cache); otherwise
+  the budget is the smaller of 256 MB and a quarter of the memory the OS reports
+  as available (`_available_memory_bytes`). A platform that cannot report memory
+  gets the 256 MB ceiling instead of an unbounded cache.
+- The SQLite tuning trio (`sqlite_cache_kib`, `sqlite_mmap_bytes`,
+  `sqlite_temp_store_memory`) applies per connection and is deliberately
+  modest so several connections stay inside the process budget.
+
+`Settings.with_repo_expansions()` returns a copy pointing at a repository's own
+`.code-search/expansions.json` pack when one exists, unless an explicit
+`CODE_SEARCH_EXPANSION_FILE` (or constructor value) already chose a pack — the
+operator keeps the final say.
 
 # Internal Helpers
 

@@ -4,7 +4,7 @@ title: "ExplainAnswer"
 description: "Result of an explain request: a symbol's ego graph, rationale comments, and linked docs."
 resource: code_search/engine/graph_query.py#ExplainAnswer
 tags: [graph, query, dataclass]
-generated: { by: code-documenter/skill-v1.0, at: 2026-10-19T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-27T14:45:00Z }
 status: draft
 sources:
   - resource: code_search/engine/graph_query.py
@@ -30,6 +30,7 @@ come from [`RationaleStore`](RationaleStore.md) and linked docs from
 | `doc_links` | `list[dict[str, Any]]` | Up to five documentation/config links for chunks in the symbol's file. |
 | `outcome` | `str` | `resolved` (default), `ambiguous`, or `not_found`. |
 | `candidates` | `list[dict[str, Any]]` | Ranked candidates when the reference was ambiguous. |
+| `truncated` | `bool` | Whether a per-node cap trimmed the ego graph: incoming or outgoing edges beyond the 50-edge fanout limit, or a container's declaration list cut short. |
 | `stats` | `dict[str, Any]` | Traversal statistics. |
 
 # Methods

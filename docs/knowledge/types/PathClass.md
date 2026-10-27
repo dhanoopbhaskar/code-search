@@ -4,7 +4,7 @@ title: "PathClass"
 description: "StrEnum giving a file path's rank-relevant structural classification."
 resource: code_search/engine/classification.py#PathClass
 tags: [classification, paths, enum]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-27T14:20:00Z }
 status: draft
 sources:
   - resource: code_search/engine/classification.py
@@ -33,5 +33,5 @@ the index. Defined in
 
 | Method | Description |
 |---|---|
-| `of(db: Any, file_path: str \| Path) -> PathClass` | Resolve the classification for *file_path*, consulting the index only for barrel detection. |
+| `of(db: Any, file_path: str \| Path, *, signal_path: str \| None = None) -> PathClass` | Resolve the classification for *file_path*, consulting the index only for barrel detection; *signal_path* overrides the path used for shape signals (the repo-relative spelling) while the stored path still identifies the file. |
 | `is_barrel(db: Any, file_path: str \| Path) -> bool` | Return whether *file_path* is a pure re-export barrel surface (`__init__.py`/`package-info.java` with zero definition chunks). |

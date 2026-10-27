@@ -1,10 +1,12 @@
 # Engine Modules
 
 * [__init__](__init__.md) - engine package definition and version constant.
+* [ask](ask.md) - single-question router that delegates to the surface that can answer it (`ask`).
 * [audit](audit.md) - immutable query audit trail (`AuditDatabase`).
 * [classification](classification.md) - content-type / rank-class classification helpers.
 * [confidence](confidence.md) - calibrated confidence scoring and bands.
 * [config](config.md) - `Settings` dataclass reading all `CODE_SEARCH_*` environment variables, and `LanguageConfig` loader.
+* [cypher](cypher.md) - read-only Cypher subset over the SQLite code graph (lexer, parser, SQL compiler, bounded executor).
 * [daemon](daemon.md) - background `QueryDaemon` and `DaemonClient` for warm-index serving over an `AF_UNIX` socket (Linux/macOS) or named pipe (Windows).
 * [embed_representation](embed_representation.md) - builds the enclosing-context + chunk text passed to the embedding model.
 * [embeddings](embeddings.md) - `EmbeddingGenerator` and the Model2Vec-backed `VectorIndex`.
@@ -13,10 +15,14 @@
 * [find_related](find_related.md) - shared find-related anchor resolution and neighbour ranking (CLI, daemon, MCP).
 * [freshness](freshness.md) - two-tier stat + rehash freshness detection (`FreshnessChecker`).
 * [graph](graph.md) - SQLite-backed call/definition graph (`GraphDatabase`, `EdgeStore`, `ModuleEdgeStore`, `RationaleStore`, `DocLinkStore`, `IndexMetadataStore`).
-* [graph_query](graph_query.md) - bounded graph query/path/explain/impact traversal with provenance labels (`GraphQueryService`).
+* [graph_cache](graph_cache.md) - generation-keyed in-memory CSR adjacency cache (`AdjacencyCache`, `GraphSnapshot`).
+* [graph_metrics](graph_metrics.md) - read-only graph-quality metrics (`collect_graph_metrics`).
+* [graph_passes](graph_passes.md) - post-index enrichment passes: canonical FQNs, `TESTS`/dispatch edges, entry points, importance, degrees.
+* [graph_query](graph_query.md) - bounded graph query/path/explain/impact/change/aspect traversal with provenance labels (`GraphQueryService`).
+* [graph_surface](graph_surface.md) - discovery surfaces: schema, file outline, structural symbol search, dead code, coverage.
 * [implementations](implementations.md) - "find implementations" query support.
 * [index_metadata](index_metadata.md) - index version/health metadata (`IndexMetadata`, `IndexStatus`).
-* [index_service](index_service.md) - server-side index-staleness detection (`IndexChangeDetector`).
+* [index_service](index_service.md) - server-side index-staleness detection and live re-indexing (`IndexChangeDetector`, `LiveIndexUpdater`).
 * [indexer](indexer.md) - full/incremental indexing pipeline (`IndexOrchestrator`, `IndexLock`).
 * [intent_detection](intent_detection.md) - lexical content-intent classification (docs/config/code/neutral) and scope-signal messages.
 * [language](language.md) - query-time language inference and corpus vocabularies (`QueryAnalysis`).
@@ -25,14 +31,14 @@
 * [model_status](model_status.md) - embedding model warm/cold status reporting (`ModelState`).
 * [occurrence_count](occurrence_count.md) - exhaustive/enumerate mode line-occurrence counting.
 * [parser](parser.md) - tree-sitter-based AST parsing (`ASTParser`).
-* [paths](paths.md) - path normalization and stored-path resolution.
+* [paths](paths.md) - path normalization, stored-path resolution, and location-independent spellings.
 * [query_terms](query_terms.md) - rule-based query normalization (morphological variants, concept-term collapsing).
 * [redactor](redactor.md) - secret redaction and air-gap network enforcement (`Redactor`).
 * [reranking](reranking.md) - post-fusion result reranking (`Reranker`).
 * [rescue_floor](rescue_floor.md) - rescue-ladder eligibility evaluation.
 * [response_service](response_service.md) - builds the final search response envelope and shapes compact, root-relative output.
 * [scent_detection](scent_detection.md) - config/DDL "scent" detection in queries and content.
-* [search](search.md) - `HybridSearch`, the central BM25 + vector fusion + quality-gate + rescue-ladder orchestrator.
+* [search](search.md) - `HybridSearch`, the central BM25 + vector fusion + quality-gate + rescue-ladder orchestrator, including strict abstention and the ripgrep exhaustive backend.
 * [semantic_signals](semantic_signals.md) - semantic scoring signal functions.
 * [session](session.md) - session-based read/write weighting (`SessionDatabase`).
 * [symbol_resolution](symbol_resolution.md) - symbol reference parsing and resolution (`SymbolReference`, `ResolutionResult`).

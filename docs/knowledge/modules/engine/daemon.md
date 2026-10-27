@@ -4,7 +4,7 @@ title: "engine.daemon"
 description: "Local IPC query daemon (AF_UNIX socket or Windows named pipe) holding the embedding model and SQLite connections warm across CLI invocations, with a lifecycle-state file for readiness probes."
 resource: code_search/engine/daemon.py
 tags: [engine, daemon, ipc]
-generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-27T14:45:00Z }
 status: draft
 sources:
   - resource: code_search/engine/daemon.py
@@ -41,7 +41,7 @@ startup wait up to `startup_wait_s` (default 10 s) or receive a structured
 
 # Key Classes
 
-- [`QueryDaemon`](../../types/QueryDaemon.md) — serves `ping`, `search`, `symbol`, `implementations`, `graph`, and `find_related` over the local endpoint, one thread per connection.
+- [`QueryDaemon`](../../types/QueryDaemon.md) — serves `ping`, `search`, `symbol`, `implementations`, `graph`, `find_related`, and `shutdown` over the local endpoint, one thread per connection.
 - [`DaemonClient`](../../types/DaemonClient.md) — synchronous IPC client used by CLI forwarding and daemon status.
 
 # Key Functions
@@ -61,3 +61,34 @@ pidfile path/read helpers, and `_state_path` locates the lifecycle-state
 file. The related-chunk action delegates ranking to
 [`engine.find_related`](find_related.md) so the daemon, CLI, and MCP
 surfaces cannot drift.
+
+# Platform Abstractions
+
+The IPC endpoint differs per platform, so the concrete operations are named:
+
+- [`default_socket_path`](../../functions/default_socket_path.md) — the endpoint
+  convention for a context directory (`AF_UNIX` path on POSIX, `_pipe_name`
+  address on Windows).
+- [`prepare_socket_path`](../../functions/prepare_socket_path.md) — make the
+  endpoint bindable: create the parent directory and remove a stale socket file
+  left by an unclean exit. Named pipes are kernel objects with no filesystem
+  entry, so there is nothing to prepare.
+- [`endpoint_exists`](../../functions/endpoint_exists.md) — whether a socket file
+  exists or a named-pipe listener is reachable.
+- [`detached_spawn_kwargs`](../../functions/detached_spawn_kwargs.md) — `Popen`
+  options that let the daemon outlive the shell: a new session on POSIX, and
+  `DETACHED_PROCESS` plus `CREATE_NEW_PROCESS_GROUP` on Windows, where
+  `start_new_session` is accepted but ignored.
+- [`process_exists`](../../functions/process_exists.md) — a non-signalling
+  liveness probe that goes through `OpenProcess` on Windows, because every
+  signal except the two console events terminates the target there.
+
+# Watch Mode
+
+`QueryDaemon.__init__` and
+[`run_daemon_foreground`](../../functions/run_daemon_foreground.md) accept
+`watch=True`, which starts a
+[`LiveIndexUpdater`](../../types/LiveIndexUpdater.md) so the warm process
+re-indexes edited files instead of serving a stale index until the next
+explicit `index` run. `_wake_pipe_accept` unblocks a pending named-pipe `accept`
+so the serve loop can exit cleanly.

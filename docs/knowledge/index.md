@@ -7,8 +7,10 @@ okf_version: "0.2"
 An Open Knowledge Format (OKF v0.2) bundle documenting **code-search**: an
 AI code context engine for air-gapped, CPU-only enterprise environments.
 It combines Tree-sitter AST structural graphing with static Model2Vec
-embeddings and BM25 hybrid search, exposed via a CLI and an MCP stdio
-server.
+embeddings and BM25 hybrid search, and exposes the resulting SQLite code graph
+through bounded discovery surfaces, a read-only Cypher subset, and a
+single-question router — all reachable from a CLI, an MCP stdio server, and an
+optional warm daemon.
 
 All concepts in this bundle were machine-generated from the source tree at
 `code_search/` and are `status: draft`, trust tier **unverified**, pending human

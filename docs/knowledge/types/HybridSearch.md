@@ -4,7 +4,7 @@ title: "HybridSearch"
 description: "Combines BM25 keyword search and vector semantic search via RRF fusion, with quality gates and rescue tiers."
 resource: code_search/engine/search.py#HybridSearch
 tags: [search, ranking, core]
-generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-27T14:20:00Z }
 status: draft
 sources:
   - resource: code_search/engine/search.py
@@ -24,7 +24,7 @@ orchestrator of the search pipeline.
 | Method | Description |
 |---|---|
 | `__init__(db: GraphDatabase, vector_index: VectorIndex, embedding_generator: EmbeddingGenerator, settings: Settings \| None = None, no_model: bool = False) -> None` | Initialize hybrid search over the graph DB and vector index. |
-| `search(query: str, limit: int = 10, language: str \| None = None, include_tests: bool = True, alpha: float \| None = None, mode: str = 'ranked', content: str \| None = None, matching: str \| None = None, regex: bool = False, allow_weak: bool = False) -> dict[str, Any]` | Run the full hybrid search pipeline and stamp the per-request timer; *regex* switches ranked/exhaustive scanning to regular-expression matching, and *allow_weak* bypasses the post-rank abstention gate. |
+| `search(query: str, limit: int = 10, language: str \| None = None, include_tests: bool = True, alpha: float \| None = None, mode: str = 'ranked', content: str \| None = None, matching: str \| None = None, regex: bool = False, allow_weak: bool = False, strict: bool = False) -> dict[str, Any]` | Run the full hybrid search pipeline and stamp the per-request timer; *regex* switches ranked/exhaustive scanning to regular-expression matching, *allow_weak* bypasses the post-rank abstention gate, and *strict* turns a weak low-coverage pool into a `no_match` envelope with the rejected rows under `alternatives`. |
 | `token_doc_counts(tokens: set[str]) -> dict[str, int]` | Return `token -> distinct chunk count` from `subword_stats` for only the requested tokens. |
 | `prefix_doc_counts(prefixes: set[str]) -> dict[str, int]` | Return `prefix -> distinct chunk count` from `prefix_stats` for only the requested prefixes. |
 | `present_terms(tokens: set[str]) -> set[str]` | Return the subset of tokens present in the corpus, using persisted stats when available. |

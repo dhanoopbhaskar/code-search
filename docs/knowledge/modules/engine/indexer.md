@@ -1,10 +1,10 @@
 ---
 type: Module
 title: "engine.indexer"
-description: "Orchestrates full and incremental codebase indexing: discovery, AST parsing, symbol/edge/chunk persistence, corpus statistics, and embedding generation."
+description: "Orchestrates full and incremental codebase indexing: discovery, AST parsing, symbol/edge/chunk persistence, derived graph passes, coverage, generation, corpus statistics, and embedding generation."
 resource: code_search/engine/indexer.py
 tags: [engine, indexing, pipeline]
-generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-27T14:20:00Z }
 status: draft
 sources:
   - resource: code_search/engine/indexer.py
@@ -38,6 +38,38 @@ persistence (call/import edges, rationale, doc links) is gated by
 finishes, the orchestrator rebuilds the `subword_stats`/`prefix_stats`
 document-frequency tables, records `corpus_chunk_count` and `index_layout`,
 then asks the graph database to compact storage.
+
+# Derived Data and Coverage
+
+After edges are persisted the orchestrator runs
+[`rebuild_derived_graph_data`](../../functions/rebuild_derived_graph_data.md)
+and [`derive_interface_dispatch_edges`](../../functions/derive_interface_dispatch_edges.md)
+from [`engine.graph_passes`](graph_passes.md) (or the post-index maintenance
+path on an incremental build), so entry points, importance, degrees, `TESTS`
+edges, and interface-dispatch edges exist before anyone queries the graph.
+
+Parse failures are published rather than swallowed:
+`_collect_error_ranges` turns tree-sitter error nodes into merged 1-based line
+spans, capped per file, and marks a file `unusable` when errors cover at least
+80% of its lines. Those rows go into `index_coverage`, which
+[`check_index_coverage`](../../functions/check_index_coverage.md) later reads to
+separate "clean" from "never indexed".
+
+Each publish also computes an `index_generation` (`_compute_index_generation`)
+from the resolved root, the finish timestamp, and the symbol/edge/chunk counts.
+`_persist_coverage` writes coverage rows and the generation atomically and drops
+every row from the previous generation, so the generation is a safe cache and
+paging-cursor key.
+
+# Cross-File Resolution
+
+`_resolve_cross_file_symbol` returns `(symbol_id, tier, candidate_count)` and
+now considers receiver typing, call-site argument count, and the type hierarchy:
+`_build_type_hierarchy` collects `types_by_name`/`bases_by_fqn` from the pending
+edges, and `_TypeHierarchy.ancestor_name_levels` walks ancestors nearest-first so
+an inherited method resolves to its declaration instead of an unrelated
+same-name symbol. `_symbol_arity` and `_edge_properties` record the evidence
+(`via`, `line`, `arg_count`, `candidate_count`) stored on the edge.
 
 # Key Constants
 

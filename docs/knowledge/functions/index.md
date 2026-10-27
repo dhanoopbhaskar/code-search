@@ -4,10 +4,14 @@
 
 * [build_parser](build_parser.md) - Build the full argparse tree with all subcommands.
 * [cmd_affected](cmd_affected.md) - Handler for the `affected` subcommand: reports symbols impacted by changed files.
-* [cmd_daemon](cmd_daemon.md) - Handler for the `daemon` subcommand: start/stop/status control of the QueryDaemon.
+* [cmd_ask](cmd_ask.md) - Answer one question by routing it to the right retrieval surface.
+* [cmd_coverage](cmd_coverage.md) - Report index gaps for requested paths/scopes, or the whole index.
+* [cmd_cypher](cmd_cypher.md) - Run a read-only Cypher query over the indexed graph.
+* [cmd_daemon](cmd_daemon.md) - Handler for the `daemon` subcommand: start, stop, status, or wait on the local QueryDaemon.
 * [cmd_daemon_run](cmd_daemon_run.md) - Handler that runs the daemon blocking in the foreground (used internally by `cmd_daemon start`).
-* [cmd_download_models](cmd_download_models.md) - Handler for the `download-models` subcommand: fetches the embedding model into the Hugging Face cache.
+* [cmd_dead_code](cmd_dead_code.md) - Report callables with no proven production reference.
 * [cmd_doctor](cmd_doctor.md) - Handler for the `doctor` subcommand: reports index age, model availability, daemon state, and index size.
+* [cmd_download_models](cmd_download_models.md) - Handler for the `download-models` subcommand: fetches the embedding model into the Hugging Face cache.
 * [cmd_explain](cmd_explain.md) - Handler for the `explain` subcommand: prints a symbol's metadata, relations, rationale, and linked docs.
 * [cmd_find_related](cmd_find_related.md) - Handler for the `find-related` subcommand: prints chunks semantically related to a file/line anchor.
 * [cmd_graph](cmd_graph.md) - Handler for the `graph` subcommand: prints callers/callees of a symbol.
@@ -16,15 +20,23 @@
 * [cmd_list_languages](cmd_list_languages.md) - Handler for the `list-languages` subcommand: prints supported languages.
 * [cmd_map](cmd_map.md) - Handler for the `map` subcommand: generates a deterministic architecture report.
 * [cmd_metrics](cmd_metrics.md) - Handler for the `metrics` subcommand: prints latency percentiles and redaction counts.
+* [cmd_outline](cmd_outline.md) - List one file's declarations in source order.
 * [cmd_path](cmd_path.md) - Handler for the `path` subcommand: prints the shortest graph path between two symbols.
 * [cmd_query](cmd_query.md) - Handler for the `query` subcommand: answers a question by bounded graph traversal.
+* [cmd_schema](cmd_schema.md) - Describe the graph schema an agent is about to query.
 * [cmd_search](cmd_search.md) - Handler for the `search` subcommand: runs a hybrid search query and prints results.
 * [cmd_serve](cmd_serve.md) - Handler for the `serve` subcommand: starts the MCP stdio server.
 * [cmd_start](cmd_start.md) - Handler for the `start` subcommand: alias for `daemon start`.
 * [cmd_stats](cmd_stats.md) - Handler for the `stats` subcommand: prints the runtime profile, index layout, and disk footprint.
 * [cmd_status](cmd_status.md) - Handler for the `status` subcommand: alias for `daemon status`.
 * [cmd_symbol](cmd_symbol.md) - Handler for the `symbol` subcommand: resolves and prints a symbol's definition.
+* [cmd_symbols](cmd_symbols.md) - Search symbols by structure: regex name/QN, kind, file, and degree.
+* [cmd_view](cmd_view.md) - Read a symbol or file with a compact outline/body contract.
 * [main](main.md) - Parse arguments and dispatch to the selected subcommand handler.
+
+## engine/ask.py
+
+* [ask](ask.md) - Route question to the surface that can answer it.
 
 ## engine/classification.py
 
@@ -39,16 +51,24 @@
 * [confidence_band](confidence_band.md) - Map a calibrated confidence score to a discrete band label (high/medium/low).
 * [confidence_score](confidence_score.md) - Base lexical/vector blend confidence score for one candidate.
 * [envelope_band](envelope_band.md) - Aggregate confidence band for the overall response envelope from a list of per-result bands.
-* [is_borderline](is_borderline.md) - Whether a confidence score falls in the borderline zone between bands.
+* [is_borderline](is_borderline.md) - Whether a confidence band is borderline (low).
 * [is_controller_endpoint](is_controller_endpoint.md) - Whether a symbol looks like a web controller/route endpoint (a high-trust signal for authorization-intent queries).
 * [is_exact_fqn_match](is_exact_fqn_match.md) - Whether a candidate's FQN exactly matches the query's qualified name.
 * [is_exact_symbol_match](is_exact_symbol_match.md) - Whether a candidate's short symbol name exactly matches a query token.
 * [qualified_query_name](qualified_query_name.md) - Extract the qualified name portion of a query, if any.
-* [subword_overlap](subword_overlap.md) - Fraction of distinct query concepts present in a candidate's text.
+* [subword_overlap](subword_overlap.md) - Compute the fraction of query sub-words present in a candidate's text.
 
 ## engine/config.py
 
 * [load_language_config](load_language_config.md) - Load custom language configuration from JSON.
+
+## engine/cypher.py
+
+* [compile_cypher](compile_cypher.md) - Parse and compile query to parameterized SQL.
+* [cypher_tokenize](cypher_tokenize.md) - Split Cypher query text into tokens for the read-only subset's parser.
+* [execute_cypher](execute_cypher.md) - Execute a read-only Cypher query with bounded output and a deadline.
+* [query_digest](query_digest.md) - Return the stable digest used to key a paging cursor.
+* [render_cypher_text](render_cypher_text.md) - Render a Cypher payload as a compact text table.
 
 ## engine/daemon.py
 
@@ -56,11 +76,15 @@
 * [clear_state](clear_state.md) - Remove the daemon lifecycle-state file, ignoring a missing file.
 * [daemon_status](daemon_status.md) - Report {running, warm, socket, pid} for a context directory's daemon.
 * [default_socket_path](default_socket_path.md) - The daemon's socket path convention for a context directory.
-* [pid_is_alive](pid_is_alive.md) - Whether the daemon pidfile records a live process.
+* [detached_spawn_kwargs](detached_spawn_kwargs.md) - Return `Popen` options that detach the daemon from the invoking CLI.
+* [endpoint_exists](endpoint_exists.md) - Return whether a daemon endpoint is present.
+* [pid_is_alive](pid_is_alive.md) - Return whether the daemon pidfile records a live process.
+* [prepare_socket_path](prepare_socket_path.md) - Make socket_path usable for a fresh bind.
+* [process_exists](process_exists.md) - Return whether pid names a live process without signalling it.
 * [read_state](read_state.md) - Return the recorded daemon lifecycle state, or None when absent.
-* [run_daemon_foreground](run_daemon_foreground.md) - Run the daemon blocking in the foreground.
+* [run_daemon_foreground](run_daemon_foreground.md) - Run the daemon blocking in the foreground, optionally watching the indexed tree.
 * [write_pidfile](write_pidfile.md) - Write the daemon's pidfile for lifecycle tracking.
-* [write_state](write_state.md) - Record the daemon lifecycle state (starting/warming/ready).
+* [write_state](write_state.md) - Record the daemon lifecycle state (`starting`/`warming`/`ready`).
 
 ## engine/embed_representation.py
 
@@ -88,19 +112,59 @@
 
 * [read_source_slice](read_source_slice.md) - Read a line-range slice of a source file.
 
+## engine/graph_cache.py
+
+* [adjacency_cache_stats](adjacency_cache_stats.md) - Return process-wide adjacency-cache diagnostics.
+* [adjacency_snapshot](adjacency_snapshot.md) - Return the current snapshot from the process-wide cache, if usable.
+* [build_snapshot](build_snapshot.md) - Read one index generation into a compact adjacency snapshot.
+* [clear_adjacency_cache](clear_adjacency_cache.md) - Drop and reset the process-wide cache (tests and maintenance).
+* [invalidate_adjacency_cache](invalidate_adjacency_cache.md) - Drop cached snapshots for db_path after a committed graph write.
+* [read_index_generation](read_index_generation.md) - Return the current index generation, or `None` for an old index.
+
+## engine/graph_metrics.py
+
+* [collect_graph_metrics](collect_graph_metrics.md) - Return symbol, edge, and coverage metrics for the current index.
+
+## engine/graph_passes.py
+
+* [backfill_canonical_fqns](backfill_canonical_fqns.md) - Store `<relative path>::<declaration>` for every symbol.
+* [backfill_test_flags](backfill_test_flags.md) - Refresh `symbols.is_test` from the shared path classifier.
+* [classify_entry_points](classify_entry_points.md) - Store `is_entry_point` and `entry_point_reason` on every symbol.
+* [compute_importance](compute_importance.md) - Store the adapted weighted-degree importance score on every symbol.
+* [derive_interface_dispatch_edges](derive_interface_dispatch_edges.md) - Add resolved `CALLS` edges from an interface call site to its impls.
+* [derive_tests_edges](derive_tests_edges.md) - Rebuild `TESTS` edges from test-symbol references to production code.
+* [rebuild_derived_graph_data](rebuild_derived_graph_data.md) - Recompute canonical FQNs, TESTS edges, entry points, importance, degrees.
+* [rebuild_symbol_degrees](rebuild_symbol_degrees.md) - Replace `symbol_degrees` with counts over resolved symbol edges.
+
 ## engine/graph_query.py
 
 * [compact_json](compact_json.md) - Serialise a payload to JSON without indentation for compact agent transport.
-* [display_symbol](display_symbol.md) - Strip an FQN's filesystem path prefix for human display.
+* [display_symbol](display_symbol.md) - Return an FQN with its filesystem path prefix removed for display.
 * [edge_resolution_stats](edge_resolution_stats.md) - Per-edge-type resolved/unresolved counts used as a graph-quality metric.
+* [relative_display](relative_display.md) - Return a file path relative to the index root in POSIX form for display.
+* [render_architecture_aspects_text](render_architecture_aspects_text.md) - Render a bounded architecture aspect payload as compact text.
 * [render_architecture_markdown](render_architecture_markdown.md) - Render an ArchitectureReport as deterministic Markdown.
+* [render_changes_text](render_changes_text.md) - Render a `detect_changes` payload as compact text.
 * [render_explain_text](render_explain_text.md) - Render an ExplainAnswer with metadata, relations, rationale, and linked docs.
 * [render_impact_text](render_impact_text.md) - Render an ImpactAnswer as text with production and test buckets.
 * [render_path_text](render_path_text.md) - Render a PathAnswer as a hop-by-hop chain.
 * [render_query_text](render_query_text.md) - Render a GraphAnswer as compact, agent-friendly text.
-* [relative_display](relative_display.md) - Render a stored file path relative to the index root in POSIX form.
 * [resolve_confidence](resolve_confidence.md) - Map a persisted edge resolution tier to an EXTRACTED/INFERRED/AMBIGUOUS/UNRESOLVED label.
 * [symbol_source_slice](symbol_source_slice.md) - Return the source text spanned by a symbol row.
+
+## engine/graph_surface.py
+
+* [changed_files_since](changed_files_since.md) - Return working-tree paths changed relative to git ref.
+* [check_index_coverage](check_index_coverage.md) - Report where the index has gaps, per requested path or scope.
+* [find_dead_code](find_dead_code.md) - Report callables with no proven incoming reference from production code.
+* [get_file_outline](get_file_outline.md) - Return the declarations of one indexed file in source order.
+* [get_graph_schema](get_graph_schema.md) - Return a bounded description of the graph an agent is about to query.
+* [render_coverage_text](render_coverage_text.md) - Render a coverage payload as compact text.
+* [render_dead_code_text](render_dead_code_text.md) - Render a dead-code payload as compact text with its caveats.
+* [render_file_outline_text](render_file_outline_text.md) - Render a file-outline payload as compact text.
+* [render_graph_schema_text](render_graph_schema_text.md) - Render a graph-schema payload as compact text.
+* [render_symbol_search_text](render_symbol_search_text.md) - Render a structural symbol-search payload as compact text.
+* [search_symbols](search_symbols.md) - Search symbols by structure rather than text similarity.
 
 ## engine/implementations.py
 
@@ -147,6 +211,8 @@
 ## engine/paths.py
 
 * [normalize_indexed_path](normalize_indexed_path.md) - Resolve a path against the indexed repo root, collapsing symlinks and ../ segments.
+* [portable_path](portable_path.md) - Return path in POSIX spelling.
+* [repo_relative_path](repo_relative_path.md) - Return path relative to root, or unchanged when it lies outside it.
 * [resolve_stored_path](resolve_stored_path.md) - Return the stored code_chunks.file_path spelling for a candidate path.
 
 ## engine/query_terms.py
@@ -225,4 +291,4 @@
 
 * [create_server](create_server.md) - Create an MCPServer around a component registry.
 
-The MCP tools (`search`, `get_symbol_definition`, `get_call_neighbors`, `get_implementations`, `find_related`) are nested inside `MCPServer.build_fastmcp`; see [`MCPServer`](../types/MCPServer.md).
+The MCP tools (`search`, `get_symbol_definition`, `get_call_neighbors`, `get_implementations`, `find_related`, `get_graph_schema`, `get_file_outline`, `check_index_coverage`, `search_symbols`, `find_dead_code`, `get_architecture`, `query_graph`, `shortest_path`, `explain_symbol`, `get_impact`, `detect_changes`, `cypher_query`, `ask`, `doctor`) are nested inside `MCPServer.build_fastmcp`; see [`MCPServer`](../types/MCPServer.md).

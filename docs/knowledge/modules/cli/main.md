@@ -1,10 +1,10 @@
 ---
 type: Module
 title: "cli.main"
-description: "CLI entry point: subcommands for indexing, searching, graph traversal, symbol lookup, diagnostics, metrics, serving, and the daemon."
+description: "CLI entry point: subcommands for indexing, searching, asking, graph discovery and traversal, symbol reading, diagnostics, metrics, serving, and the daemon."
 resource: code_search/cli/main.py
 tags: [cli, entry-point]
-generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-27T14:45:00Z }
 status: draft
 sources:
   - resource: code_search/cli/main.py
@@ -25,8 +25,16 @@ queries.
 |---|---|
 | `index` | Build or update the code index; supports incremental updates, watching, exclusions |
 | `search` | Natural-language search over the index, semantic + lexical ranking |
+| `ask` | Route one question to the right surface and print one compact answer |
 | `symbol` | Look up a symbol definition by fully qualified name (FQN) |
+| `view` | Read a symbol or file under a compact outline/body contract with `--max-lines` and `--budget` |
 | `graph` | Traverse the call graph for a symbol (callers/callees/implements) |
+| `schema` | Describe the graph labels, edge types, tiers, and coverage an agent can query |
+| `outline` | List one file's declarations in source order |
+| `symbols` | Search symbols by structure: regex name/QN, kind, file, and degree |
+| `dead-code` | Report callables with no proven production reference |
+| `coverage` | Report index gaps for requested paths/scopes |
+| `cypher` | Run a read-only Cypher query over the indexed graph |
 | `implementations` | Find static implementations of an interface member or type |
 | `find-related` | Find chunks semantically related to a file/line anchor (mirrors the MCP tool) |
 | `query` | Answer a natural-language or identifier question by bounded graph traversal |
@@ -41,13 +49,29 @@ queries.
 | `serve` | Start the MCP server over stdio |
 | `list-languages` | List supported languages with extensions and grammar mappings |
 | `download-models` | Download embedding models to the Hugging Face cache |
-| `daemon` | Manage the local query daemon (AF_UNIX socket or named pipe, start/stop/status/run) |
+| `daemon` | Manage the local query daemon (AF_UNIX socket or named pipe): `start`, `stop`, `status`, `wait`, and foreground `run` |
 
 # Key Functions
 
 - [`build_parser`](../../functions/build_parser.md) — build the full argparse tree with all subcommands.
 - [`main`](../../functions/main.md) — parse arguments and dispatch to the selected subcommand handler.
-- [`cmd_index`](../../functions/cmd_index.md), [`cmd_search`](../../functions/cmd_search.md), [`cmd_symbol`](../../functions/cmd_symbol.md), [`cmd_graph`](../../functions/cmd_graph.md), [`cmd_implementations`](../../functions/cmd_implementations.md), [`cmd_find_related`](../../functions/cmd_find_related.md), [`cmd_query`](../../functions/cmd_query.md), [`cmd_path`](../../functions/cmd_path.md), [`cmd_explain`](../../functions/cmd_explain.md), [`cmd_affected`](../../functions/cmd_affected.md), [`cmd_map`](../../functions/cmd_map.md), [`cmd_metrics`](../../functions/cmd_metrics.md), [`cmd_stats`](../../functions/cmd_stats.md), [`cmd_doctor`](../../functions/cmd_doctor.md), [`cmd_start`](../../functions/cmd_start.md), [`cmd_status`](../../functions/cmd_status.md), [`cmd_serve`](../../functions/cmd_serve.md), [`cmd_list_languages`](../../functions/cmd_list_languages.md), [`cmd_daemon`](../../functions/cmd_daemon.md), [`cmd_daemon_run`](../../functions/cmd_daemon_run.md), [`cmd_download_models`](../../functions/cmd_download_models.md) — one handler per subcommand.
+- [`cmd_index`](../../functions/cmd_index.md), [`cmd_search`](../../functions/cmd_search.md), [`cmd_ask`](../../functions/cmd_ask.md), [`cmd_symbol`](../../functions/cmd_symbol.md), [`cmd_view`](../../functions/cmd_view.md), [`cmd_graph`](../../functions/cmd_graph.md), [`cmd_schema`](../../functions/cmd_schema.md), [`cmd_outline`](../../functions/cmd_outline.md), [`cmd_symbols`](../../functions/cmd_symbols.md), [`cmd_dead_code`](../../functions/cmd_dead_code.md), [`cmd_coverage`](../../functions/cmd_coverage.md), [`cmd_cypher`](../../functions/cmd_cypher.md), [`cmd_implementations`](../../functions/cmd_implementations.md), [`cmd_find_related`](../../functions/cmd_find_related.md), [`cmd_query`](../../functions/cmd_query.md), [`cmd_path`](../../functions/cmd_path.md), [`cmd_explain`](../../functions/cmd_explain.md), [`cmd_affected`](../../functions/cmd_affected.md), [`cmd_map`](../../functions/cmd_map.md), [`cmd_metrics`](../../functions/cmd_metrics.md), [`cmd_stats`](../../functions/cmd_stats.md), [`cmd_doctor`](../../functions/cmd_doctor.md), [`cmd_start`](../../functions/cmd_start.md), [`cmd_status`](../../functions/cmd_status.md), [`cmd_serve`](../../functions/cmd_serve.md), [`cmd_list_languages`](../../functions/cmd_list_languages.md), [`cmd_daemon`](../../functions/cmd_daemon.md), [`cmd_daemon_run`](../../functions/cmd_daemon_run.md), [`cmd_download_models`](../../functions/cmd_download_models.md) — one handler per subcommand.
+
+# Discovery Commands
+
+`schema`, `outline`, `symbols`, `dead-code`, and `coverage` are thin CLI
+wrappers over [`engine.graph_surface`](../engine/graph_surface.md), and `cypher`
+wraps [`engine.cypher`](../engine/cypher.md); `ask` wraps
+[`engine.ask`](../engine/ask.md). Each shares its payload builder with the
+matching MCP tool, so the CLI and the agent see identical shapes. They follow the
+same exit-code contract: `0` when the command produced an answer (including an
+empty result), `2` when nothing matched, a filter was invalid, or the graph was
+not indexed, `3` for an ambiguous symbol reference, and `1` when the index is not
+initialized.
+
+`cypher` bounds its query with `--limit` and `--timeout-ms` and pages with the
+generation-keyed `--cursor` echoed in the payload. `dead-code` reports
+candidates with their caveats and never recommends deleting code.
 
 # Output and Startup Options
 
@@ -65,7 +89,10 @@ accept `--runtime-profile` and `--freshness-mode`
 that invocation. The global
 `--no-startup-check` skips transparent daemon auto-start for a single
 invocation. `symbol`, `graph`, `implementations`, and `find-related`
-forward to the resident daemon by default. `graph` reports edge-resolution
+forward to the resident daemon by default. `daemon wait --timeout <seconds>`
+(default 30) blocks until the daemon is both running and warm, printing
+`ready`, so a script can gate on readiness instead of polling
+`daemon status`. `graph` reports edge-resolution
 coverage and accepts `--explain-unresolved`; a `--no-graph` index is
 reported as `graph_not_indexed`.
 

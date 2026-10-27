@@ -48,6 +48,21 @@ The post-rank abstention gate compares concept coverage and top-vs-median
 score separation against `abstention_coverage_min` and
 `abstention_separation_min`; `allow_weak=True` (CLI `--allow-weak`) bypasses
 that gate for callers that prefer weak evidence over an empty answer.
+`strict=True` is the opposite posture: a low-confidence ranked pool with no
+definition hit and informative coverage below `exact_token_coverage_min`
+becomes a `no_match` envelope, with the weak rows preserved under
+`alternatives` so the caller still sees what was rejected
+(`_strict_abstention`). `_informative_coverage` computes the fraction of
+informative query sub-words present in the top rows.
+
+Exhaustive literal search runs through `rg --json` when `rg` is available
+(`_ripgrep_path`, `_ripgrep_literal`, per-batch deadline
+`CODE_SEARCH_EXHAUSTIVE_RG_TIMEOUT_S`) and falls back to the in-process scan
+(`_read_indexed_file`) on a missing binary or a timeout, so a slow backend
+never yields a partial count. Path-shape signals read the repo-relative
+spelling from `_signal_path`, and a cold vector model is given one bounded
+chance to warm (`_cold_model_retry_worthwhile`, `_wait_for_cold_model`) before
+the reduced lexical answer is served.
 
 # Key Constants
 

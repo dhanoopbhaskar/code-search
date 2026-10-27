@@ -1,10 +1,10 @@
 ---
 type: Overview
 title: "Environment Configuration"
-description: "Full enumeration of CODE_SEARCH_* environment variables: the 168 Settings fields plus the separately-read language-config path."
+description: "Full enumeration of CODE_SEARCH_* environment variables: the 176 Settings fields plus the separately-read language-config path."
 resource: code_search/engine/config.py
 tags: [config, environment, settings]
-generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-27T14:20:00Z }
 status: draft
 sources:
   - resource: code_search/engine/config.py
@@ -184,7 +184,11 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_WATCH_POLL_INTERVAL` | `1.0` | Polling interval (seconds) for the file watcher. |
 | `CODE_SEARCH_FRESHNESS_TTL_SECONDS` | `60.0` | Cache TTL for computed freshness signals; `0` disables caching. The effective TTL is at least twice the last scan duration. |
 | `CODE_SEARCH_MAX_GRAPH_DEPTH` | `5` | Maximum traversal depth for call-graph queries. |
-| `CODE_SEARCH_CALL_GRAPH_LIMIT` | `50` | Maximum nodes returned per call-graph query; defined but currently not consumed by the engine. |
+| `CODE_SEARCH_ENTRY_POINTS` | (empty) | Comma-separated name/glob patterns matched against a symbol's name and FQN; the last rule of the entry-point classifier. |
+| `CODE_SEARCH_GRAPH_CACHE_ENABLED` | `true` | Keep a generation-keyed in-memory adjacency snapshot so a traversal reads arrays instead of issuing one query per node. `false` forces the SQL path. |
+| `CODE_SEARCH_GRAPH_CACHE_MAX_BYTES` | smaller of 256 MB and 25% of available memory | Byte budget for a snapshot; a larger snapshot is refused and the SQL fallback used. `0` disables the cache. |
+| `CODE_SEARCH_GRAPH_CACHE_IDLE_SECONDS` | `900` | Idle expiry for cached snapshots, so a daemon serving several repositories does not keep them all resident. |
+| `CODE_SEARCH_CALL_GRAPH_LIMIT` | `50` | Default rows returned per direction by `graph` and `get_call_neighbors` when the caller does not pass an explicit limit. |
 | `CODE_SEARCH_MAX_RESOLUTION_CANDIDATES` | `10` | Maximum candidates considered when resolving a symbol reference. |
 | `CODE_SEARCH_INDEX_DOC_LINKS` | `false` | Compute offline docs/config-to-code links at index time from the local embedding model; the all-pairs cost is only worthwhile on documentation-heavy repositories. |
 | `CODE_SEARCH_DOC_LINK_TOP_K` | `3` | Maximum documentation/config-to-code links recorded per chunk. |
@@ -292,6 +296,7 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_EXHAUSTIVE_ENABLED` | `true` | Enables exhaustive (every-matching-line) search mode. |
 | `CODE_SEARCH_EXHAUSTIVE_MAX_LINES` | `1000` | Max lines scanned/returned in exhaustive mode. |
 | `CODE_SEARCH_EXHAUSTIVE_CASE_SENSITIVE` | `true` | Case sensitivity for exhaustive-mode matching. |
+| `CODE_SEARCH_EXHAUSTIVE_RG_TIMEOUT_S` | `10` | Per-batch wall-clock bound for the ripgrep backend; a timeout falls back to the in-process scan rather than returning a partial count. |
 | `CODE_SEARCH_ENUMERATE_ENABLED` | `true` | Enables enumerate (list-all-instances) mode. |
 | `CODE_SEARCH_ENUMERATION_INTENT_WORDS` | (built-in list) | Vocabulary that triggers enumerate-mode detection. |
 
@@ -313,6 +318,15 @@ After a build, the indexer rewrites the persisted `subword_stats` and
 `prefix_stats` tables, records `corpus_chunk_count`, `index_layout`, and
 `skipped_large_files`, then optimizes FTS5, runs `ANALYZE`, and truncates the
 WAL. `VACUUM` runs only after a full rebuild.
+
+Per-connection SQLite tuning is deliberately modest so several open connections
+stay inside the process budget:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CODE_SEARCH_SQLITE_CACHE_KIB` | `65536` | Reader/writer page cache per connection, in KiB. |
+| `CODE_SEARCH_SQLITE_MMAP_BYTES` | `268435456` | Memory-mapped I/O window per connection. |
+| `CODE_SEARCH_SQLITE_TEMP_STORE_MEMORY` | `true` | Keep temporary tables (traversal and ranking CTEs) in memory. |
 
 # See Also
 

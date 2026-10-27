@@ -4,7 +4,7 @@ title: "System Overview"
 description: "How code-search's indexing, hybrid search, and serving surfaces (CLI, MCP, daemon) fit together."
 resource: code_search/
 tags: [architecture, overview]
-generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-27T14:20:00Z }
 status: draft
 sources:
   - resource: code_search/
@@ -56,7 +56,15 @@ incremental indexing:
    `CODE_SEARCH_INDEX_DOC_LINKS` enabled, documentation/config chunks are
    linked to code chunks in [`DocLinkStore`](../types/DocLinkStore.md).
 5. Lexical indexing — chunks are also indexed into SQLite FTS5
-   (`chunks_fts`) for [`BM25Search`](../types/BM25Search.md).
+   (`chunks_fts` for scoring, `paths_fts` for path lookup) for
+   [`BM25Search`](../types/BM25Search.md). The scored index holds only the
+   repo-relative FQN, so BM25 weights do not depend on where the repository is
+   checked out.
+6. Derived graph data — [`engine.graph_passes`](../modules/engine/graph_passes.md)
+   then stores canonical FQNs, `TESTS` and interface-dispatch edges,
+   entry-point classification, importance, and symbol degrees; parse failures
+   are published to `index_coverage` and an `index_generation` token identifies
+   the published graph.
 
 ## Hybrid Search Pipeline
 
@@ -113,23 +121,39 @@ external callee leaves unless asked to include them, walks resolved
 `graph_edges` and `module_edges`, and labels every edge `EXTRACTED`,
 `INFERRED`, `AMBIGUOUS`, or `UNRESOLVED` from its persisted resolution tier
 ([`resolve_confidence`](../functions/resolve_confidence.md)).
-It provides `query`, `shortest_path`, `explain`, `impact`, and
-`architecture_report` operations.
+It provides `query`, `shortest_path`, `explain`, `impact`,
+`detect_changes`, and `architecture` (aspect-scoped) operations. Traversal
+reads a generation-keyed in-memory CSR snapshot from
+[`engine.graph_cache`](../modules/engine/graph_cache.md) when one fits the budget
+and falls back to SQL otherwise.
+
+Discovery surfaces sit in front of traversal:
+[`engine.graph_surface`](../modules/engine/graph_surface.md) reports the schema,
+one file's outline, structural symbol matches, dead-code candidates, and index
+coverage; [`engine.cypher`](../modules/engine/cypher.md) accepts a read-only
+Cypher subset for multi-hop and aggregate questions;
+[`engine.ask`](../modules/engine/ask.md) routes a single natural-language
+question to whichever of those surfaces can answer it.
 
 ## Serving Surfaces
 
 - **CLI** ([`cli.main`](../modules/cli/main.md)) — direct one-shot
-  `index`/`search`/`symbol`/`graph`/`implementations`/`find-related`/`query`/`path`/`explain`/`affected`/`map`/`metrics`/`stats`/`doctor`/`start`/`status`
+  `index`/`search`/`ask`/`symbol`/`view`/`graph`/`schema`/`outline`/`symbols`/
+  `dead-code`/`coverage`/`cypher`/`implementations`/`find-related`/`query`/`path`/
+  `explain`/`affected`/`map`/`metrics`/`stats`/`doctor`/`start`/`status`
   commands.
-- **MCP server** ([`MCPServer`](../types/MCPServer.md)) — exposes `search`,
-  `get_symbol_definition`, `get_call_neighbors`, `get_implementations`,
-  `find_related`, `query_graph`, `shortest_path`, `explain_symbol`, and
-  `get_impact` as MCP tools over stdio for AI agent consumption.
+- **MCP server** ([`MCPServer`](../types/MCPServer.md)) — exposes 19 tools over
+  stdio for AI agent consumption, each sharing its payload builder with the CLI
+  and shaped by a `compact`/`outline`/`full` profile and an optional token
+  budget.
 - **Daemon** ([`QueryDaemon`](../types/QueryDaemon.md)) — keeps the index and
   embedding model warm in memory, served over a local IPC endpoint via
   [`DaemonClient`](../types/DaemonClient.md), avoiding per-invocation
-  cold-start cost. A lifecycle-state file reports `starting`/`warming`/
-  `ready`.
+  cold-start cost. The endpoint is an `AF_UNIX` socket on Linux/macOS and a
+  named pipe on Windows, where CPython exposes no `AF_UNIX`. A lifecycle-state
+  file reports `starting`/`warming`/`ready`, and watch mode runs a
+  [`LiveIndexUpdater`](../types/LiveIndexUpdater.md) so the warm process
+  re-indexes edits instead of serving a stale index.
 - **Related-chunk ranking** ([`engine.find_related`](../modules/engine/find_related.md))
   — one implementation shared by the CLI, daemon, and MCP tool.
 

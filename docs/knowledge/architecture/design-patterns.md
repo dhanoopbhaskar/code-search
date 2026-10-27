@@ -4,7 +4,7 @@ title: "Design Patterns"
 description: "Recurring architectural patterns used throughout the code-search engine."
 resource: code_search/
 tags: [architecture, design-patterns]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-27T14:20:00Z }
 status: draft
 sources:
   - resource: code_search/
@@ -83,6 +83,38 @@ fast-path (file size/mtime comparison) with a self-healing re-hash
 fallback triggered only when stats disagree — avoiding full-corpus
 rehashing on every incremental index run while still catching
 mtime-only touches (e.g. from `git checkout`).
+
+# One Rule, Many Surfaces
+
+Several retrieval rules exist exactly once and are called from the CLI, the
+daemon, and the MCP server: `SymbolStore.resolve_name` for name resolution,
+`EdgeStore.get_call_graph_page` for call-graph paging,
+[`find_implementations`](../functions/find_implementations.md) for interface
+lookup, `HybridSearch.search` for ranking, and
+[`engine.graph_surface`](../modules/engine/graph_surface.md)'s payload builders
+for discovery. Transport layers add only freshness signals, audit entries, and
+rendering, which is why `ask`
+([`engine.ask`](../modules/engine/ask.md)) can delegate rather than reimplement
+and cannot disagree with the dedicated surface for the same request.
+
+# Bounded, Generation-Keyed Caching
+
+[`AdjacencyCache`](../types/AdjacencyCache.md) is the general shape of an
+in-process cache here: the key includes the published `index_generation`, a
+committed write invalidates it eagerly, an entry above the byte budget is
+refused rather than kept, and idle entries expire. Crucially the cache is
+**best effort** — every consumer (traversal, paging cursors, Cypher) has a SQL
+path, so a cache failure degrades latency, never correctness.
+
+# Explicit Evidence Boundaries
+
+Answers carry their own limits instead of implying more than the index knows:
+`check_index_coverage` separates `no_recorded_issue` from
+`not_indexed`/`skipped`/`excluded`; `find_dead_code` reports unresolved
+same-name references and test-only usage per row; Cypher results state that
+"absence is not proof of completeness"; and an unsupported Cypher construct or
+architecture aspect returns an error rather than an empty result. The same
+posture appears in search as `strict` abstention and `budget_exceeded`.
 
 # Air-Gap-by-Default Compliance
 
