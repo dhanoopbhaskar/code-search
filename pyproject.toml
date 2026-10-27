@@ -20,6 +20,7 @@ dependencies = [
     "tree-sitter-yaml>=0.7",
     "tree-sitter-go>=0.21",
     "tree-sitter-kotlin>=0.21",
+    "tree-sitter-groovy>=0.1",
     "tree-sitter-toml>=0.7",
     "model2vec>=0.2",
     "rank-bm25>=0.2",
@@ -44,7 +45,6 @@ lang = [
     "tree-sitter-php>=0.21",
     "tree-sitter-cpp>=0.21",
     "tree-sitter-c-sharp>=0.21",
-    "tree-sitter-groovy>=0.1",
 ]
 prod = [
     "prometheus-client>=0.20",

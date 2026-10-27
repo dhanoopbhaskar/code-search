@@ -954,6 +954,10 @@ The CLI and MCP server then:
    lower-bounded at `0.0` but not upper-capped: a strong match can exceed `1.0`,
    so unrelated results do not all collapse to `1.00` and lose discrimination.
    Use `--explain-ranking` to print the components behind each score.
+   Every path-shape signal here (usage penalty, docs/config tiers, module
+   cohesion, vendor/minified demotion) is evaluated against the repo-relative
+   path, never the checkout location, so identical corpora rank identically
+   wherever they are cloned.
 2. **Redact** (`Redactor.redact_results`) — pattern-based masking of API keys,
    JWTs, AWS keys, PEM blocks, passwords, bearer tokens, GitHub/Slack/npm
    tokens, DB connection strings, Spring property secrets; replaces matches with
@@ -971,12 +975,21 @@ Every ranked response carries the truthful path it took:
 
 | Field | Cold process | Warm process |
 |---|---|---|
-| `ranked_path` | `lexical_reduced` | `hybrid` |
-| `model_status.state` | `initializing` | `warm` |
-| `warmup_state` | `warming` | `warm` |
-| `degraded_reason` | `warming` | `null` |
-| `semantic_contribution` | `deferred` | `semantic` / `lexical_only` |
+| `ranked_path` | `lexical_reduced`, or `hybrid` after the bounded model wait | `hybrid` |
+| `model_status.state` | `initializing`, or `warm` after the wait | `warm` |
+| `warmup_state` | `warming`, or `warm` after the wait | `warm` |
+| `degraded_reason` | `warming`, or `null` after the wait | `null` |
+| `semantic_contribution` | `deferred`, or `semantic` after the wait | `semantic` / `lexical_only` |
 | `vector_health` | `true` (index has vectors) | `true` |
+
+A cold request is served from the labelled `lexical_reduced` path only when the
+lexical arm alone justifies the answer. When the query's exact-token coverage
+is too low for that (long natural-language paraphrases) and the gate rejection
+is caused by the still-loading model, the request waits up to
+`CODE_SEARCH_WARMUP_WAIT_S` for the background load and then fuses the dense
+arm, reporting `hybrid`/`warm` with no degraded reason. An out-of-domain query
+never spends that budget: it would still be rejected once the model was warm,
+so it returns its honest empty result immediately.
 
 The daemon exists to remove the cold penalty: unless `--no-startup-check` is
 given, `search` starts the resident socket daemon when none is running and

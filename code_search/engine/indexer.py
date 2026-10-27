@@ -51,6 +51,7 @@ from code_search.engine.graph_passes import (
 )
 from code_search.engine.parser import ASTParser
 from code_search.engine.parser import _is_lockfile as _is_lockfile_path
+from code_search.engine.paths import repo_relative_path
 from code_search.engine.search import identify_subwords
 from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
@@ -481,6 +482,38 @@ def _resolve_chunk_fqn(chunk: dict[str, Any], symbols: list[dict[str, Any]]) -> 
     content = chunk.get("content", "")
     name_hint = content.strip().split("\n")[0][:40] if content else "unknown"
     return f"{file_path}::{name_hint}"
+
+
+def _relative_path(file_path: str, root_path: Path | None) -> str:
+    """Return *file_path* relative to *root_path*, or unchanged when outside it."""
+    return repo_relative_path(file_path, root_path)
+
+
+def _relative_fqn(fqn: str, file_path: str, root_path: Path | None) -> str:
+    """Return *fqn* with its absolute file-path prefix made repo-relative.
+
+    Symbol FQNs embed the absolute file path for path-prefixed languages and
+    raw chunks (``{file_path}::{symbol}``). The keyword index stores this
+    relative form so its length normalisation cannot depend on where the
+    repository was checked out. Dotted FQNs (``com.example.Type``) carry no
+    path and are returned unchanged.
+
+    Args:
+        fqn: The absolute-path FQN.
+        file_path: The chunk's absolute file path.
+        root_path: The repository root, or ``None`` when unknown.
+
+    Returns:
+        The repo-relative FQN when it can be derived, else *fqn*.
+    """
+    if not fqn or not file_path or root_path is None:
+        return fqn
+    if not fqn.startswith(file_path):
+        return fqn
+    relative = _relative_path(file_path, root_path)
+    if relative == file_path:
+        return fqn
+    return relative + fqn[len(file_path) :]
 
 
 class IndexLock:
@@ -1056,6 +1089,7 @@ class IndexOrchestrator:
                         conn.execute("DELETE FROM symbols;")
                         conn.execute("DELETE FROM code_chunks;")
                         conn.execute("DELETE FROM chunks_fts;")
+                        conn.execute("DELETE FROM paths_fts;")
                         conn.execute("DELETE FROM file_checksums;")
                         conn.execute("DELETE FROM module_edges;")
                         conn.execute("DELETE FROM symbol_rationale;")
@@ -1127,7 +1161,6 @@ class IndexOrchestrator:
                                 orphan_chunk_ids + orphan_chunk_ids,
                             )
                         conn.execute("DELETE FROM code_chunks WHERE file_path = ?;", (orphan,))
-                        conn.execute("DELETE FROM chunks_fts WHERE file_path = ?;", (orphan,))
                         orphan_relative = self._relative_module_path(orphan, root_path)
                         conn.execute(
                             "DELETE FROM module_edges WHERE source_path = ? OR target_path = ?;",
@@ -1196,7 +1229,6 @@ class IndexOrchestrator:
                                 old_chunk_ids + old_chunk_ids,
                             )
                         conn.execute("DELETE FROM code_chunks WHERE file_path = ?;", (fp_str,))
-                        conn.execute("DELETE FROM chunks_fts WHERE file_path = ?;", (fp_str,))
                         changed_relative = self._relative_module_path(fp_str, root_path)
                         conn.execute(
                             "DELETE FROM module_edges WHERE source_path = ? OR target_path = ?;",
@@ -1385,7 +1417,9 @@ class IndexOrchestrator:
                             self._rationale_store.insert_batch(rationale_rows, conn=wconn)
 
                         for chunk in chunks:
-                            chunk_id = self._insert_chunk(chunk, b"", conn=wconn)
+                            chunk_id = self._insert_chunk(
+                                chunk, b"", conn=wconn, root_path=root_path
+                            )
                             if chunk_id is not None:
                                 total_chunks += 1
                                 chunk["_chunk_id"] = chunk_id
@@ -1783,11 +1817,13 @@ class IndexOrchestrator:
         with self._db.connect() as conn:
             code_count = conn.execute("SELECT COUNT(*) AS n FROM code_chunks;").fetchone()["n"]
             fts_count = conn.execute("SELECT COUNT(*) AS n FROM chunks_fts;").fetchone()["n"]
-        if code_count != fts_count:
+            paths_count = conn.execute("SELECT COUNT(*) AS n FROM paths_fts;").fetchone()["n"]
+        if code_count != fts_count or code_count != paths_count:
             logger.info(
-                "FTS parity mismatch (code_chunks=%s, chunks_fts=%s); rebuilding",
+                "FTS parity mismatch (code_chunks=%s, chunks_fts=%s, paths_fts=%s); rebuilding",
                 code_count,
                 fts_count,
+                paths_count,
             )
             return self._db.rebuild_fts()
         return int(fts_count)
@@ -1821,7 +1857,11 @@ class IndexOrchestrator:
         )
 
     def _insert_chunk(
-        self, chunk: dict[str, Any], _source_bytes: bytes, conn: sqlite3.Connection | None = None
+        self,
+        chunk: dict[str, Any],
+        _source_bytes: bytes,
+        conn: sqlite3.Connection | None = None,
+        root_path: Path | None = None,
     ) -> int | None:
         """Insert a single chunk row, computing its subword tokens + checksum.
 
@@ -1836,6 +1876,8 @@ class IndexOrchestrator:
             _source_bytes: Unused; retained for API compatibility.
             conn: An existing writer connection to reuse (no commit is issued);
                 when ``None`` a fresh transaction is opened and committed.
+            root_path: The repository root, used to store the FQN relative to
+                it so the keyword scorer never sees the checkout location.
 
         Returns:
             The new/replaced row id, or ``None`` when the insert fails.
@@ -1848,6 +1890,8 @@ class IndexOrchestrator:
             chunk.get("content_type") or classify_content_type(chunk.get("file_path", "")).value
         )
         is_test = 1 if _is_test_file(chunk.get("file_path", "")) else 0
+        fqn_rel = _relative_fqn(chunk.get("fqn", ""), chunk.get("file_path", ""), root_path)
+        path_rel = _relative_path(chunk.get("file_path", ""), root_path)
         if conn is not None:
             return self._insert_chunk_row(
                 conn,
@@ -1858,6 +1902,8 @@ class IndexOrchestrator:
                 tokens_hash,
                 content_type,
                 is_test,
+                fqn_rel,
+                path_rel,
             )
         with self._db.write_transaction() as owned:
             return self._insert_chunk_row(
@@ -1869,6 +1915,8 @@ class IndexOrchestrator:
                 tokens_hash,
                 content_type,
                 is_test,
+                fqn_rel,
+                path_rel,
             )
 
     def _insert_chunk_row(
@@ -1881,18 +1929,22 @@ class IndexOrchestrator:
         tokens_hash: str,
         content_type: str,
         is_test: int = 0,
+        fqn_rel: str = "",
+        path_rel: str = "",
     ) -> int | None:
         """Upsert one ``code_chunks`` row over *conn* and return its row id."""
         try:
             cursor = conn.execute(
                 "INSERT OR REPLACE INTO code_chunks "
-                "(fqn, file_path, line_start, line_end, "
+                "(fqn, fqn_rel, path_rel, file_path, line_start, line_end, "
                 "content, language, is_definition, chunk_type, "
                 "chunk_node_type, subwords, declared_rules, tokens_checksum, "
                 "content_type, is_test) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
                 (
                     chunk.get("fqn", ""),
+                    fqn_rel,
+                    path_rel,
                     chunk["file_path"],
                     chunk["line_start"],
                     chunk["line_end"],
@@ -1946,7 +1998,6 @@ class IndexOrchestrator:
                     sym_ids + sym_ids,
                 )
             conn.execute("DELETE FROM code_chunks WHERE file_path = ?;", (file_path,))
-            conn.execute("DELETE FROM chunks_fts WHERE file_path = ?;", (file_path,))
             conn.execute("DELETE FROM symbols WHERE file_path = ?;", (file_path,))
             conn.execute("DELETE FROM file_checksums WHERE file_path = ?;", (file_path,))
             removed = len(chunk_ids) + len(sym_ids)

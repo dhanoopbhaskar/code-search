@@ -80,7 +80,7 @@ def test_graph_schema_reports_labels_edges_and_generation(graph_db: GraphDatabas
 
     assert payload["index_generation"] == "gen-1"
     assert payload["index_root"] == "/repo"
-    assert payload["schema_version"] == 18
+    assert payload["schema_version"] == 19
     assert payload["node_labels"] == {"class": 1, "function": 2, "method": 1}
     assert payload["synthetic_labels"]["file"] == 2
     assert payload["edge_types"]["CALLS"]["total"] == 2

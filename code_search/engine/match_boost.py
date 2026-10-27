@@ -365,7 +365,7 @@ def filename_candidates(db: Any, context: QueryNameContext, content_scope: str) 
     scope in the same query, then verifies normalized equality in Python.
 
     Args:
-        db: The graph database exposing ``chunks_fts`` and ``code_chunks``.
+        db: The graph database exposing ``paths_fts`` and ``code_chunks``.
         context: The request-scoped name context.
         content_scope: The active content scope (``all``/``code``/``config``/
             ``docs``/``code_focused``).
@@ -380,7 +380,7 @@ def filename_candidates(db: Any, context: QueryNameContext, content_scope: str) 
     tokens = [w for w in context.subwords if w]
     if not tokens:
         tokens = [context.normalized]
-    match_expr = "file_path : (" + " OR ".join(tokens) + ")"
+    match_expr = " OR ".join(tokens)
     if content_scope == "all":
         content_clause = ""
     elif content_scope == DEFAULT_CONTENT_SCOPE:
@@ -394,8 +394,8 @@ def filename_candidates(db: Any, context: QueryNameContext, content_scope: str) 
         with db.connect() as conn:
             rows = conn.execute(
                 "SELECT f.rowid AS id, c.file_path AS file_path "
-                "FROM chunks_fts AS f JOIN code_chunks AS c ON c.id = f.rowid "
-                "WHERE chunks_fts MATCH ?" + content_clause + " ORDER BY f.rowid;",
+                "FROM paths_fts AS f JOIN code_chunks AS c ON c.id = f.rowid "
+                "WHERE paths_fts MATCH ?" + content_clause + " ORDER BY f.rowid;",
                 params,
             ).fetchall()
     except Exception as exc:

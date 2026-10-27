@@ -34,7 +34,7 @@ from code_search.engine.symbol_resolution import (
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 #: Graph-semantics version, separate from the SQLite schema version. Bump this
 #: when an index must be rebuilt because the meaning of stored rows changed
@@ -142,6 +142,12 @@ CODE_CHUNKS_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS code_chunks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     fqn TEXT,
+    -- Repo-relative FQN and path, indexed instead of ``fqn``/``file_path``
+    -- so the keyword scorer never sees the checkout location. Nullable: rows
+    -- written outside the indexer fall back to the absolute value in the FTS
+    -- trigger.
+    fqn_rel TEXT,
+    path_rel TEXT,
     file_path TEXT NOT NULL,
     line_start INTEGER NOT NULL,
     line_end INTEGER NOT NULL,
@@ -198,8 +204,8 @@ CHUNKS_FTS_DDL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     content,
     subwords,
-    fqn,
-    file_path,
+    fqn_rel,
+    path_rel,
     declared_rules,
     content_type,
     content=code_chunks,
@@ -207,39 +213,75 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
 );
 """
 
-# Names of the FTS5 external-content maintenance triggers, dropped and
-# recreated wholesale when a full build suspends per-row maintenance.
-CHUNKS_FTS_TRIGGER_NAMES = ("chunks_fts_ai", "chunks_fts_ad", "chunks_fts_au")
+# Names of the FTS5 maintenance triggers, dropped and recreated wholesale when
+# a full build suspends per-row maintenance.
+CHUNKS_FTS_TRIGGER_NAMES = (
+    "chunks_fts_ai",
+    "chunks_fts_ad",
+    "chunks_fts_au",
+    "paths_fts_ai",
+    "paths_fts_ad",
+    "paths_fts_au",
+)
 
 # FTS5 external-content maintenance triggers: keep chunks_fts in sync with
 # code_chunks on every insert/delete/update so the keyword index cannot drift.
 CHUNKS_FTS_TRIGGERS = [
     """
     CREATE TRIGGER IF NOT EXISTS chunks_fts_ai AFTER INSERT ON code_chunks BEGIN
-        INSERT INTO chunks_fts(rowid, content, subwords, fqn, file_path, declared_rules,
+        INSERT INTO chunks_fts(rowid, content, subwords, fqn_rel, path_rel, declared_rules,
                                content_type)
-        VALUES (new.id, new.content, new.subwords, new.fqn, new.file_path,
-                new.declared_rules, new.content_type);
+        VALUES (new.id, new.content, new.subwords, COALESCE(new.fqn_rel, new.fqn),
+                COALESCE(new.path_rel, new.file_path), new.declared_rules, new.content_type);
     END;
     """,
     """
     CREATE TRIGGER IF NOT EXISTS chunks_fts_ad AFTER DELETE ON code_chunks BEGIN
-        INSERT INTO chunks_fts(chunks_fts, rowid, content, subwords, fqn, file_path,
+        INSERT INTO chunks_fts(chunks_fts, rowid, content, subwords, fqn_rel, path_rel,
                                declared_rules, content_type)
-        VALUES ('delete', old.id, old.content, old.subwords, old.fqn, old.file_path,
-                old.declared_rules, old.content_type);
+        VALUES ('delete', old.id, old.content, old.subwords, COALESCE(old.fqn_rel, old.fqn),
+                COALESCE(old.path_rel, old.file_path), old.declared_rules, old.content_type);
     END;
     """,
     """
     CREATE TRIGGER IF NOT EXISTS chunks_fts_au AFTER UPDATE ON code_chunks BEGIN
-        INSERT INTO chunks_fts(chunks_fts, rowid, content, subwords, fqn, file_path,
+        INSERT INTO chunks_fts(chunks_fts, rowid, content, subwords, fqn_rel, path_rel,
                                declared_rules, content_type)
-        VALUES ('delete', old.id, old.content, old.subwords, old.fqn, old.file_path,
-                old.declared_rules, old.content_type);
-        INSERT INTO chunks_fts(rowid, content, subwords, fqn, file_path, declared_rules,
+        VALUES ('delete', old.id, old.content, old.subwords, COALESCE(old.fqn_rel, old.fqn),
+                COALESCE(old.path_rel, old.file_path), old.declared_rules, old.content_type);
+        INSERT INTO chunks_fts(rowid, content, subwords, fqn_rel, path_rel, declared_rules,
                                content_type)
-        VALUES (new.id, new.content, new.subwords, new.fqn, new.file_path,
-                new.declared_rules, new.content_type);
+        VALUES (new.id, new.content, new.subwords, COALESCE(new.fqn_rel, new.fqn),
+                COALESCE(new.path_rel, new.file_path), new.declared_rules, new.content_type);
+    END;
+    """,
+]
+
+# File paths are indexed separately from the scored text. FTS5 length
+# normalisation counts every token in a row, so keeping the absolute path in
+# ``chunks_fts`` made BM25 scores depend on where the repository was checked
+# out (a longer ancestor directory silently reweighted every chunk). This
+# table is used only for exact filename candidate lookup, where no scoring
+# happens.
+PATHS_FTS_DDL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS paths_fts USING fts5(file_path);
+"""
+
+PATHS_FTS_TRIGGERS = [
+    """
+    CREATE TRIGGER IF NOT EXISTS paths_fts_ai AFTER INSERT ON code_chunks BEGIN
+        INSERT INTO paths_fts(rowid, file_path) VALUES (new.id, new.file_path);
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS paths_fts_ad AFTER DELETE ON code_chunks BEGIN
+        DELETE FROM paths_fts WHERE rowid = old.id;
+    END;
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS paths_fts_au AFTER UPDATE ON code_chunks BEGIN
+        DELETE FROM paths_fts WHERE rowid = old.id;
+        INSERT INTO paths_fts(rowid, file_path) VALUES (new.id, new.file_path);
     END;
     """,
 ]
@@ -412,6 +454,8 @@ ALL_DDLS = [
     *STATS_INDEXES,
     CHUNKS_FTS_DDL,
     *CHUNKS_FTS_TRIGGERS,
+    PATHS_FTS_DDL,
+    *PATHS_FTS_TRIGGERS,
     FILE_CHECKSUMS_TABLE_DDL,
     INDEX_COVERAGE_TABLE_DDL,
     *INDEX_COVERAGE_INDEXES,
@@ -807,10 +851,19 @@ class GraphDatabase:
                 # Additive v15 migration must run before the composite index on
                 # (is_test, content_type) is created on an existing database.
                 columns = conn.execute("PRAGMA table_info(code_chunks);").fetchall()
-                if columns and "is_test" not in {col["name"] for col in columns}:
+                column_names = {col["name"] for col in columns} if columns else set()
+                if columns and "is_test" not in column_names:
                     conn.execute(
                         "ALTER TABLE code_chunks ADD COLUMN is_test INTEGER NOT NULL DEFAULT 0;"
                     )
+                if columns and "fqn_rel" not in column_names:
+                    # The FTS triggers below reference these columns, so they
+                    # must exist before the schema DDL runs. Migration v19
+                    # backfills them and rebuilds the keyword index.
+                    conn.execute("ALTER TABLE code_chunks ADD COLUMN fqn_rel TEXT;")
+                    conn.execute("ALTER TABLE code_chunks ADD COLUMN path_rel TEXT;")
+                elif columns and "path_rel" not in column_names:
+                    conn.execute("ALTER TABLE code_chunks ADD COLUMN path_rel TEXT;")
                 for ddl in ALL_DDLS:
                     conn.execute(ddl)
                 row = conn.execute(
@@ -898,6 +951,8 @@ class GraphDatabase:
                             self._migrate_v17(conn)
                         if existing_version <= 17:
                             self._migrate_v18(conn)
+                        if existing_version <= 18:
+                            self._migrate_v19(conn)
                         conn.execute(
                             "UPDATE index_metadata SET value = ? WHERE key = 'index_version';",
                             (str(SCHEMA_VERSION),),
@@ -905,6 +960,21 @@ class GraphDatabase:
                         conn.execute(
                             "UPDATE index_metadata SET value = 'stale' WHERE key = 'index_status';"
                         )
+                # Self-heal derived indexes: a database written by an older or
+                # interrupted build may carry a keyword index without the
+                # relative-FQN column or lack the separate path index. Rebuild
+                # both from the base table so path/FQN lookup never silently
+                # degrades.
+                fts_columns = {
+                    r["name"] for r in conn.execute("PRAGMA table_info(chunks_fts);").fetchall()
+                }
+                paths_table = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'paths_fts';"
+                ).fetchone()
+                if "path_rel" not in fts_columns or paths_table is None:
+                    logger.info("Rebuilding keyword indexes for the relative-path layout")
+                    self._backfill_relative_fqns(conn)
+                    self._rebuild_scored_fts(conn)
                 self._ensure_unresolved_edge_index(conn)
                 self._ensure_v18_indexes(conn)
                 self._drop_redundant_edge_indexes(conn)
@@ -989,10 +1059,10 @@ class GraphDatabase:
                 self._local.conn = None
 
     def set_fts_triggers(self, enabled: bool) -> None:
-        """Enable or disable the ``chunks_fts`` maintenance triggers.
+        """Enable or disable the keyword and path FTS maintenance triggers.
 
         Full builds suspend the triggers while bulk-inserting ``code_chunks``
-        and rebuild the keyword index wholesale afterwards, so the per-row
+        and rebuild the keyword indexes wholesale afterwards, so the per-row
         trigger work is redundant. Incremental indexing relies on the triggers
         and keeps them enabled. Dropping is idempotent and self-heals on the
         next :meth:`initialize` (the triggers are recreated by the schema DDL).
@@ -1006,7 +1076,7 @@ class GraphDatabase:
                 for name in CHUNKS_FTS_TRIGGER_NAMES:
                     conn.execute(f"DROP TRIGGER IF EXISTS {name};")
                 if enabled:
-                    for trigger in CHUNKS_FTS_TRIGGERS:
+                    for trigger in [*CHUNKS_FTS_TRIGGERS, *PATHS_FTS_TRIGGERS]:
                         conn.execute(trigger)
                 conn.commit()
             except Exception:
@@ -1203,6 +1273,59 @@ class GraphDatabase:
         index_root = Path(root_row["value"]) if root_row is not None else None
         GraphDatabase._backfill_canonical_fqns(conn, index_root)
         GraphDatabase._backfill_symbol_test_flags(conn)
+
+    def _migrate_v19(self, conn: sqlite3.Connection) -> None:
+        """Migrate a v18 (or older) database to schema v19.
+
+        Makes the keyword index independent of the checkout location. FTS5
+        length normalisation counts every token in a row, so the absolute
+        ``file_path`` and the path-prefixed ``fqn`` made BM25 scores depend on
+        where the repository lived. The scored index keeps only
+        ``code_chunks.fqn_rel`` (repo-relative), path lookup moves to the
+        separate ``paths_fts`` table, and both are rebuilt.
+        """
+        logger.info("Migrating schema <= v18 -> v19")
+        GraphDatabase._backfill_relative_fqns(conn)
+        GraphDatabase._rebuild_scored_fts(conn)
+
+    @staticmethod
+    def _backfill_relative_fqns(conn: sqlite3.Connection) -> None:
+        """Populate ``fqn_rel``/``path_rel`` from the recorded index root."""
+        root_row = conn.execute(
+            "SELECT value FROM index_metadata WHERE key = 'index_root';"
+        ).fetchone()
+        if root_row is not None and root_row["value"]:
+            root = str(root_row["value"]).rstrip("/\\")
+            conn.execute(
+                "UPDATE code_chunks "
+                "SET fqn_rel = ltrim(substr(fqn, length(?) + 1), '/\\') "
+                "WHERE substr(fqn, 1, length(?)) = ?;",
+                (root, root, root),
+            )
+            conn.execute(
+                "UPDATE code_chunks "
+                "SET path_rel = ltrim(substr(file_path, length(?) + 1), '/\\') "
+                "WHERE substr(file_path, 1, length(?)) = ?;",
+                (root, root, root),
+            )
+        conn.execute("UPDATE code_chunks SET fqn_rel = fqn WHERE fqn_rel IS NULL;")
+        conn.execute("UPDATE code_chunks SET path_rel = file_path WHERE path_rel IS NULL;")
+
+    @staticmethod
+    def _rebuild_scored_fts(conn: sqlite3.Connection) -> None:
+        """Recreate and repopulate the keyword and path indexes."""
+        for name in CHUNKS_FTS_TRIGGER_NAMES:
+            conn.execute(f"DROP TRIGGER IF EXISTS {name};")
+        conn.execute("DROP TABLE IF EXISTS chunks_fts;")
+        conn.execute("DROP TABLE IF EXISTS paths_fts;")
+        conn.execute(CHUNKS_FTS_DDL)
+        conn.execute(PATHS_FTS_DDL)
+        for trigger in [*CHUNKS_FTS_TRIGGERS, *PATHS_FTS_TRIGGERS]:
+            conn.execute(trigger)
+        conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild');")
+        conn.execute(
+            "INSERT INTO paths_fts(rowid, file_path) SELECT id, file_path FROM code_chunks;"
+        )
 
     @staticmethod
     def _edges_need_widening(conn: sqlite3.Connection) -> bool:
@@ -1432,16 +1555,21 @@ class GraphDatabase:
             conn.execute(index)
 
     def rebuild_fts(self) -> int:
-        """Clear and repopulate ``chunks_fts`` from ``code_chunks``.
+        """Clear and repopulate the keyword and path indexes from ``code_chunks``.
 
-        Uses the FTS5 ``rebuild`` command, which resyncs the external-content
-        index from the content table, then returns the resulting row count so
-        callers can verify ``COUNT(code_chunks) == COUNT(chunks_fts)`` parity.
+        Uses the FTS5 ``rebuild`` command for the external-content keyword
+        index and repopulates ``paths_fts`` from the same rows, then returns
+        the keyword row count so callers can verify
+        ``COUNT(code_chunks) == COUNT(chunks_fts)`` parity.
         """
         with self._write_lock:
             conn = self._create_connection()
             try:
                 conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild');")
+                conn.execute("DELETE FROM paths_fts;")
+                conn.execute(
+                    "INSERT INTO paths_fts(rowid, file_path) SELECT id, file_path FROM code_chunks;"
+                )
                 conn.commit()
                 row = conn.execute("SELECT COUNT(*) AS cnt FROM chunks_fts;").fetchone()
                 count = int(row["cnt"]) if row else 0
@@ -1472,6 +1600,7 @@ class GraphDatabase:
             conn = self._create_connection()
             try:
                 conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('optimize');")
+                conn.execute("INSERT INTO paths_fts(paths_fts) VALUES('optimize');")
                 conn.execute("ANALYZE;")
                 conn.commit()
                 if full_rebuild:

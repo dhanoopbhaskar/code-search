@@ -141,7 +141,7 @@ def test_scratch_fixture_no_build_output_chunks(
             "SELECT COUNT(*) AS n FROM code_chunks WHERE file_path LIKE '%/target/%';"
         ).fetchone()["n"]
         target_fts = conn.execute(
-            "SELECT COUNT(*) AS n FROM chunks_fts WHERE file_path LIKE '%/target/%';"
+            "SELECT COUNT(*) AS n FROM paths_fts WHERE file_path LIKE '%/target/%';"
         ).fetchone()["n"]
 
     assert target_chunks == 0

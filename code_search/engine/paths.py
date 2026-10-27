@@ -1,18 +1,50 @@
-"""Path normalization and stored-path resolution for ``find_related``.
+"""Path normalization and stored-path resolution.
 
 Fixes the input boundary of the ``find_related`` MCP tool: a caller-supplied
 ``file_path`` may be absolute or project-relative, and must resolve to the
 same indexed location (the stored ``code_chunks.file_path`` spelling) that the
-indexer wrote. All functions are pure and stdlib-only (``pathlib``/``os``).
+indexer wrote. Also derives the repo-relative spelling used wherever a ranking
+signal must not see the checkout location. All functions are pure and
+stdlib-only (``pathlib``/``os``).
 """
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 IndexConnection = sqlite3.Connection
+
+
+def repo_relative_path(path: str | Path, root: Path | None) -> str:
+    """Return *path* relative to *root*, or unchanged when it lies outside it.
+
+    Path-shape scoring signals (substring and segment matches on the stored
+    path) must not observe the checkout location: a repository cloned into a
+    directory named after a query term would otherwise floor every chunk's
+    score. Callers pass the indexed root so those signals see the same
+    repo-relative spelling wherever the checkout lives.
+
+    Args:
+        path: A stored path, usually absolute.
+        root: The indexed repository root, or ``None`` when unknown.
+
+    Returns:
+        The POSIX-spelled relative path, or *path* unchanged when it is empty
+        or does not sit inside *root*.
+    """
+    text = str(path or "")
+    if not text or root is None:
+        return text
+    try:
+        relative = os.path.relpath(text, root)
+    except ValueError:
+        return text
+    if relative == "." or relative == ".." or relative.startswith(f"..{os.sep}"):
+        return text
+    return Path(relative).as_posix()
 
 
 def normalize_indexed_path(path: str, index_root: Path) -> Path | None:
