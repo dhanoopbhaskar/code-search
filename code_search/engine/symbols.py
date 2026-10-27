@@ -3375,23 +3375,31 @@ class SymbolStore:
             A list of symbol records (as ``dict``) for the file, possibly
             empty.
         """
-        file_path = portable_path(file_path)
+        # Try the portable spelling first, then the caller's exact spelling so
+        # rows written with native separators (legacy or externally seeded
+        # indexes) still resolve.
+        spellings = list(dict.fromkeys((portable_path(file_path), str(file_path))))
         with self._db.connect() as conn:
+            for spelling in spellings:
+                rows = conn.execute(
+                    "SELECT * FROM symbols WHERE file_path = ? ORDER BY line_start;",
+                    (spelling,),
+                ).fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
+            for spelling in spellings:
+                rows = conn.execute(
+                    "SELECT * FROM symbols WHERE file_path LIKE '%' || ? ORDER BY line_start;",
+                    (spelling,),
+                ).fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
+            name = portable_path(file_path).rsplit("/", 1)[-1]
             rows = conn.execute(
-                "SELECT * FROM symbols WHERE file_path = ? ORDER BY line_start;",
-                (file_path,),
+                "SELECT * FROM symbols WHERE file_path LIKE ? OR file_path LIKE ? "
+                "ORDER BY line_start;",
+                (f"%/{name}", f"%\\{name}"),
             ).fetchall()
-            if not rows:
-                rows = conn.execute(
-                    "SELECT * FROM symbols WHERE file_path LIKE '%' || ? ORDER BY line_start;",
-                    (file_path,),
-                ).fetchall()
-            if not rows and "/" in file_path:
-                suffix = "/" + file_path.rsplit("/", 1)[-1] if "/" in file_path else file_path
-                rows = conn.execute(
-                    "SELECT * FROM symbols WHERE file_path LIKE '%' || ? ORDER BY line_start;",
-                    (suffix,),
-                ).fetchall()
             return [dict(r) for r in rows]
 
     def get_by_id(self, symbol_id: int) -> dict[str, Any] | None:
