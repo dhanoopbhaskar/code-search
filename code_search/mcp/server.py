@@ -1,6 +1,6 @@
 """Model Context Protocol (MCP) server — exposes code-search via stdio transport.
 
-Registers nine tools:
+Registers these tools:
   - ``search`` — hybrid keyword + semantic search.
   - ``get_symbol_definition`` — look up a symbol by FQN.
   - ``get_call_neighbors`` — traverse callers/callees.
@@ -10,6 +10,16 @@ Registers nine tools:
   - ``shortest_path`` — shortest path between two symbols.
   - ``explain_symbol`` — symbol metadata, relations, rationale, and doc links.
   - ``get_impact`` — symbols impacted by changed files.
+  - ``get_graph_schema`` — labels, edge types, tiers, coverage, generation.
+  - ``get_file_outline`` — declarations of one file in source order.
+  - ``search_symbols`` — structural search by regex, kind, file, and degree.
+  - ``find_dead_code`` — callables with no proven production reference.
+  - ``get_architecture`` — bounded architecture aspects.
+  - ``check_index_coverage`` — distinguish "not found" from "not indexed".
+  - ``detect_changes`` — git/explicit changes → files, impact, or tests.
+  - ``cypher_query`` — read-only Cypher subset for multi-hop/aggregate questions.
+  - ``ask`` — route one question to the right surface and return one answer.
+  - ``doctor`` — index, model, daemon, and graph health in one call.
 """
 
 from __future__ import annotations
@@ -71,6 +81,121 @@ def _serialize(payload: dict[str, Any], freshness: Any | None) -> str:
     return json.dumps(payload, default=str)
 
 
+#: Character-per-token approximation used by MCP output budgets.
+_CHARS_PER_TOKEN = 4
+
+
+def _payload_chars(payload: Any) -> int:
+    """Return the serialized character length of *payload*."""
+    return len(json.dumps(payload, default=str))
+
+
+def _apply_profile(payload: dict[str, Any], profile: str) -> dict[str, Any]:
+    """Apply a ``compact``/``outline`` profile to a tool payload.
+
+    ``outline`` removes inline source and content from every row so a caller can
+    inspect structure without paying for bodies. ``full`` and ``compact`` leave
+    the payload unchanged; dedicated tools already choose their own compact
+    shape.
+
+    Args:
+        payload: The tool payload (mutated in place).
+        profile: ``compact``, ``outline``, or ``full``.
+
+    Returns:
+        The same payload for call chaining.
+    """
+    if profile != "outline":
+        return payload
+    omitted = False
+    stack: list[Any] = [payload]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key in ("content", "source_code"):
+                if node.get(key):
+                    node[key] = ""
+                    node["source_omitted"] = True
+                    omitted = True
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    if omitted:
+        payload["source_omitted"] = True
+    return payload
+
+
+def _fit_output_budget(payload: dict[str, Any], max_output_tokens: int | None) -> dict[str, Any]:
+    """Trim list rows until *payload* fits a soft token budget.
+
+    Rows are dropped from the end of the largest list first, so the most
+    relevant (front) rows survive. ``truncated`` is set when anything is
+    removed; ``budget_exceeded`` marks a payload that could not fit even after
+    every list was emptied.
+
+    Args:
+        payload: The tool payload (mutated in place).
+        max_output_tokens: Soft budget; ``None`` or ``<= 0`` disables trimming.
+
+    Returns:
+        The same payload for call chaining.
+    """
+    if not max_output_tokens or max_output_tokens <= 0:
+        return payload
+    limit = max(200, int(max_output_tokens) * _CHARS_PER_TOKEN)
+    if _payload_chars(payload) <= limit:
+        return payload
+
+    lists: list[tuple[dict[str, Any], str]] = []
+
+    def _collect(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if isinstance(value, list) and value:
+                    lists.append((node, key))
+                else:
+                    _collect(value)
+        elif isinstance(node, list):
+            for item in node:
+                _collect(item)
+
+    _collect(payload)
+    lists.sort(key=lambda item: len(item[0][item[1]]), reverse=True)
+    for container, key in lists:
+        while container[key] and _payload_chars(payload) > limit:
+            container[key].pop()
+            payload["truncated"] = True
+    if _payload_chars(payload) > limit:
+        for node_key in ("explanation", "coverage", "paging"):
+            if payload.get(node_key):
+                payload.pop(node_key)
+                payload["truncated"] = True
+    if _payload_chars(payload) > limit:
+        payload["budget_exceeded"] = True
+    return payload
+
+
+def _finish(
+    payload: dict[str, Any],
+    *,
+    max_output_tokens: int | None = None,
+    profile: str = "compact",
+) -> str:
+    """Apply profile/budget shaping and serialize a tool payload.
+
+    Args:
+        payload: The tool payload.
+        max_output_tokens: Optional soft output budget.
+        profile: ``compact`` (default), ``outline``, or ``full``.
+
+    Returns:
+        The JSON string returned to the MCP client.
+    """
+    _apply_profile(payload, profile)
+    _fit_output_budget(payload, max_output_tokens)
+    return json.dumps(payload, default=str)
+
+
 def _definition_payload(
     symbol_store: SymbolStore,
     redactor: Redactor,
@@ -90,12 +215,14 @@ def _definition_payload(
         return _serialize(
             {
                 "found": True,
+                "matched": False,
                 "ambiguous": True,
                 "outcome": envelope.get("outcome", "ambiguous"),
                 "symbol": None,
                 "parent": None,
                 "candidates": envelope["candidates"],
                 "overloads": envelope.get("overloads", []),
+                **({"suggestion": envelope["suggestion"]} if envelope.get("suggestion") else {}),
             },
             freshness,
         )
@@ -105,6 +232,7 @@ def _definition_payload(
         return _serialize(
             {
                 "found": False,
+                "matched": False,
                 "outcome": envelope.get("outcome", "not_found"),
                 "symbol": None,
                 "parent": None,
@@ -131,6 +259,7 @@ def _definition_payload(
     return _serialize(
         {
             "found": True,
+            "matched": True,
             "outcome": envelope.get("outcome", "resolved"),
             "ambiguous": bool(envelope.get("ambiguous")),
             "overloads": envelope.get("overloads", []),
@@ -164,6 +293,8 @@ def _call_neighbors_payload(
     freshness: Any | None = None,
     transitive: bool = False,
     db: Any | None = None,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> str:
     """Build the ``get_call_neighbors`` result payload (the ONE shared rule).
 
@@ -178,6 +309,11 @@ def _call_neighbors_payload(
     calling here). A transitive request bounded to depth 1 degrades to
     direct-only without error.
 
+    When *limit* is supplied the traversal returns one bounded page per
+    direction plus a ``paging`` object with the exact totals and the next
+    offset. Without it the legacy unbounded lists are returned, so in-process
+    callers that need every row keep that behaviour.
+
     ``direction == "implements"`` is the additive implementation-lookup entry
     point: it delegates to the shared :func:`find_implementations` rule and
     returns the identical ``implementations`` content with empty
@@ -191,16 +327,18 @@ def _call_neighbors_payload(
         result["callees"] = []
         return _serialize(result, freshness)
 
-    envelope = symbol_store.resolve_name(symbol)
+    envelope = symbol_store.resolve_name(symbol, prefer_type=True)
     if envelope["kind"] == "ambiguous":
         return _serialize(
             {
+                "matched": False,
                 "ambiguous": True,
                 "outcome": envelope.get("outcome", "ambiguous"),
                 "symbol": None,
                 "candidates": envelope["candidates"],
                 "callers": [],
                 "callees": [],
+                **({"suggestion": envelope["suggestion"]} if envelope.get("suggestion") else {}),
             },
             freshness,
         )
@@ -208,6 +346,7 @@ def _call_neighbors_payload(
     if sym is None:
         return _serialize(
             {
+                "matched": False,
                 "symbol": None,
                 "outcome": envelope.get("outcome", "not_found"),
                 "callers": [],
@@ -216,7 +355,15 @@ def _call_neighbors_payload(
             freshness,
         )
     effective_depth = max_depth if transitive else 1
-    graph_result = edge_store.get_call_graph(sym["id"], direction, effective_depth)
+    paging: dict[str, Any] | None = None
+    graph_result: dict[str, Any]
+    if limit is None:
+        graph_result = edge_store.get_call_graph(sym["id"], direction, effective_depth)
+    else:
+        graph_result = edge_store.get_call_graph_page(
+            sym["id"], direction, effective_depth, limit=limit, offset=offset
+        )
+        paging = graph_result.get("paging")
     coverage: dict[str, Any] | None = None
     if db is not None:
         from code_search.engine.graph_query import edge_resolution_stats
@@ -224,22 +371,23 @@ def _call_neighbors_payload(
         coverage = edge_resolution_stats(db)
     callers = graph_result.get("callers", [])
     callees = graph_result.get("callees", [])
-    return _serialize(
-        {
-            "outcome": envelope.get("outcome", "resolved"),
-            "symbol": {
-                "fqn": sym["fqn"],
-                "kind": sym["kind"],
-                "file_path": sym["file_path"],
-                "line_start": sym["line_start"],
-                "signature": sym.get("signature"),
-            },
-            "callers": callers,
-            "callees": callees,
-            **({"coverage": coverage} if coverage is not None else {}),
+    detail: dict[str, Any] = {
+        "matched": True,
+        "outcome": envelope.get("outcome", "resolved"),
+        "symbol": {
+            "fqn": sym["fqn"],
+            "kind": sym["kind"],
+            "file_path": sym["file_path"],
+            "line_start": sym["line_start"],
+            "signature": sym.get("signature"),
         },
-        freshness,
-    )
+        "callers": callers,
+        "callees": callees,
+        **({"coverage": coverage} if coverage is not None else {}),
+    }
+    if paging is not None:
+        detail["paging"] = paging
+    return _serialize(detail, freshness)
 
 
 def _implementations_payload(
@@ -287,8 +435,10 @@ class MCPServer:
     Wraps a component registry (see ``_initialize_components``) and registers
     the MCP tools: ``search``, ``get_symbol_definition``,
     ``get_call_neighbors``, ``get_implementations``, ``find_related``,
-    ``query_graph``, ``shortest_path``, ``explain_symbol``, and
-    ``get_impact``.
+    ``query_graph``, ``shortest_path``, ``explain_symbol``, ``get_impact``,
+    ``get_graph_schema``, ``get_file_outline``, ``search_symbols``,
+    ``get_architecture``, ``check_index_coverage``, ``detect_changes``, and
+    ``cypher_query``.
     """
 
     def __init__(self, components: dict[str, Any]) -> None:
@@ -319,9 +469,10 @@ class MCPServer:
         """Build the FastMCP server with every MCP tool registered.
 
         Registers the search, definition, call-neighbour, implementation,
-        related-search, graph-query, path, explain, and impact tools so a test
-        or embedder can exercise the real tool bodies without starting the
-        stdio loop.
+        related-search, graph-query, path, explain, impact, schema, outline,
+        structural-search, architecture, coverage, and change-detection tools
+        so a test or embedder can exercise the real tool bodies without
+        starting the stdio loop.
 
         Returns:
             A ready-to-serve ``fastmcp.FastMCP`` instance.
@@ -353,12 +504,15 @@ class MCPServer:
                 mode: str = "ranked",
                 content: str | None = None,
                 no_model: bool = False,
-                matching: str = "all_tokens",
+                matching: str | None = None,
                 regex: bool = False,
                 compact: bool = True,
                 max_snippet_lines: int | None = None,
                 paths_only: bool = False,
                 allow_weak: bool = False,
+                strict: bool = False,
+                max_output_tokens: int | None = None,
+                profile: str = "compact",
             ) -> str:
                 """Run hybrid search, returning redacted, reranked JSON results.
 
@@ -382,9 +536,10 @@ class MCPServer:
                         to force documentation inclusion.
                     no_model: Fast path that skips the vector model (lexical
                         fusion only).
-                    matching: Exhaustive matching semantics — ``literal``,
-                        ``all_tokens`` (default), or ``any_token``; ignored
-                        outside exhaustive mode.
+                    matching: Exact matching semantics — ``literal``,
+                        ``all_tokens``, or ``any_token``. Supplying it implies
+                        exhaustive mode; omitting it keeps the configured
+                        exhaustive default (``all_tokens``).
                     regex: Exhaustive-only regular-expression mode; the query
                         is compiled as a Python regex instead of tokenized.
                     compact: Return the agent-sized result envelope (default).
@@ -393,6 +548,12 @@ class MCPServer:
                     paths_only: Return only location and classification fields.
                     allow_weak: Return the weak ranked pool even when the
                         post-rank abstention gate would return no_match.
+                    strict: Abstain (``no_match``) when the top result is
+                        low-confidence, no definition, and poorly covered by
+                        the query terms; weak rows move to ``alternatives``.
+                    max_output_tokens: Soft output budget in tokens.
+                    profile: ``compact`` (default), ``outline`` (drop inline
+                        source), or ``full``.
 
                 Returns:
                     A JSON object with ``results`` and ``freshness``.
@@ -423,6 +584,11 @@ class MCPServer:
                 original_limit = limit
                 limit = min(limit, settings.max_results)
                 result_limit_capped = limit < original_limit
+                # An explicit matching choice requests exhaustive line-wise
+                # semantics; promote the mode so the argument is never quietly
+                # ignored by the ranked path.
+                if matching is not None and mode == "ranked":
+                    mode = "exhaustive"
                 envelope = hs.search(
                     query,
                     limit=limit,
@@ -433,6 +599,7 @@ class MCPServer:
                     matching=matching,
                     regex=regex,
                     allow_weak=allow_weak,
+                    strict=strict,
                 )
                 raw = envelope["results"]
                 env_mode = str(envelope.get("mode", "ranked"))
@@ -524,6 +691,21 @@ class MCPServer:
                     response["degraded_reason"] = envelope["degraded_reason"]
                 if envelope.get("no_match") is not None:
                     response["no_match"] = envelope["no_match"]
+                if envelope.get("reliable") is not None:
+                    response["reliable"] = bool(envelope["reliable"])
+                if envelope.get("alternatives"):
+                    alternatives = redactor.redact_results(envelope["alternatives"])
+                    if compact:
+                        from code_search.engine.response_service import compact_results
+
+                        alternatives = compact_results(
+                            alternatives,
+                            10 if max_snippet_lines is None else max_snippet_lines,
+                            paths_only=paths_only,
+                        )
+                    from code_search.engine.response_service import relativize_results
+
+                    response["alternatives"] = relativize_results(alternatives, result_root)
                 if "complete" in envelope:
                     response["complete"] = bool(envelope["complete"])
                 if envelope.get("excluded"):
@@ -574,6 +756,7 @@ class MCPServer:
                     # Reset search engine caches (symbol store, vocabularies, BM25 corpus)
                     search_engine: HybridSearch = comps["search"]
                     search_engine.reset_caches()
+                    comps["symbol_store"].invalidate_resolution_cache()
                     # Re-initialize the embedding model for the search engine
                     search_engine._embedding_generator = embedding_gen
                     # Mark reload as complete in detector and update metadata store
@@ -611,14 +794,25 @@ class MCPServer:
                 response["index_status"] = serving["index_status"]
                 response["index_changed"] = bool(serving.get("index_changed"))
                 response["reload_required"] = bool(serving.get("reload_required"))
-                return json.dumps(response, default=str)
+                return _finish(
+                    response,
+                    max_output_tokens=max_output_tokens,
+                    profile=profile,
+                )
 
             @mcp.tool()
-            async def get_symbol_definition(symbol: str) -> str:
+            async def get_symbol_definition(
+                symbol: str,
+                max_output_tokens: int | None = None,
+                profile: str = "compact",
+            ) -> str:
                 """Return a symbol's definition via the shared resolution rule.
 
                 Args:
                     symbol: The symbol FQN to look up.
+                    max_output_tokens: Soft output budget in tokens.
+                    profile: ``compact`` (default), ``outline`` (drop inline
+                        source), or ``full``.
 
                 Returns:
                     A JSON payload describing the symbol, its parent, and
@@ -650,7 +844,11 @@ class MCPServer:
                         mc.record_redaction(redacted_count)
 
                 data["query_time_ms"] = duration_ms
-                return json.dumps(data, default=str)
+                return _finish(
+                    data,
+                    max_output_tokens=max_output_tokens,
+                    profile=profile,
+                )
 
             @mcp.tool()
             async def get_call_neighbors(
@@ -658,6 +856,8 @@ class MCPServer:
                 direction: str = "both",
                 max_depth: int = 1,
                 transitive: bool = False,
+                limit: int = 50,
+                offset: int = 0,
             ) -> str:
                 """Return a symbol's callers and/or callees as a JSON payload.
 
@@ -668,10 +868,16 @@ class MCPServer:
                         configured graph depth.
                     transitive: Expand to ``max_depth`` when true; direct-only
                         (depth 1) when false.
+                    limit: Maximum rows returned per direction (clipped to
+                        1..500). The response carries exact totals and the next
+                        offset so a large fan-in is paged instead of dumped.
+                    offset: Zero-based row offset per direction for the next
+                        page.
 
                 Returns:
-                    A JSON payload with the root ``symbol`` plus ``callers``
-                    and ``callees``.
+                    A JSON payload with the root ``symbol``, ``callers``, and
+                    ``callees``, plus a ``paging`` object with the exact
+                    per-direction totals and continuation offsets.
                 """
                 start = time.monotonic()
                 edge_store = comps.get("edge_store")
@@ -687,12 +893,19 @@ class MCPServer:
                     comps.get("freshness"),
                     transitive,
                     comps.get("db"),
+                    limit=max(1, min(int(limit), 500)),
+                    offset=max(0, int(offset)),
                 )
                 data = json.loads(payload)
                 callers = data.get("callers") or []
                 callees = data.get("callees") or []
 
-                total_results = len(callers) + len(callees)
+                paging = data.get("paging") or {}
+                total_results = (
+                    sum(int(section.get("total", 0)) for section in paging.values())
+                    if paging
+                    else len(callers) + len(callees)
+                )
                 duration_ms = int((time.monotonic() - start) * 1000)
                 audit_db.write_entry(
                     query_type="get_call_neighbors",
@@ -766,6 +979,350 @@ class MCPServer:
                 """Parse a comma-separated edge-type argument."""
                 return {part.strip().upper() for part in value.split(",") if part.strip()}
 
+            def _index_root() -> Path:
+                """Return the indexed repository root recorded in metadata."""
+                return Path(
+                    comps["metadata"].get("index_root") or str(Path(comps["context_dir"]).parent)
+                )
+
+            @mcp.tool()
+            async def get_graph_schema(
+                diagnostics: bool = False,
+                limit: int = 100,
+                offset: int = 0,
+            ) -> str:
+                """Describe the graph before querying it.
+
+                Reports stored node labels, supported and emitted edge types,
+                resolution tiers, unresolved targets, symbol totals, coverage
+                gaps, and the index generation. Call this first when you do not
+                know which labels or edge types exist.
+
+                Args:
+                    diagnostics: Include bounded edge-property diagnostics.
+                    limit: Maximum node labels returned (clipped to 500).
+                    offset: Zero-based offset into the sorted node-label list.
+
+                Returns:
+                    A JSON payload with the schema sections and freshness.
+                """
+                start = time.monotonic()
+                from code_search.engine.graph_surface import get_graph_schema
+
+                payload = get_graph_schema(
+                    comps["db"],
+                    diagnostics=diagnostics,
+                    node_limit=limit,
+                    offset=offset,
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["index_status"] = comps["metadata"].get_index_status()
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="get_graph_schema",
+                    query_summary="schema",
+                    result_count=int(payload.get("node_labels_total", 0)),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
+
+            @mcp.tool()
+            async def get_file_outline(
+                file_path: str,
+                kind: str = "",
+                limit: int = 200,
+                offset: int = 0,
+                include_docstring: bool = False,
+                include_ids: bool = False,
+            ) -> str:
+                """List one indexed file's declarations in source order.
+
+                Use this to find declarations without grepping: it returns the
+                exact symbol names, kinds, relative line ranges, and parent
+                names stored in the graph. Set ``include_ids`` for full FQNs
+                and columns. An unindexed file returns ``outcome: not_indexed``
+                rather than an empty list.
+
+                Args:
+                    file_path: Absolute or index-relative path to the file.
+                    kind: Optional comma-separated declaration kinds.
+                    limit: Maximum declarations returned (clipped to 500).
+                    offset: Zero-based offset into the declaration list.
+                    include_docstring: Include stored docstrings (off by default).
+
+                Returns:
+                    A JSON payload with ``symbols``, exact ``total``, paging, and
+                    freshness.
+                """
+                start = time.monotonic()
+                from code_search.engine.graph_surface import get_file_outline
+
+                kinds = [part.strip() for part in kind.split(",") if part.strip()] or None
+                payload = get_file_outline(
+                    comps["db"],
+                    file_path,
+                    index_root=_index_root(),
+                    kinds=kinds,
+                    limit=limit,
+                    offset=offset,
+                    include_docstring=include_docstring,
+                    include_ids=include_ids,
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["index_status"] = comps["metadata"].get_index_status()
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="get_file_outline",
+                    query_summary=file_path[: settings.query_summary_length],
+                    result_count=int(payload.get("returned", 0)),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
+
+            @mcp.tool()
+            async def check_index_coverage(
+                paths: list[str] | None = None,
+                scopes: list[str] | None = None,
+                max_rows: int = 500,
+            ) -> str:
+                """Report where the index has gaps before trusting a negative answer.
+
+                Use this when a symbol, caller, or path seems missing: it
+                distinguishes ``no_recorded_issue`` from ``partial``,
+                ``unusable``, ``skipped``, ``excluded``, ``not_indexed``, and
+                ``coverage_unavailable``. A clean result is not proof of
+                completeness.
+
+                Args:
+                    paths: Optional absolute or index-relative file paths.
+                    scopes: Optional index-relative directory prefixes.
+                    max_rows: Row cap (clipped to 1000).
+
+                Returns:
+                    A JSON payload with per-path entries, per-scope aggregates,
+                    a summary, freshness, and a recommended action.
+                """
+                start = time.monotonic()
+                from code_search.engine.graph_surface import check_index_coverage as run_check
+
+                payload = run_check(
+                    comps["db"],
+                    paths=paths,
+                    scopes=scopes,
+                    index_root=_index_root(),
+                    parser=comps.get("parser"),
+                    max_rows=max_rows,
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["index_status"] = comps["metadata"].get_index_status()
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="check_index_coverage",
+                    query_summary=", ".join([*(paths or []), *(scopes or [])])[
+                        : settings.query_summary_length
+                    ]
+                    or "all",
+                    result_count=int(payload.get("summary", {}).get("returned", 0)),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
+
+            @mcp.tool()
+            async def search_symbols(
+                query: str | None = None,
+                name_pattern: str | None = None,
+                qn_pattern: str | None = None,
+                kind: str = "",
+                file_pattern: str | None = None,
+                min_degree: int | None = None,
+                max_degree: int | None = None,
+                edge_types: str = "CALLS,INHERITS,IMPLEMENTS,REFERENCES,USAGE,CALL_REFERENCE",
+                exclude_entry_points: bool = True,
+                include_connected: bool = False,
+                limit: int = 50,
+                offset: int = 0,
+            ) -> str:
+                """Search symbols by structure instead of text similarity.
+
+                Answers questions like "classes in src/api", "functions with zero
+                callers", or "symbols matching .*Service". Degree counts resolved
+                edges only; unresolved references never inflate a degree.
+                Classified entry points (tests, main, constructors, overrides,
+                annotated handlers, and exported top-level declarations) are
+                excluded by default. Set exclude_entry_points=false to include
+                them.
+
+                Args:
+                    query: Optional substring over name, FQN, and docstring.
+                    name_pattern: Optional Python regex, full-match on the name.
+                    qn_pattern: Optional Python regex, full-match on the FQN.
+                    kind: Optional comma-separated declaration kinds.
+                    file_pattern: Optional glob (or ``re:<regex>``) over the path.
+                    min_degree: Minimum resolved total degree.
+                    max_degree: Maximum resolved total degree.
+                    edge_types: Comma-separated edge types counted for degree.
+                    exclude_entry_points: Exclude tests, main, and constructors.
+                    include_connected: Attach up to 10 resolved neighbours.
+                    limit: Maximum symbols returned (clipped to 200).
+                    offset: Zero-based offset into the ordered matches.
+
+                Returns:
+                    A JSON payload with symbols, exact total, paging, echoed
+                    filters, generation, and a coverage caveat.
+                """
+                start = time.monotonic()
+                from code_search.engine.graph_surface import search_symbols as run_search
+
+                payload = run_search(
+                    comps["db"],
+                    query=query,
+                    name_pattern=name_pattern,
+                    qn_pattern=qn_pattern,
+                    kind=kind,
+                    file_pattern=file_pattern,
+                    min_degree=min_degree,
+                    max_degree=max_degree,
+                    edge_types=sorted(_edge_types(edge_types)),
+                    exclude_entry_points=exclude_entry_points,
+                    include_connected=include_connected,
+                    limit=limit,
+                    offset=offset,
+                    index_root=_index_root(),
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["index_status"] = comps["metadata"].get_index_status()
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="search_symbols",
+                    query_summary=(query or name_pattern or "symbols")[
+                        : settings.query_summary_length
+                    ],
+                    result_count=int(payload.get("returned", 0)),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
+
+            @mcp.tool()
+            async def find_dead_code(
+                kinds: str = "function,method,constructor",
+                include_entry_points: bool = False,
+                include_tests: bool = False,
+                limit: int = 50,
+                offset: int = 0,
+            ) -> str:
+                """Report callables with no proven production reference.
+
+                Candidates have zero incoming resolved CALLS, USAGE,
+                CALL_REFERENCE, REFERENCES, IMPLEMENTS, or INHERITS edges from
+                non-test symbols. Entry points and test symbols are excluded by
+                default. Every row reports test-only usage and same-name
+                unresolved references, because those are the cases where a
+                dynamic or external caller could keep the symbol alive.
+
+                This tool reports evidence, not permission to delete code.
+                Check ``check_index_coverage`` when a negative answer matters.
+
+                Args:
+                    kinds: Comma-separated candidate kinds.
+                    include_entry_points: Include classified entry points.
+                    include_tests: Include test symbols as candidates.
+                    limit: Maximum candidates returned (clipped to 200).
+                    offset: Zero-based offset into the ordered candidates.
+
+                Returns:
+                    A JSON payload with candidates, exact total, paging,
+                    confidence, and the edge types checked.
+                """
+                start = time.monotonic()
+                from code_search.engine.graph_surface import find_dead_code as run_dead_code
+
+                payload = run_dead_code(
+                    comps["db"],
+                    kinds=kinds,
+                    include_entry_points=include_entry_points,
+                    include_tests=include_tests,
+                    limit=limit,
+                    offset=offset,
+                    index_root=_index_root(),
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["index_status"] = comps["metadata"].get_index_status()
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="find_dead_code",
+                    query_summary=kinds[: settings.query_summary_length],
+                    result_count=int(payload.get("returned", 0)),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
+
+            @mcp.tool()
+            async def get_architecture(
+                aspects: str = "overview",
+                top_n: int = 15,
+                max_communities: int = 10,
+            ) -> str:
+                """Return a bounded architecture summary of the indexed graph.
+
+                The default ``overview`` aspect is deliberately small: languages,
+                directory packages, and entry-point counts. Request only the
+                sections you need; ``all`` expands to every section and can be
+                large.
+
+                Aspects: ``overview``, ``structure``, ``dependencies``,
+                ``hotspots``, ``entry_points``, ``clusters``, ``cycles``.
+
+                Args:
+                    aspects: Comma-separated aspect names, or ``all``.
+                    top_n: Maximum hotspots/packages/examples (clipped to 50).
+                    max_communities: Maximum clusters returned (clipped to 20).
+
+                Returns:
+                    A JSON payload with the requested sections, generation,
+                    stats, and freshness.
+                """
+                start = time.monotonic()
+                requested = {part.strip().lower() for part in aspects.split(",") if part.strip()}
+                payload = _graph_service().architecture(
+                    aspects=requested or None,
+                    top_n=top_n,
+                    max_communities=max_communities,
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["index_status"] = comps["metadata"].get_index_status()
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="get_architecture",
+                    query_summary=", ".join(sorted(requested)) or "overview",
+                    result_count=len(payload.get("hotspots") or []),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
+
             @mcp.tool()
             async def query_graph(
                 question: str,
@@ -774,6 +1331,7 @@ class MCPServer:
                 token_budget: int = 1500,
                 edge_types: str = "CALLS,INHERITS",
                 include_external: bool = False,
+                direction: str = "both",
             ) -> str:
                 """Answer a multi-hop question by traversing the code graph.
 
@@ -790,10 +1348,12 @@ class MCPServer:
                     include_external: Include unresolved/external callee leaves;
                         false (default) collapses them so the answer is a clean
                         in-corpus neighbourhood.
+                    direction: ``both`` (default), ``inbound`` (who calls/imports
+                        this), or ``outbound`` (what this calls/imports).
 
                 Returns:
                     A JSON payload with seeds, nodes, edges, truncation, stats,
-                    and freshness.
+                    direction, and freshness.
                 """
                 start = time.monotonic()
                 answer = _graph_service().query(
@@ -803,6 +1363,7 @@ class MCPServer:
                     edge_types=_edge_types(edge_types),
                     token_budget=token_budget,
                     include_external=include_external,
+                    direction=direction,
                 )
                 payload = answer.as_dict()
                 duration_ms = int((time.monotonic() - start) * 1000)
@@ -825,6 +1386,7 @@ class MCPServer:
                 target: str,
                 undirected: bool = False,
                 max_hops: int = 6,
+                edge_types: str = "CALLS,INHERITS",
             ) -> str:
                 """Return the shortest graph path between two symbols.
 
@@ -836,6 +1398,7 @@ class MCPServer:
                     target: Target symbol reference.
                     undirected: Traverse edges in both directions.
                     max_hops: Maximum path length (clipped to 6).
+                    edge_types: Comma-separated edge types to traverse.
 
                 Returns:
                     A JSON payload with source, target, hops, outcome, and
@@ -843,7 +1406,11 @@ class MCPServer:
                 """
                 start = time.monotonic()
                 answer = _graph_service().shortest_path(
-                    source, target, undirected=undirected, max_hops=max_hops
+                    source,
+                    target,
+                    undirected=undirected,
+                    max_hops=max_hops,
+                    edge_types=_edge_types(edge_types),
                 )
                 payload = answer.as_dict()
                 duration_ms = int((time.monotonic() - start) * 1000)
@@ -927,6 +1494,155 @@ class MCPServer:
                 return json.dumps(payload, default=str)
 
             @mcp.tool()
+            async def detect_changes(
+                changed_paths: list[str] | None = None,
+                since: str | None = None,
+                base_branch: str | None = None,
+                scope: str = "impact",
+                direction: str = "inbound",
+                depth: int = 3,
+                fixpoint: bool = False,
+                edge_types: str = "CALLS,INHERITS",
+                include_imports: bool = True,
+                seed_filter: str = "all",
+                max_nodes: int = 200,
+            ) -> str:
+                """Resolve changed files (optionally from git) and report impact.
+
+                Use ``scope="files"`` when you only need the changed path set,
+                ``scope="impact"`` for the full blast radius, and
+                ``scope="tests"`` for the test files and test symbols that
+                reach the change. ``direction="inbound"`` answers "what depends
+                on this"; ``outbound`` answers "what does this depend on".
+
+                Args:
+                    changed_paths: Explicit changed paths.
+                    since: Git ref to diff against.
+                    base_branch: Base branch/ref (takes precedence over since).
+                    scope: ``files``, ``impact``, or ``tests``.
+                    direction: ``inbound``, ``outbound``, or ``both``.
+                    depth: Traversal depth (clipped to 4).
+                    fixpoint: Walk to closure instead of stopping at depth.
+                    edge_types: Comma-separated symbol edge types to traverse.
+                    include_imports: Traverse file-level import edges too.
+                    seed_filter: ``all`` or ``product`` (drop test-file seeds).
+                    max_nodes: Maximum returned nodes (clipped to 200).
+
+                Returns:
+                    A JSON payload with changed files, impacted symbols with
+                    risk labels, production/test buckets, traversal provenance,
+                    generation, and freshness.
+                """
+                start = time.monotonic()
+                result = _graph_service().detect_changes(
+                    changed_paths or [],
+                    since=since,
+                    base_branch=base_branch,
+                    scope=scope,
+                    direction=direction,
+                    depth=depth,
+                    fixpoint=fixpoint,
+                    edge_types=_edge_types(edge_types),
+                    include_imports=include_imports,
+                    seed_filter=seed_filter,
+                    max_nodes=max_nodes,
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                result["index_status"] = comps["metadata"].get_index_status()
+                result["query_time_ms"] = duration_ms
+                result["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="detect_changes",
+                    query_summary=(
+                        base_branch or since or ", ".join(changed_paths or []) or "no_changes"
+                    )[: settings.query_summary_length],
+                    result_count=int(result.get("summary", {}).get("symbols", 0)),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(result, default=str)
+
+            @mcp.tool()
+            async def cypher_query(
+                query: str,
+                limit: int = 100,
+                offset: int = 0,
+                cursor: str = "",
+                timeout_ms: int = 5000,
+            ) -> str:
+                """Run a read-only Cypher subset over the indexed code graph.
+
+                Use this for precise multi-hop and aggregate questions that the
+                fixed graph tools do not cover, for example callers/callees,
+                inheritance chains, unresolved targets, and dead-code
+                predicates with ``EXISTS``.
+
+                This is not ``query_graph``: ``query_graph`` takes a
+                natural-language question and returns a bounded, search-seeded
+                neighbourhood. ``cypher_query`` takes an explicit graph query
+                and returns tabular rows.
+
+                Supported: ``MATCH``/``OPTIONAL MATCH``, ``WHERE``, ``WITH``,
+                ``UNWIND``, ``RETURN``, ``ORDER BY``/``SKIP``/``LIMIT``,
+                ``DISTINCT``, ``UNION``, ``CASE``, labelled nodes, directed
+                relationships, ``[*1..5]`` paths, inline property maps,
+                ``EXISTS { ... }``, aggregates (``count``/``sum``/``avg``/
+                ``min``/``max``/``collect``), and string/scalar functions.
+                Labels: ``Function``, ``Method``, ``Class``, ``Interface``,
+                ``Enum``, ``Constructor``, ``Field``, ``Variable``, ``Import``,
+                ``TypeAlias``, plus synthetic ``File``, ``Module``,
+                ``Unresolved``, and structural ``CONTAINS`` edges. A
+                ``UNION`` applies the final ``RETURN``'s ``ORDER BY``/``LIMIT``.
+
+                The statement is read-only, parameterized, and bounded by
+                ``limit``, ``timeout_ms``, and a byte cap. Page with the
+                ``next_cursor`` value; a cursor is valid only for the same index
+                generation and query text. An empty result is not proof that
+                the code is absent — check ``check_index_coverage``.
+
+                Args:
+                    query: Cypher query text.
+                    limit: Maximum rows returned (clipped to 500).
+                    offset: Row offset; ignored when ``cursor`` is set.
+                    cursor: Cursor from the previous page (generation-keyed).
+                    timeout_ms: Wall-clock deadline (clipped to 1..30000).
+
+                Returns:
+                    A JSON payload with ``columns``, ``rows``, paging,
+                    generation, digest, timing, and a trust note. Invalid or
+                    unsupported syntax returns ``outcome: invalid_argument``
+                    with an ``error_kind`` and a message; an expired deadline
+                    returns ``outcome: timeout``.
+                """
+                start = time.monotonic()
+                from code_search.engine.cypher import execute_cypher
+
+                payload = execute_cypher(
+                    comps["db"],
+                    query,
+                    limit=limit,
+                    offset=offset,
+                    cursor=cursor,
+                    timeout_ms=timeout_ms,
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["index_status"] = comps["metadata"].get_index_status()
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="cypher_query",
+                    query_summary=query[: settings.query_summary_length],
+                    result_count=int(payload.get("row_count", 0)),
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return json.dumps(payload, default=str)
+
+            @mcp.tool()
             async def find_related(
                 file_path: str,
                 line_number: int,
@@ -973,6 +1689,138 @@ class MCPServer:
                     if total_redacted > 0:
                         mc.record_redaction(total_redacted)
                 return json.dumps(data, default=str)
+
+            @mcp.tool()
+            async def doctor(
+                max_output_tokens: int | None = None,
+                profile: str = "compact",
+            ) -> str:
+                """Report index, model, daemon, and graph health in one call.
+
+                Args:
+                    max_output_tokens: Soft output budget in tokens.
+                    profile: ``compact`` (default), ``outline``, or ``full``.
+
+                Returns:
+                    A JSON diagnostic payload.
+                """
+                from datetime import datetime
+
+                from code_search.engine.daemon import daemon_status
+
+                start = time.monotonic()
+                metadata = comps["metadata"]
+                context_dir = Path(comps["context_dir"])
+                graph_path = context_dir / "graph.db"
+                index_bytes = graph_path.stat().st_size if graph_path.is_file() else 0
+                age: float | None = None
+                last = metadata.get("last_indexed_at")
+                if last:
+                    try:
+                        parsed = datetime.fromisoformat(last.replace("Z", "+00:00"))
+                        age = max(0.0, (datetime.now(parsed.tzinfo) - parsed).total_seconds())
+                    except (TypeError, ValueError):
+                        age = None
+                payload = {
+                    "context_dir": str(context_dir),
+                    "index_status": metadata.get_index_status(),
+                    "index_age_s": round(age, 1) if age is not None else None,
+                    "index_bytes": index_bytes,
+                    "profile": settings.runtime_profile,
+                    "layout": metadata.get("index_layout") or settings.index_layout,
+                    "daemon": daemon_status(context_dir),
+                    "model_available": comps["embedding_gen"].is_available(),
+                    "graph_indexed": metadata.get("graph_indexed") != "false",
+                    "freshness": _freshness_signal(comps),
+                }
+                duration_ms = int((time.monotonic() - start) * 1000)
+                payload["query_time_ms"] = duration_ms
+                audit_db.write_entry(
+                    query_type="doctor",
+                    query_summary="doctor",
+                    result_count=1,
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return _finish(
+                    payload,
+                    max_output_tokens=max_output_tokens,
+                    profile=profile,
+                )
+
+            @mcp.tool()
+            async def ask(
+                question: str,
+                limit: int = 10,
+                budget: int = 1200,
+                strict: bool = False,
+                include_tests: bool = False,
+                content: str | None = None,
+                max_output_tokens: int | None = None,
+                profile: str = "compact",
+            ) -> str:
+                """Answer one question by routing it to the right surface.
+
+                Identifier and definition questions go to symbol resolution,
+                "who calls" / "what does X call" to the call graph, "who
+                implements" to implementation lookup, quoted text to exhaustive
+                search, and everything else to ranked search. The reply is one
+                compact answer with ``answer_type`` and follow-up ``next``
+                suggestions.
+
+                Args:
+                    question: The user's question.
+                    limit: Maximum answer rows.
+                    budget: Soft output budget in tokens.
+                    strict: Abstain from low-confidence ranked answers.
+                    include_tests: Include test files in search answers.
+                    content: Optional content scope for search answers.
+                    max_output_tokens: Soft output budget in tokens; overrides
+                        *budget* when supplied.
+                    profile: ``compact`` (default), ``outline``, or ``full``.
+
+                Returns:
+                    A compact JSON answer payload with freshness.
+                """
+                start = time.monotonic()
+                from code_search.engine.ask import ask as run_ask
+
+                payload = run_ask(
+                    comps,
+                    question,
+                    limit=limit,
+                    budget=max_output_tokens or budget,
+                    strict=strict,
+                    include_tests=include_tests,
+                    content=content,
+                )
+                duration_ms = int((time.monotonic() - start) * 1000)
+                answer = payload.get("answer") or {}
+                result_count = 0
+                if isinstance(answer, dict):
+                    for key in ("results", "callers", "callees", "implementations"):
+                        rows = answer.get(key)
+                        if isinstance(rows, list):
+                            result_count = len(rows)
+                            break
+                payload["query_time_ms"] = duration_ms
+                payload["freshness"] = _freshness_signal(comps)
+                audit_db.write_entry(
+                    query_type="ask",
+                    query_summary=question[: settings.query_summary_length],
+                    result_count=result_count,
+                    duration_ms=duration_ms,
+                    redacted_count=0,
+                )
+                if mc:
+                    mc.record_query(duration_ms)
+                return _finish(
+                    payload,
+                    max_output_tokens=max_output_tokens,
+                    profile=profile,
+                )
 
             return mcp
         except ImportError:

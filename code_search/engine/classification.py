@@ -278,7 +278,9 @@ class PathClass(StrEnum):
     BARREL = "barrel"
 
     @classmethod
-    def of(cls, db: Any, file_path: str | Path) -> PathClass:
+    def of(
+        cls, db: Any, file_path: str | Path, *, signal_path: str | Path | None = None
+    ) -> PathClass:
         """Classify *file_path* into a :class:`PathClass` member.
 
         Test-root and non-canonical path shapes resolve without any database
@@ -290,15 +292,22 @@ class PathClass(StrEnum):
         Args:
             db: A database exposing ``connect()`` over ``code_chunks``.
             file_path: The stored file path of the candidate chunk.
+            signal_path: Optional repo-relative spelling used for the
+                path-shape checks. The stored path embeds the checkout
+                location, so a clone under a directory such as ``vendor/``
+                would otherwise classify every chunk as non-canonical; the
+                barrel lookup still uses *file_path* because it queries the
+                stored spelling.
 
         Returns:
             The resolved :class:`PathClass` for *file_path*.
         """
-        if _is_test_file(file_path):
+        shape = signal_path if signal_path is not None else file_path
+        if _is_test_file(shape):
             return cls.TEST
-        if _is_non_canonical(file_path):
+        if _is_non_canonical(shape):
             return cls.NON_CANONICAL
-        if _is_dts_file(file_path):
+        if _is_dts_file(shape):
             return cls.DTS
         if cls.is_barrel(db, file_path):
             return cls.BARREL

@@ -4,7 +4,7 @@ title: "compact_results"
 description: "Apply compact_result to every result in a list."
 resource: code_search/engine/response_service.py#compact_results
 tags: [response, output, function]
-generated: { by: code-documenter/skill-v1.0, at: 2026-10-21T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/engine/response_service.py
@@ -20,14 +20,15 @@ agent-sized payloads. Defined in
 
 # Signature
 
-`def compact_results(results: list[dict[str, Any]], max_snippet_lines: int = 20) -> list[dict[str, Any]]`
+`def compact_results(results: list[dict[str, Any]], max_snippet_lines: int = 10, paths_only: bool = False) -> list[dict[str, Any]]`
 
 # Parameters
 
 | Name | Type | Description |
 |---|---|---|
 | `results` | `list[dict[str, Any]]` | Ranked search results. |
-| `max_snippet_lines` | `int` | Maximum content lines kept per result. |
+| `max_snippet_lines` | `int` | Maximum content lines kept per result; `0` returns no content. |
+| `paths_only` | `bool` | Return only location and classification fields. |
 
 # Returns
 

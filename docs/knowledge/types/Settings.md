@@ -1,10 +1,10 @@
 ---
 type: Class
 title: "Settings"
-description: "Central configuration dataclass with 151 CODE_SEARCH_* environment-variable-backed fields."
+description: "Central configuration dataclass with 168 CODE_SEARCH_* environment-variable-backed fields and runtime-profile presets."
 resource: code_search/engine/config.py#Settings
 tags: [config, settings, dataclass]
-generated: { by: code-documenter/skill-v1.0, at: 2026-10-19T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/engine/config.py
@@ -13,9 +13,12 @@ sources:
 
 # Overview
 
-Central configuration dataclass with 151 fields, each overridable via a
+Central configuration dataclass with 168 fields, each overridable via a
 `CODE_SEARCH_*` environment variable. Loaded once via `Settings.from_env()`
-and threaded through nearly every engine component. Defined in
+and threaded through nearly every engine component. `runtime_profile`
+(`standard`/`small`) supplies defaults for `index_layout`
+(`legacy`/`compact`) and `freshness_mode` (`blocking`/`deferred`); an
+explicit environment variable or CLI flag always wins. Defined in
 [`engine.config`](../modules/engine/config.md). The full field list is
 documented in [config/environment.md](../config/environment.md); this
 concept summarises the major field groups.
@@ -26,8 +29,12 @@ concept summarises the major field groups.
 |---|---|---|
 | Core | `context_dir`, `log_level`, `data_dir`, `model_path` | Filesystem locations and logging verbosity. |
 | Embedding model | `embedding_model`, `embedding_dim`, `model_profile`, `fast_embedding_model` | Model2Vec embedding configuration. |
-| Cold start | `warmup_wait_s` | Bounded wait for the embedding model before the first query falls back to the reduced lexical path. |
+| Cold start | `warmup_wait_s`, `startup_wait_s` | Bounded waits for the embedding model and for a freshly spawned daemon. |
 | Content-type classification | `config_content_boost`, `docs_content_boost`, `config_scent_words` | Score multipliers for config/docs-scented queries. |
+| Canonicality tiers | `docs_project_boost`, `docs_third_party_penalty`, `docs_generated_penalty`, `docs_inject_boost`, `config_primary_boost`, `config_nonprimary_penalty` | Docs/config canonicality multipliers. |
+| Corpus hygiene | `minified_penalty`, `vendor_penalty`, `module_cohesion_boost` | Demote minified/vendored assets and prefer path-segment module matches. |
+| Runtime profile | `runtime_profile`, `index_layout`, `freshness_mode`, `max_file_bytes`, `index_graph` | Profile presets, vector layout, freshness strategy, indexer size cap, and graph persistence. |
+| Abstention | `abstention_coverage_min`, `abstention_separation_min` | Post-rank abstention gate thresholds. |
 | BM25 / lexical search | `bm25_k1`, `bm25_b`, `bm25_content_weight`, `bm25_fqn_weight` | FTS5 BM25 lexical-ranking tuning parameters. |
 | Vector / fusion | `min_vector_cosine`, `rrf_k`, `max_results`, `search_top_k_multiplier` | Vector similarity thresholds and rank-fusion parameters. |
 | Query-quality gate | `relevance_gate`, `idf_floor`, `informative_tokens_min`, `concept_signal_min` | Thresholds for the multi-signal quality gate. |
@@ -50,3 +57,4 @@ concept summarises the major field groups.
 | `resolve_embedding_profile() -> tuple[str, int]` | Resolve the selected model profile to an `(embedding_model, dim)` pair. |
 | `with_context_dir(context_dir: Path \| None) -> Settings` | Build `Settings` with an explicit context directory override. |
 | `resolve_context_dir() -> Path` | Return the absolute, created context directory path. |
+| `profile_reason() -> str` | Explain how the effective layout and freshness mode were chosen, naming the profile and any explicit overrides. |

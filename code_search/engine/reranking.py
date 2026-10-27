@@ -12,7 +12,8 @@ from typing import Any
 
 from code_search.engine.classification import FileRole, PathClass
 from code_search.engine.config import Settings
-from code_search.engine.graph import GraphDatabase
+from code_search.engine.graph import GraphDatabase, IndexMetadataStore
+from code_search.engine.paths import repo_relative_path
 from code_search.engine.session import SessionDatabase
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,28 @@ class Reranker:
         self._db = db
         self._session_db = session_db
         self._settings = settings or Settings.from_env()
+        self._root: Path | None = None
+        self._root_resolved = False
+
+    def _index_root(self) -> Path | None:
+        """Return the indexed repository root, or ``None`` when unknown.
+
+        Resolved once from the index metadata and cached, because every
+        path-shape signal below is computed against it.
+
+        Returns:
+            The repository root the index was built from, or ``None`` when the
+            metadata is missing or unreadable.
+        """
+        if not self._root_resolved:
+            self._root_resolved = True
+            try:
+                stored = IndexMetadataStore(self._db).get("index_root")
+            except Exception:
+                stored = None
+            if stored:
+                self._root = Path(stored)
+        return self._root
 
     def rerank(
         self,
@@ -161,6 +184,11 @@ class Reranker:
 
         file_paths = [r["file_path"] for r in results]
         session_weights = self._get_session_weights(file_paths)
+        # Every path-shape signal below must see the repo-relative spelling:
+        # the stored path and the path-prefixed FQN embed the checkout
+        # location, so matching against them makes the score depend on the
+        # directory the repository happens to live in.
+        root = self._index_root()
 
         boost = self._settings.definition_boost
         penalty = self._settings.noise_penalty
@@ -208,6 +236,16 @@ class Reranker:
 
         for r in results:
             score = r["score"]
+            stored_path = str(r.get("file_path") or "")
+            rel_path = repo_relative_path(stored_path, root)
+            # ``fqn`` embeds the same absolute file path for path-prefixed
+            # languages and raw chunks, so relativize its prefix too.
+            stored_fqn = str(r.get("fqn") or "")
+            rel_fqn = (
+                rel_path + stored_fqn[len(stored_path) :]
+                if stored_path and stored_fqn.startswith(stored_path)
+                else stored_fqn
+            )
             is_owner_definition = (
                 definition_intent
                 and r.get("is_definition", False)
@@ -230,7 +268,7 @@ class Reranker:
             # the pool, chunks that merely reference the name are demoted so a
             # usage-heavy file cannot outrank the declaration.
             if named_concepts and not r.get("is_definition", False):
-                haystack = f"{r.get('fqn') or ''} {r.get('content') or ''}".lower()
+                haystack = f"{rel_fqn} {r.get('content') or ''}".lower()
                 if any(concept in haystack for concept in named_concepts):
                     score *= usage_penalty
             # A concrete config key (dotted or snake_case) is answered by the
@@ -248,7 +286,7 @@ class Reranker:
                 from code_search.engine.classification import documentation_tier
 
                 score *= self._settings.docs_content_boost
-                tier = documentation_tier(r.get("file_path", ""))
+                tier = documentation_tier(rel_path)
                 if tier == "project":
                     score *= self._settings.docs_project_boost
                 elif tier == "third_party":
@@ -258,7 +296,7 @@ class Reranker:
             if config_intent and r.get("content_type") == "config":
                 from code_search.engine.classification import config_tier
 
-                tier = config_tier(r.get("file_path", ""))
+                tier = config_tier(rel_path)
                 if tier == "primary":
                     score *= self._settings.config_primary_boost
                 elif tier in ("test", "sample", "generated"):
@@ -269,7 +307,7 @@ class Reranker:
             # module. Small and multiplicative so lexical evidence still wins.
             cohesion_terms = {term for term in query_fragments if len(term) >= 3}
             if cohesion_terms:
-                segments = {part.lower() for part in Path(r.get("file_path", "")).parts}
+                segments = {part.lower() for part in Path(rel_path).parts}
                 if cohesion_terms & segments:
                     score *= self._settings.module_cohesion_boost
             # Authorization intent — a question about who
@@ -330,7 +368,9 @@ class Reranker:
             # Corpus hygiene: minified bundles and vendored web assets are
             # lexical noise, not canonical source. Exhaustive search still sees
             # them; only ranked ordering demotes them.
-            lowered_path = r.get("file_path", "").lower()
+            # Leading slash restored so root-level ``dist/``/``node_modules/``
+            # directories still match the same substring tests as before.
+            lowered_path = f"/{rel_path.lstrip('/')}".lower()
             if lowered_path.endswith((".min.js", ".min.css")) or "/dist/" in lowered_path:
                 score *= self._settings.minified_penalty
             if any(

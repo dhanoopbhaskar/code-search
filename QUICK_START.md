@@ -130,13 +130,13 @@ code-search search "database connection pool" --language java --no-include-tests
 | `--include-tests` / `--no-include-tests` | `false` | Include/exclude test files (excluded by default; indexed tests are only searchable with `--include-tests`) |
 | `--mode {ranked,exhaustive,enumerate}` | `ranked` | Hybrid ranking, exhaustive line scan, or named symbol-kind enumeration (for example "list all controllers") |
 | `--content {code,config,docs,all,code_focused}` | intent inference | Content axis; code-shaped queries (including multi-word construct nouns such as `login handler`) default to `code`, documentation-shaped queries widen to `all`, and other queries use `code_focused` (code + config, docs excluded) |
-| `--matching {literal,all_tokens,any_token}` | `all_tokens` | Exhaustive matching semantics (`--mode exhaustive` only); `literal` treats the whole query as one verbatim substring |
+| `--matching {literal,all_tokens,any_token}` | `all_tokens` | Exact matching semantics. Supplying it implies `--mode exhaustive`, so `--matching literal` alone returns the verbatim-substring set and count |
 | `--regex` | off | Treat the query as a Python regular expression (`--mode exhaustive` only); invalid patterns return an `invalid_regex` explanation |
 | `--no-startup-check` | off | Skip transparent daemon auto-start for this invocation; repeat CLI use is fastest with an already-running `code-search daemon start` |
 | `--no-model` | off | Skip the vector model and fuse lexical signals only; the response is labelled `lexical_degraded` |
 | `--explain-ranking` | off | Include `score_sources` for every result and print the class/content multipliers and additive boosts behind the ranking |
 | `--compact` / `--no-compact` | `--compact` | JSON keeps identifiers, locations, signatures, and short content only. `--no-compact` returns full blocks and the `score_sources` breakdown |
-| `--max-snippet-lines N` | `20` in compact JSON | Trim each result to at most N content lines and attach a one-line `signature`; the original line range is preserved |
+| `--max-snippet-lines N` | `10` in compact JSON | Trim each result to at most N content lines and attach a one-line `signature`; the original line range is preserved |
 | `--json` | — | JSON output: `{"results": [...], "total_matches": N, "truncated": bool, "token_savings": {...}, "freshness": {...}}` |
 
 `--json` reports **`total_matches`** (how many chunks matched the query tokens) and
@@ -180,13 +180,33 @@ Look up a symbol by fully qualified name (FQN).
 ```bash
 code-search symbol "myproject.auth.jwt.validate_token"
 code-search symbol "io.spring.application.UserService.createUser" --json
+code-search symbol "ArticleService" --outline
 ```
 
 Java method lookups accept a signature so the exact overload resolves:
 `code-search symbol "com.example.security.TokenService.generateToken(Map<String,Object>,String)"`.
-A bare overloaded name (e.g. `generateToken`) returns all overloads as an `ambiguous`
-set, each candidate carrying a `signature {arity, param_types}` object. Unknown,
-malformed, or empty names return `found: false` instead of an error.
+Qualified stored parameter types and Java primitives/boxed types match their
+short spellings (`Boolean` = `boolean`, `org.example.Order` = `Order`). A bare
+overloaded name (e.g. `generateToken`) returns all overloads as an `ambiguous`
+set, each candidate carrying a `signature {arity, param_types}` object, plus a
+`try <qualified form>` suggestion. Unknown, malformed, or empty names return
+`found: false` instead of an error. Exit codes are `0` resolved, `2` not found,
+and `3` ambiguous.
+
+### `code-search view`
+
+Read a symbol or file with a compact outline/body contract.
+
+```bash
+code-search view "ArticleService"
+code-search view "ArticleService" --outline
+code-search view src/main/java/com/example/ArticleService.java --body --max-lines 80
+code-search view "ArticleService" --budget 2000 --json
+```
+
+Containers longer than 200 lines default to an outline with
+`source_omitted: true`; use `--body` to force the source. `--max-lines` caps the
+body and `--budget` trims members/source to an approximate token budget.
 
 ### `code-search graph`
 
@@ -203,9 +223,17 @@ code-search graph "myproject.auth.jwt.validate_token" --transitive --depth 2
 | `--direction` | `both` | `both`, `callers`, `callees`, or `implements` |
 | `--depth N` | `1` | Transitive expansion bound used with `--transitive` (max: 5) |
 | `--transitive` | off | Expand transitively to `--depth`; omit for direct-only |
+| `--limit N` | `call_graph_limit` (`50`) | Maximum rows per direction; the response's `paging` object reports the exact total and next offset |
+| `--offset N` | `0` | Row offset per direction for the next page |
 | `--json` | — | JSON output |
 
 `--direction implements` returns the static implementations of the referenced interface method in the `implementations` key (with `callers`/`callees` empty), sharing the dedicated lookup's rule and order.
+
+Receiver-qualified calls resolve through declared field, parameter, and local
+types; generic spellings are reduced to the base type (`ProcessContext<Order>`
+names `ProcessContext`). Calls through an interface method also carry derived
+`CALLS` edges to each implementing method, so path and impact reach the
+concrete implementation.
 
 ### `code-search implementations`
 
@@ -252,9 +280,10 @@ code-search query "who calls ArticleRepository.save" --depth 3 --json
 |------|---------|-------------|
 | `--depth N` | `2` | Traversal depth (max: 4) |
 | `--max-nodes N` | `120` | Maximum graph nodes (max: 200) |
-| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`CALLS`, `INHERITS`, `REFERENCES`, `IMPORTS`) |
+| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`CALLS`, `INHERITS`, `IMPLEMENTS`, `REFERENCES`, `USAGE`, `CALL_REFERENCE`, `IMPORTS`) |
 | `--token-budget N` | `1500` | Soft output budget; trimmed deterministically |
 | `--include-externals` | off | Include unresolved/external callee leaves; by default they are collapsed and counted in `stats.collapsed_externals` |
+| `--direction DIR` | `both` | `both`, `inbound` (callers/importers), or `outbound` (callees/imports) |
 | `--json` | — | JSON output |
 
 ### `code-search path`
@@ -270,7 +299,7 @@ code-search path "ArticleController.favoriteArticle" "ArticleRepository.save" --
 |------|---------|-------------|
 | `--undirected` | off | Traverse edges in both directions |
 | `--max-hops N` | `6` | Maximum path length (max: 6) |
-| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`CALLS`, `INHERITS`, `REFERENCES`, `IMPORTS`) |
+| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`CALLS`, `INHERITS`, `IMPLEMENTS`, `REFERENCES`, `USAGE`, `CALL_REFERENCE`, `IMPORTS`) |
 | `--json` | — | JSON output |
 
 Ambiguous endpoints are refused with their ranked candidates instead of being
@@ -289,23 +318,33 @@ code-search explain "ArticleRepository.save" --depth 2 --relations CALLS,INHERIT
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--depth N` | `1` | Ego-graph depth (max: 4) |
-| `--relations LIST` | `CALLS,INHERITS` | Comma-separated relations to include (`CALLS`, `INHERITS`, `REFERENCES`, `IMPORTS`) |
+| `--relations LIST` | `CALLS,INHERITS` | Comma-separated relations to include (`CALLS`, `INHERITS`, `IMPLEMENTS`, `REFERENCES`, `USAGE`, `CALL_REFERENCE`, `IMPORTS`) |
 | `--json` | — | JSON output |
 
 ### `code-search affected`
 
-Report symbols impacted by changed files, using reverse traversal over callers,
-subtypes, and importers.
+Report changed files and their blast radius, using traversal over callers,
+subtypes, importers, or (outbound) dependencies. The response separates
+production and test files/symbols and labels each impacted symbol with a
+heuristic risk level (`high`/`medium`/`low`).
 
 ```bash
 code-search affected --since HEAD~1
 code-search affected src/main/java/io/spring/core/Article.java --depth 3 --json
+code-search affected --base-branch main --scope tests --fixpoint
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--since REF` | — | Git ref to diff against; changed paths are added to any explicit paths |
-| `--depth N` | `3` | Reverse traversal depth (max: 4) |
+| `--base-branch REF` | — | Base ref to diff against (takes precedence over `--since`) |
+| `--scope MODE` | `impact` | `files` (changed set only), `impact` (full blast radius), or `tests` (test files/symbols) |
+| `--direction DIR` | `inbound` | `inbound` (dependents), `outbound` (dependencies), or `both` |
+| `--depth N` | `3` | Traversal depth (max: 4) |
+| `--fixpoint` | — | Walk to closure instead of stopping at `--depth` |
+| `--edge-types LIST` | `CALLS,INHERITS` | Symbol edge types to traverse |
+| `--no-imports` | — | Do not traverse file-level import edges |
+| `--seed-filter MODE` | `all` | `all` seeds every changed symbol; `product` drops test-file seeds |
 | `--json` | — | JSON output |
 
 ### `code-search map`
@@ -323,7 +362,117 @@ code-search map --top 20 --max-communities 8
 | `--output FILE` | — | Write Markdown to this path instead of stdout |
 | `--top N` | `15` | Number of god nodes |
 | `--max-communities N` | `10` | Maximum communities to report |
+| `--aspects LIST` | — | Return only the named bounded sections (`overview`, `structure`, `dependencies`, `hotspots`, `entry_points`, `clusters`, `cycles`, `all`) |
 | `--json` | — | JSON output |
+
+### `code-search schema`
+
+Describe the graph before querying it: stored labels, supported and emitted
+edge types, resolution tiers, unresolved targets, entry-point counts,
+importance availability, coverage gaps, and the index generation.
+
+```bash
+code-search schema
+code-search schema --diagnostics --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--diagnostics` | — | Include bounded edge-property diagnostics |
+| `--limit N` | `100` | Maximum node labels to return |
+| `--offset N` | `0` | Node-label offset |
+| `--json` | — | JSON output |
+
+### `code-search outline`
+
+List one file's declarations in source order. The exact total is returned even
+when the page is bounded.
+
+```bash
+code-search outline src/main/java/com/example/article/ArticleService.java
+code-search outline src/app.py --kind method,function --include-docstring
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--kind LIST` | — | Comma-separated declaration kinds |
+| `--limit N` | `200` | Maximum declarations (500 max) |
+| `--offset N` | `0` | Declaration offset |
+| `--include-docstring` | — | Include stored docstrings |
+| `--json` | — | JSON output |
+
+### `code-search symbols`
+
+Search symbols structurally: name/QN regex, kind, file glob, and resolved
+degree. Unlike `search`, this does not rank by text similarity.
+
+```bash
+code-search symbols --kind class --name-pattern '.*Controller' --include-entry-points
+code-search symbols --min-degree 5 --include-connected --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name-pattern RE` | — | Python regex full-match on the name |
+| `--qn-pattern RE` | — | Python regex full-match on the FQN |
+| `--kind LIST` | — | Comma-separated declaration kinds |
+| `--file-pattern GLOB` | — | Shell glob over the path, or `re:<regex>` |
+| `--min-degree N` | — | Minimum resolved total degree |
+| `--max-degree N` | — | Maximum resolved total degree |
+| `--edge-types LIST` | `CALLS,INHERITS,IMPLEMENTS,REFERENCES,USAGE,CALL_REFERENCE` | Edge types counted for degree |
+| `--include-entry-points` | off | Include classified entry points: tests, `main`, constructors, overrides, annotated handlers, and exported top-level declarations (excluded by default) |
+| `--include-connected` | off | Attach up to 10 resolved neighbours per symbol |
+| `--limit N` | `50` | Maximum symbols (200 max) |
+| `--offset N` | `0` | Result offset |
+| `--json` | — | JSON output |
+
+### `code-search dead-code`
+
+Report callables with no proven incoming reference from production code.
+Candidates exclude entry points and test symbols by default, and each row
+reports confidence, test-only usage, and same-name unresolved references.
+This is evidence, not permission to delete code.
+
+```bash
+code-search dead-code
+code-search dead-code --include-tests --json
+code-search dead-code --kinds function,method --include-entry-points
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--kinds LIST` | `function,method,constructor` | Candidate declaration kinds |
+| `--include-entry-points` | off | Include classified entry points |
+| `--include-tests` | off | Include test symbols as candidates |
+| `--limit N` | `50` | Maximum candidates (200 max) |
+| `--offset N` | `0` | Result offset |
+| `--json` | — | JSON output |
+
+Confidence is `high` (no incoming edges and no same-name unresolved calls),
+`medium` (same-name unresolved calls or test-only usage), or `low` (only
+low-confidence incoming evidence). Interface method declarations are not
+candidates; they are contracts implemented elsewhere.
+
+### `code-search coverage`
+
+Report where the index has gaps. This is how the CLI distinguishes "no
+callers" from "the caller was never indexed".
+
+```bash
+code-search coverage
+code-search coverage src/app.py
+code-search coverage --scope src --json
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--scope PREFIX` | — | Index-relative directory aggregate (repeatable) |
+| `--max-rows N` | `500` | Row cap (1000 max) |
+| `--json` | — | JSON output |
+
+Statuses are `no_recorded_issue`, `partial`, `unusable`, `skipped`,
+`excluded`, `not_indexed`, and `coverage_unavailable`. A clean result means no
+gap was recorded for the current generation, not that every reference resolved.
 
 ### `code-search metrics`
 
@@ -705,14 +854,23 @@ code-search search "validate token" \
 
 `--paths-only` returns only `file_path`, line range, the short symbol name, and
 classification fields. `--max-snippet-lines 0` omits content entirely;
-`--pretty` restores indented JSON. `--allow-weak` bypasses the extra
-abstention gate. `--no-daemon` (formerly `--no-startup-check`) serves one
-invocation in-process.
+`--pretty` restores indented JSON. JSON is compact by default, and `--meta
+short` (the default) collapses `freshness` to one value and omits
+`model_status`; pass `--meta full` when diagnosing model state. `--allow-weak`
+bypasses the extra abstention gate. `--strict` does the opposite: a low-
+confidence ranked pool with no definition hit and poor query coverage becomes
+`no_match`, with the weak rows preserved under `alternatives`. `--no-daemon`
+(formerly `--no-startup-check`) serves one invocation in-process.
 
 `code-search stats --format json` reports the effective profile, layout,
-freshness mode, index age, and per-store sizes. `code-search start`,
-`code-search status`, and `code-search doctor` are one-word aliases for the
-daemon lifecycle and a combined index/model/daemon diagnosis. `daemon wait
+freshness mode, index age, and per-store sizes. It also reports a `graph`
+section: edge counts by type and resolution tier, the most frequent unresolved
+targets, symbol counts by kind and language, and coverage gaps for the current
+`index_generation`. Coverage records distinguish `parse_partial`,
+`parse_unusable`, `skipped_read`, and `skipped_oversized` files so an empty
+graph answer can be separated from a file that was never indexed. `code-search
+start`, `code-search status`, and `code-search doctor` are one-word aliases for
+the daemon lifecycle and a combined index/model/daemon diagnosis. `daemon wait
 --timeout 30` waits for the model to become warm.
 
 ## Evaluation harness

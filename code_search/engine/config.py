@@ -25,6 +25,35 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+#: Ceiling for the in-memory adjacency cache. The effective budget is the
+#: smaller of this and a quarter of the memory the operating system reports as
+#: available, so a large host cannot spend its whole headroom on one snapshot.
+_GRAPH_CACHE_CEILING_BYTES = 256 * 1024 * 1024
+
+
+def _available_memory_bytes() -> int:
+    """Return the platform's available physical memory, or ``0`` when unknown."""
+    try:
+        return int(os.sysconf("SC_PAGE_SIZE")) * int(os.sysconf("SC_AVPHYS_PAGES"))
+    except (AttributeError, OSError, ValueError):
+        return 0
+
+
+def _graph_cache_bytes_default() -> int:
+    """Resolve the adjacency-cache byte budget.
+
+    An explicit ``CODE_SEARCH_GRAPH_CACHE_MAX_BYTES`` wins (``0`` disables the
+    cache). Otherwise the budget is the smaller of 256 MB and a quarter of the
+    memory the operating system reports as available. A platform that cannot
+    report memory gets the 256 MB ceiling rather than an unbounded cache.
+    """
+    explicit = os.environ.get("CODE_SEARCH_GRAPH_CACHE_MAX_BYTES")
+    if explicit not in (None, ""):
+        return max(0, int(explicit))
+    available = _available_memory_bytes()
+    budget = int(available * 0.25) if available > 0 else _GRAPH_CACHE_CEILING_BYTES
+    return max(0, min(_GRAPH_CACHE_CEILING_BYTES, budget))
+
 
 def load_language_config(config_path: Path | None = None) -> dict[str, Any]:
     """Load custom language configuration from a JSON file.
@@ -805,8 +834,57 @@ class Settings:
     call_graph_limit: int = field(
         default_factory=lambda: int(os.environ.get("CODE_SEARCH_CALL_GRAPH_LIMIT", "50"))
     )
+    # Configured entry-point names/globs, checked after the built-in rules.
+    # Comma-separated; matched against both the symbol name and its FQN.
+    entry_points: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            pattern.strip()
+            for pattern in os.environ.get("CODE_SEARCH_ENTRY_POINTS", "").split(",")
+            if pattern.strip()
+        )
+    )
     max_resolution_candidates: int = field(
         default_factory=lambda: int(os.environ.get("CODE_SEARCH_MAX_RESOLUTION_CANDIDATES", "10"))
+    )
+
+    # --- Graph adjacency cache ---
+    # A generation-keyed in-memory copy of resolved symbol edges. Traversal
+    # reads one array instead of one SQL query per visited node; the snapshot
+    # is dropped when the index generation changes or a write commits. The
+    # budget defaults to min(256 MB, 25% of available memory); ``0`` disables
+    # the cache and forces the SQL fallback. Idle entries expire so a daemon
+    # that indexes several repositories does not keep every snapshot resident.
+    graph_cache_enabled: bool = field(
+        default_factory=lambda: (
+            os.environ.get("CODE_SEARCH_GRAPH_CACHE_ENABLED", "true").lower()
+            in ("true", "1", "yes")
+        )
+    )
+    graph_cache_max_bytes: int = field(default_factory=_graph_cache_bytes_default)
+    graph_cache_idle_seconds: float = field(
+        default_factory=lambda: max(
+            0.0, float(os.environ.get("CODE_SEARCH_GRAPH_CACHE_IDLE_SECONDS", "900"))
+        )
+    )
+
+    # --- SQLite connection tuning ---
+    # Reader/writer page cache (KiB), memory-mapped I/O window, and whether
+    # temporary tables live in memory. These apply per connection; the values
+    # are deliberately modest so several connections stay inside the process
+    # budget.
+    sqlite_cache_kib: int = field(
+        default_factory=lambda: max(0, int(os.environ.get("CODE_SEARCH_SQLITE_CACHE_KIB", "65536")))
+    )
+    sqlite_mmap_bytes: int = field(
+        default_factory=lambda: max(
+            0, int(os.environ.get("CODE_SEARCH_SQLITE_MMAP_BYTES", str(256 * 1024 * 1024)))
+        )
+    )
+    sqlite_temp_store_memory: bool = field(
+        default_factory=lambda: (
+            os.environ.get("CODE_SEARCH_SQLITE_TEMP_STORE_MEMORY", "true").lower()
+            in ("true", "1", "yes")
+        )
     )
 
     # --- Metrics ---
@@ -1197,6 +1275,11 @@ class Settings:
             in ("true", "1", "yes")
         )
     )
+    # Per-batch wall-clock bound for the ripgrep backend. A timeout falls back
+    # to the in-process scan rather than returning a partial count.
+    exhaustive_rg_timeout_s: float = field(
+        default_factory=lambda: float(os.environ.get("CODE_SEARCH_EXHAUSTIVE_RG_TIMEOUT_S", "10"))
+    )
 
     # --- Enumerate mode ---
     # "list all controllers" collects the named symbol kind across the index
@@ -1435,6 +1518,27 @@ class Settings:
                 env_dir,
             )
         return cls(context_dir=context_dir)
+
+    def with_repo_expansions(self) -> Settings:
+        """Return settings that prefer a repository's own expansion pack.
+
+        A repository can ship ``.code-search/expansions.json`` next to its
+        ``.context`` directory to add or override domain vocabulary. An
+        explicit ``CODE_SEARCH_EXPANSION_FILE`` (or constructor value) always
+        wins, so operators keep the final say.
+
+        Returns:
+            The same settings when an expansion file is already configured or
+            no repository pack exists, else a copy pointing at the pack.
+        """
+        if self.expansion_file:
+            return self
+        candidate = Path(self.context_dir).resolve().parent / ".code-search" / "expansions.json"
+        if not candidate.is_file():
+            return self
+        from dataclasses import replace
+
+        return replace(self, expansion_file=str(candidate))
 
     def resolve_context_dir(self) -> Path:
         """Return the absolute, created context directory path.

@@ -1,12 +1,3 @@
----
-type: Index
-title: "Engine Modules"
-description: "Index of engine package module concepts (the core indexing, search, and ranking engine)."
-tags: [modules, engine, index]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
-status: draft
----
-
 # Engine Modules
 
 * [__init__](__init__.md) - engine package definition and version constant.
@@ -19,6 +10,7 @@ status: draft
 * [embeddings](embeddings.md) - `EmbeddingGenerator` and the Model2Vec-backed `VectorIndex`.
 * [expansions](expansions.md) - query synonym/expansion table loading.
 * [file_role](file_role.md) - file-role classification with evidence-based overrides (`classify_file_role`).
+* [find_related](find_related.md) - shared find-related anchor resolution and neighbour ranking (CLI, daemon, MCP).
 * [freshness](freshness.md) - two-tier stat + rehash freshness detection (`FreshnessChecker`).
 * [graph](graph.md) - SQLite-backed call/definition graph (`GraphDatabase`, `EdgeStore`, `ModuleEdgeStore`, `RationaleStore`, `DocLinkStore`, `IndexMetadataStore`).
 * [graph_query](graph_query.md) - bounded graph query/path/explain/impact traversal with provenance labels (`GraphQueryService`).

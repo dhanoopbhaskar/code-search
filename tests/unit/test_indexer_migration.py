@@ -13,6 +13,12 @@ enumerate mode can report structurally unparseable files.
 v12 adds ``code_chunks.content_type``, ``graph_edges.resolved`` /
 ``graph_edges.target_raw``, makes ``graph_edges.target_symbol_id`` nullable
 and rebuilds ``chunks_fts`` with the new content axis column.
+v17 deduplicates unresolved edges and creates the partial unique index that
+prevents them from multiplying, and adds the ``index_coverage`` table.
+v18 adds the edge ``properties`` column, widens the edge-type CHECK, adds the
+symbol trust columns (``canonical_fqn``, ``visibility``, ``is_test``,
+``is_entry_point``, ``entry_point_reason``, ``importance``), and creates the
+derived ``symbol_degrees`` table.
 """
 
 from __future__ import annotations
@@ -95,7 +101,7 @@ def _index_sql(db_path: Path, index: str) -> str | None:
         conn.close()
 
 
-def test_v7_database_migrates_to_v16(tmp_path: Path) -> None:
+def test_v7_database_migrates_to_v19(tmp_path: Path) -> None:
     db_path = tmp_path / "graph.db"
     _build_v7_database(db_path)
 
@@ -121,7 +127,7 @@ def test_v7_database_migrates_to_v16(tmp_path: Path) -> None:
             "SELECT value FROM index_metadata WHERE key = 'index_version';"
         ).fetchone()
         assert version is not None
-        assert int(version["value"]) == 16
+        assert int(version["value"]) == 19
         status = conn.execute(
             "SELECT value FROM index_metadata WHERE key = 'index_status';"
         ).fetchone()
@@ -131,7 +137,7 @@ def test_v7_database_migrates_to_v16(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_fresh_database_has_v16_schema_in_base_ddl(tmp_path: Path) -> None:
+def test_fresh_database_has_v19_schema_in_base_ddl(tmp_path: Path) -> None:
     db_path = tmp_path / "graph.db"
     db = GraphDatabase(db_path, Settings(context_dir=tmp_path))
     db.initialize()
@@ -148,7 +154,7 @@ def test_fresh_database_has_v16_schema_in_base_ddl(tmp_path: Path) -> None:
             "SELECT value FROM index_metadata WHERE key = 'index_version';"
         ).fetchone()
         assert version is not None
-        assert int(version["value"]) == 16
+        assert int(version["value"]) == 19
         assert "content_type" in _table_columns(db_path, "code_chunks")
         assert "is_test" in _table_columns(db_path, "code_chunks")
         edge_cols = _table_columns(db_path, "graph_edges")
@@ -195,13 +201,17 @@ def test_v9_database_gains_declared_rules_and_fts_parity(tmp_path: Path) -> None
         version = conn.execute(
             "SELECT value FROM index_metadata WHERE key = 'index_version';"
         ).fetchone()
-        assert int(version["value"]) == 16
+        assert int(version["value"]) == 19
         fts = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'chunks_fts';").fetchone()
         assert fts is not None and "declared_rules" in fts["sql"]
         assert "content_type" in fts["sql"]
+        assert "file_path" not in fts["sql"]
+        paths = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'paths_fts';").fetchone()
+        assert paths is not None and "file_path" in paths["sql"]
         code_count = conn.execute("SELECT COUNT(*) AS n FROM code_chunks;").fetchone()["n"]
         fts_count = conn.execute("SELECT COUNT(*) AS n FROM chunks_fts;").fetchone()["n"]
-        assert code_count == fts_count
+        paths_count = conn.execute("SELECT COUNT(*) AS n FROM paths_fts;").fetchone()["n"]
+        assert code_count == fts_count == paths_count
     finally:
         conn.close()
 
@@ -263,3 +273,53 @@ def test_v15_database_drops_unique_conventional_fqn_index(tmp_path: Path) -> Non
     index_sql = _index_sql(db_path, "idx_symbols_conventional_fqn")
     assert index_sql is not None
     assert "UNIQUE" not in index_sql.upper()
+
+
+def test_v16_database_deduplicates_unresolved_edges(tmp_path: Path) -> None:
+    """The v17 migration collapses duplicate unresolved edges before indexing.
+
+    SQLite's table-level UNIQUE ignores NULL targets, so a v16 database can
+    hold one row per repeated external reference. The migration keeps the
+    oldest row per ``(source, edge_type, target_raw)`` and installs the partial
+    unique index that prevents recurrence.
+    """
+    db_path = tmp_path / "graph.db"
+    conn = sqlite3.connect(str(db_path))
+    try:
+        for ddl in ALL_DDLS:
+            conn.execute(ddl)
+        conn.execute(
+            "INSERT INTO symbols "
+            "(id, fqn, name, kind, file_path, line_start, line_end, "
+            "column_start, column_end, language) "
+            "VALUES (1, '/repo/a.py::caller', 'caller', 'function', '/repo/a.py', 1, 4, 0, 0, "
+            "'python');"
+        )
+        conn.executemany(
+            "INSERT INTO graph_edges "
+            "(source_symbol_id, target_symbol_id, edge_type, resolved, target_raw) "
+            "VALUES (1, NULL, 'CALLS', 0, 'external.save');",
+            [()] * 3,
+        )
+        conn.execute("INSERT INTO index_metadata (key, value) VALUES ('index_version', '16');")
+        conn.execute("INSERT INTO index_metadata (key, value) VALUES ('index_status', 'ready');")
+        conn.commit()
+    finally:
+        conn.close()
+
+    db = GraphDatabase(db_path, Settings(context_dir=tmp_path))
+    db.initialize()
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM graph_edges WHERE target_symbol_id IS NULL;"
+        ).fetchone()[0]
+        version = conn.execute(
+            "SELECT value FROM index_metadata WHERE key = 'index_version';"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 1
+    assert int(version) == 19
+    assert _index_sql(db_path, "idx_edges_unique_unresolved") is not None

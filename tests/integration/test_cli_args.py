@@ -127,6 +127,34 @@ def test_cli_implementations_not_found_exits_zero(
 
 
 @pytest.mark.integration
+def test_cli_symbol_exit_codes_and_matched_flag(
+    indexed_transparency: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Resolved/not-found/ambiguous are distinct exit codes with ``matched``."""
+    context = f"--context-dir={indexed_transparency['context_dir']}"
+    no_daemon = "--no-daemon"
+
+    code, out = _run_cli(["symbol", "does.not.Exist", "--json", context, no_daemon], capsys)
+    assert code == 2
+    payload = json.loads(out)
+    assert payload["matched"] is False
+    assert payload["found"] is False
+
+    code, out = _run_cli(["symbol", "ArticleService", "--json", context, no_daemon], capsys)
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["matched"] is True
+    assert payload["found"] is True
+
+    code, out = _run_cli(["symbol", "ArticleService.save", "--json", context, no_daemon], capsys)
+    assert code == 3
+    payload = json.loads(out)
+    assert payload["matched"] is False
+    assert payload["found"] is True
+    assert payload["suggestion"].startswith("try ")
+
+
+@pytest.mark.integration
 def test_cli_graph_implements_direction(
     indexed_implementations: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:

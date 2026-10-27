@@ -1,10 +1,10 @@
 ---
 type: Module
 title: "engine.config"
-description: "Settings dataclass (env-var driven), language configuration overlay, and path-based file classification helpers."
+description: "Settings dataclass (env-var driven), runtime-profile presets, language configuration overlay, and path-based file classification helpers."
 resource: code_search/engine/config.py
 tags: [engine, config, settings]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/engine/config.py
@@ -18,7 +18,10 @@ Three responsibilities: (1) [`Settings`](../../types/Settings.md) — an
 immutable, env-var-driven configuration dataclass covering indexing,
 search, reranking, trust signals, freshness, graph traversal, metrics,
 and the MCP server, with every field reading a `CODE_SEARCH_*`
-environment variable; (2) [`LanguageConfig`](../../types/LanguageConfig.md) —
+environment variable. Two runtime presets (`standard`, `small`) select the
+index layout (`legacy`/`compact`) and freshness mode
+(`blocking`/`deferred`); explicit environment variables or CLI flags always
+win over the preset. (2) [`LanguageConfig`](../../types/LanguageConfig.md) —
 operator-supplied overrides of built-in language definitions
 (extensions, grammar modules, chunk node types) loaded from JSON; (3)
 path-classification helpers that determine whether a file is a test
@@ -31,7 +34,7 @@ reference.
 # Key Classes
 
 - [`LanguageConfig`](../../types/LanguageConfig.md) — merges user JSON overrides into built-in language definitions.
-- [`Settings`](../../types/Settings.md) — the frozen dataclass carrying 151 tunable fields.
+- [`Settings`](../../types/Settings.md) — the frozen dataclass carrying 168 tunable fields.
 
 # Key Functions
 

@@ -4,7 +4,7 @@ title: "GraphDatabase"
 description: "Thread-safe SQLite database connection manager for the code graph schema."
 resource: code_search/engine/graph.py#GraphDatabase
 tags: [graph, database, storage]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/engine/graph.py
@@ -15,9 +15,15 @@ sources:
 
 Thread-safe SQLite database connection manager for the code graph schema.
 Defined in [`engine.graph`](../modules/engine/graph.md). The current
-`SCHEMA_VERSION` is 14; `initialize()` migrates older databases forward
-(v14 adds the `module_edges`, `symbol_rationale` + `rationale_fts`, and
-`doc_links` tables).
+`SCHEMA_VERSION` is 18; `initialize()` migrates older databases forward.
+v14 added the `module_edges`, `symbol_rationale` + `rationale_fts`, and
+`doc_links` tables; v15 added `code_chunks.is_test` with its composite
+index; v16 replaced the unique conventional-FQN index with a non-unique one
+so legitimate duplicate symbols are no longer dropped; v17 deduplicated
+unresolved edges and added `index_coverage`; v18 added edge `properties`,
+the widened edge-type CHECK, `symbol_degrees`, and the symbol trust columns
+(`canonical_fqn`, `visibility`, `is_test`, `is_entry_point`,
+`entry_point_reason`, `importance`).
 
 # Methods
 
@@ -31,4 +37,5 @@ Defined in [`engine.graph`](../modules/engine/graph.md). The current
 | `set_fts_triggers(enabled: bool) -> None` | Drop (`False`) or recreate (`True`) the `chunks_fts` maintenance triggers; full builds suspend them while bulk-inserting and rebuild the index afterwards. |
 | `rebuild_fts() -> int` | Clear and repopulate `chunks_fts` from `code_chunks`. |
 | `fts_count() -> int` | Return the number of rows currently in `chunks_fts`. |
+| `run_post_index_maintenance(*, full_rebuild: bool) -> None` | Optimize FTS5 segments, `ANALYZE`, truncate the WAL, and (on a full rebuild) `VACUUM`; failures are logged because the index is already committed. |
 | `close() -> None` | Close the calling thread's cached connection, if any. |

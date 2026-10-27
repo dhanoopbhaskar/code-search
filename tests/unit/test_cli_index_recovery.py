@@ -111,3 +111,38 @@ def test_old_index_lock_is_treated_as_stale(
     assert not lock_path.exists()
     metadata.set_index_status.assert_called_once_with("stale")
     orchestrator.index_codebase.assert_called_once()
+
+
+def test_index_derives_context_dir_from_path_not_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``index --path`` keeps the index beside the indexed repo.
+
+    The index, vectors, session, and audit stores must all live under
+    ``<path>/.context`` even when the command runs from another directory, so a
+    single invocation cannot split one index across two context directories.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    args = _args(repo, repo / ".context")
+    args.context_dir = None
+
+    comps, _, orchestrator = _components(repo / ".context")
+    captured: dict[str, Any] = {}
+
+    def _components_for(context_dir: Path, **kwargs: Any) -> dict[str, Any]:
+        captured["context_dir"] = context_dir
+        captured["settings"] = kwargs["settings"]
+        return comps
+
+    monkeypatch.setattr(main, "_initialize_components", _components_for)
+    monkeypatch.setattr(main, "_check_model_profile", lambda _: None)
+
+    assert main.cmd_index(args) == 0
+    assert captured["context_dir"] == repo / ".context"
+    assert Path(captured["settings"].context_dir).resolve() == (repo / ".context").resolve()
+    orchestrator.index_codebase.assert_called_once()

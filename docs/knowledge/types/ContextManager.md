@@ -4,7 +4,7 @@ title: "ContextManager"
 description: "Manages the on-disk context directory holding all persistent index data."
 resource: code_search/context/__init__.py#ContextManager
 tags: [context, state]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/context/__init__.py
@@ -17,7 +17,9 @@ Manages the context directory structure that holds all persistent data
 (SQLite databases, vector index files, and the lock). Ensures the
 directory and sub-directories exist, caches paths for programmatic
 access, and provides both bulk path lookup and individual key-based
-retrieval. Defined in
+retrieval. Vector paths follow `settings.index_layout`: `compact` yields
+`vectors.v2.bin`/`vectors.v2.meta` (plus `.files`), `legacy` yields
+`vectors.bin`/`vectors.meta.json`. Defined in
 [`context`](../modules/context/__init__.md).
 
 # Class Attributes

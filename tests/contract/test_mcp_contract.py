@@ -24,7 +24,7 @@ EXPECTED_SEARCH_INPUT = {
         "mode": {"type": "string", "default": "ranked"},
         "content": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None},
         "no_model": {"type": "boolean", "default": False},
-        "matching": {"type": "string", "default": "all_tokens"},
+        "matching": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None},
         "regex": {"type": "boolean", "default": False},
         "compact": {"type": "boolean", "default": True},
         "max_snippet_lines": {"anyOf": [{"type": "integer"}, {"type": "null"}], "default": None},
@@ -73,6 +73,8 @@ EXPECTED_GRAPH_INPUT = {
         "direction": {"type": "string", "default": "both"},
         "max_depth": {"type": "integer", "default": 1},
         "transitive": {"type": "boolean", "default": False},
+        "limit": {"type": "integer", "default": 50},
+        "offset": {"type": "integer", "default": 0},
     },
     "required": ["symbol"],
 }
@@ -182,7 +184,7 @@ def mcp_server() -> FastMCP:
         mode: str = "ranked",
         content: str | None = None,
         no_model: bool = False,
-        matching: str = "all_tokens",
+        matching: str | None = None,
         regex: bool = False,
         compact: bool = True,
         max_snippet_lines: int | None = None,
@@ -199,6 +201,8 @@ def mcp_server() -> FastMCP:
         direction: str = "both",
         max_depth: int = 1,
         transitive: bool = False,
+        limit: int = 50,
+        offset: int = 0,
     ) -> str:
         return json.dumps({"symbol": None, "callers": [], "callees": []})
 

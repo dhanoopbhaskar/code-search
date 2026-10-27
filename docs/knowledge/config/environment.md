@@ -1,10 +1,10 @@
 ---
 type: Overview
 title: "Environment Configuration"
-description: "Full enumeration of CODE_SEARCH_* environment variables: the 151 Settings fields plus the separately-read language-config path."
+description: "Full enumeration of CODE_SEARCH_* environment variables: the 168 Settings fields plus the separately-read language-config path."
 resource: code_search/engine/config.py
 tags: [config, environment, settings]
-generated: { by: code-documenter/skill-v1.0, at: 2026-10-19T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/engine/config.py
@@ -41,7 +41,8 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_FAST_EMBEDDING_MODEL` | `potion-base-2M` | Model used when `model_profile=fast`. |
 | `CODE_SEARCH_FAST_EMBEDDING_DIM` | `64` | Embedding dimensionality for the fast profile. |
 | `CODE_SEARCH_EMBED_TEXT_MAX_CHARS` | `2000` | Max characters of enclosing-context + chunk content passed to the embedding model. |
-| `CODE_SEARCH_WARMUP_WAIT_S` | `5.0` | Bounded wait for the embedding model before the first query falls back to the reduced lexical path; `0` disables the wait. |
+| `CODE_SEARCH_WARMUP_WAIT_S` | `5.0` | Bounded wait for the embedding model when a cold query's gate rejection is caused by the still-loading model; on success the request answers on the hybrid path instead of the reduced lexical path. `0` disables the wait. |
+| `CODE_SEARCH_STARTUP_WAIT_S` | `10.0` | How long a client waits for a freshly spawned daemon to answer `ping` before falling back to an in-process invocation. |
 
 # Relevance Threshold
 
@@ -49,6 +50,8 @@ path controls per-language parsing settings via
 |---|---|---|
 | `CODE_SEARCH_RELEVANCE_THRESHOLD` | `0.05` | Minimum fused score for a result to be considered relevant. |
 | `CODE_SEARCH_RANKED_SCORE_FLOOR` | `0.05` | Minimum top fused score required for ranked mode to return results instead of `no_match`. |
+| `CODE_SEARCH_ABSTENTION_COVERAGE_MIN` | `0.5` | Maximum concept coverage still treated as insufficient by the post-rank abstention gate. |
+| `CODE_SEARCH_ABSTENTION_SEPARATION_MIN` | `1.05` | Maximum top-vs-median score separation still treated as insufficient by the abstention gate; `--allow-weak` bypasses the gate. |
 
 # Resource / Content Handling
 
@@ -65,6 +68,15 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_CONFIG_INJECT_BOOST` | `0.75` | Multiplier applied when injecting config chunks into results. |
 | `CODE_SEARCH_CONFIG_INJECT_PRIMARY_EXTRA` | `0.3` | Extra boost for the primary injected config chunk. |
 | `CODE_SEARCH_DOCS_CONTENT_BOOST` | `1.2` | Score multiplier applied by the reranker to `docs`-typed chunks when the query's content intent is `DOCS`. |
+| `CODE_SEARCH_DOCS_PROJECT_BOOST` | `1.35` | Boost for project-level documentation (root README/docs). |
+| `CODE_SEARCH_DOCS_THIRD_PARTY_PENALTY` | `0.35` | Penalty for vendored, sample, and third-party documentation trees. |
+| `CODE_SEARCH_DOCS_GENERATED_PENALTY` | `0.6` | Penalty for generated documentation (`help.md`, `changelog.md`, build output). |
+| `CODE_SEARCH_DOCS_INJECT_BOOST` | `0.3` | Multiplier for documentation chunks injected for a docs-intent query. |
+| `CODE_SEARCH_CONFIG_PRIMARY_BOOST` | `1.35` | Boost for primary application configuration (`application*`/`bootstrap*`, module `config/`). |
+| `CODE_SEARCH_CONFIG_NONPRIMARY_PENALTY` | `0.7` | Penalty for test, sample, and generated configuration. |
+| `CODE_SEARCH_MINIFIED_PENALTY` | `0.2` | Demotion for `.min.js`/`.min.css` bundles and `/dist/` assets. |
+| `CODE_SEARCH_VENDOR_PENALTY` | `0.5` | Demotion for `node_modules`, `vendor`, and `bower_components` assets. |
+| `CODE_SEARCH_MODULE_COHESION_BOOST` | `1.15` | Boost when a result's path segment exactly matches a query term (module-name disambiguation). |
 | `CODE_SEARCH_NON_CODE_LANGUAGE_DEMOTE` | `0.7` | Demotion multiplier for config/docs chunks under an active code-language query context. |
 | `CODE_SEARCH_CONFIG_SCENT_WORDS` | (built-in list) | Vocabulary that triggers config-scent detection. |
 | `CODE_SEARCH_EXHAUSTIVE_MATCHING_MODE` | `all_tokens` | `literal`, `all_tokens` (AND), or `any_token` (OR) line-matching semantics. |
@@ -84,7 +96,7 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_BM25_CONTENT_WEIGHT` | `1.0` | Weight of the content field in the FTS5 query. |
 | `CODE_SEARCH_BM25_SUBWORDS_WEIGHT` | `0.6` | Weight of the subwords field. |
 | `CODE_SEARCH_BM25_FQN_WEIGHT` | `0.5` | Weight of the fully-qualified-name field. |
-| `CODE_SEARCH_BM25_PATH_WEIGHT` | `0.2` | Weight of the file path field. |
+| `CODE_SEARCH_BM25_PATH_WEIGHT` | `0.2` | Weight of the repo-relative file path field. |
 | `CODE_SEARCH_BM25_RULES_WEIGHT` | `0.4` | Weight of the declared-rules field. |
 | `CODE_SEARCH_RRF_K` | `60` | Reciprocal Rank Fusion constant. |
 | `CODE_SEARCH_MAX_RESULTS` | `50` | Maximum results returned per search. |
@@ -161,11 +173,16 @@ path controls per-language parsing settings via
 | Variable | Default | Purpose |
 |---|---|---|
 | `CODE_SEARCH_RESPECT_GITIGNORE` | `true` | Honour repository `.gitignore` files during discovery and stale pruning; set to `false` to index ignored paths. |
+| `CODE_SEARCH_RUNTIME_PROFILE` | `standard` | Runtime preset: `standard` (legacy layout, blocking freshness) or `small` (compact layout, deferred freshness). |
+| `CODE_SEARCH_INDEX_LAYOUT` | (derived) | Vector metadata layout: `legacy` (`vectors.bin` + JSON sidecar) or `compact` (`vectors.v2.bin` + binary sidecar). Empty derives it from the profile. |
+| `CODE_SEARCH_FRESHNESS_MODE` | (derived) | Freshness refresh strategy: `blocking` (compute on the calling thread) or `deferred` (serve cache, refresh in the background). Empty derives it from the profile. |
+| `CODE_SEARCH_MAX_FILE_BYTES` | `1000000` | Largest file the indexer accepts; larger files are skipped and reported in `skipped_large_files`. |
+| `CODE_SEARCH_INDEX_GRAPH` | `true` | Persist call/import edges, rationale comments, and doc links. A build with this off reports `graph_indexed: false`. |
 | `CODE_SEARCH_LOCK_TIMEOUT` | `30.0` | Timeout for acquiring the index lock. |
 | `CODE_SEARCH_MAX_CHUNK_LINES` | `100` | Maximum lines per indexed chunk; defined but currently not consumed by the engine (the chunker uses a hard-coded default of 100). |
 | `CODE_SEARCH_WATCH_DEBOUNCE` | `1.0` | Debounce window (seconds) for [`FileWatcher`](../types/FileWatcher.md). |
 | `CODE_SEARCH_WATCH_POLL_INTERVAL` | `1.0` | Polling interval (seconds) for the file watcher. |
-| `CODE_SEARCH_FRESHNESS_TTL_SECONDS` | `5.0` | Cache TTL for computed freshness signals; `0` disables caching. |
+| `CODE_SEARCH_FRESHNESS_TTL_SECONDS` | `60.0` | Cache TTL for computed freshness signals; `0` disables caching. The effective TTL is at least twice the last scan duration. |
 | `CODE_SEARCH_MAX_GRAPH_DEPTH` | `5` | Maximum traversal depth for call-graph queries. |
 | `CODE_SEARCH_CALL_GRAPH_LIMIT` | `50` | Maximum nodes returned per call-graph query; defined but currently not consumed by the engine. |
 | `CODE_SEARCH_MAX_RESOLUTION_CANDIDATES` | `10` | Maximum candidates considered when resolving a symbol reference. |
@@ -277,6 +294,25 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_EXHAUSTIVE_CASE_SENSITIVE` | `true` | Case sensitivity for exhaustive-mode matching. |
 | `CODE_SEARCH_ENUMERATE_ENABLED` | `true` | Enables enumerate (list-all-instances) mode. |
 | `CODE_SEARCH_ENUMERATION_INTENT_WORDS` | (built-in list) | Vocabulary that triggers enumerate-mode detection. |
+
+# Runtime Profiles and Index Layout
+
+`CODE_SEARCH_RUNTIME_PROFILE` presets two settings. `standard` selects the
+legacy vector sidecar and blocking freshness; `small` selects the compact
+sidecar and deferred freshness. `CODE_SEARCH_INDEX_LAYOUT` and
+`CODE_SEARCH_FRESHNESS_MODE` override the preset individually. The CLI flags
+`--runtime-profile`, `--index-layout` (on `index`), and `--freshness-mode`
+(on query commands) override the preset for one invocation.
+`code-search stats` prints the effective values and
+[`Settings.profile_reason()`](../types/Settings.md) explains how they were
+chosen.
+
+# Storage Maintenance
+
+After a build, the indexer rewrites the persisted `subword_stats` and
+`prefix_stats` tables, records `corpus_chunk_count`, `index_layout`, and
+`skipped_large_files`, then optimizes FTS5, runs `ANALYZE`, and truncates the
+WAL. `VACUUM` runs only after a full rebuild.
 
 # See Also
 

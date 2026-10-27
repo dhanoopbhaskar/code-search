@@ -70,6 +70,7 @@ class TestDocsIntentReachability:
         assert envelope["content"] == "all"
         assert envelope["scope"]["origin"] == "inferred"
         assert envelope["scope"]["signal"] is not None
+        # Widening must not drop anything the code-focused pass found.
         assert _names(explicit_default["results"]) <= _names(envelope["results"])
 
     def test_mixed_code_and_docs_tokens_do_not_hide_code(

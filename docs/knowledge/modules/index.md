@@ -1,12 +1,3 @@
----
-type: Index
-title: "Modules"
-description: "Index of all source module concepts, grouped by package."
-tags: [modules, index]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
-status: draft
----
-
 # Module Packages
 
 * [code_search](code_search.md) - top-level package overview.

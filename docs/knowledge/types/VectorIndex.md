@@ -1,10 +1,10 @@
 ---
 type: Class
 title: "VectorIndex"
-description: "In-memory/on-disk vector index for cosine-similarity nearest-neighbor search over chunk embeddings."
+description: "In-memory/on-disk vector index for cosine-similarity nearest-neighbor search over chunk embeddings, with legacy JSON or compact binary metadata."
 resource: code_search/engine/embeddings.py#VectorIndex
 tags: [embeddings, vector-search, index]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/engine/embeddings.py
@@ -18,12 +18,19 @@ embeddings, persisted alongside the SQLite index. Defined in
 [`engine.embeddings`](../modules/engine/embeddings.md); consumed by
 [`VectorSearch`](VectorSearch.md).
 
+In compact mode the metadata sidecar is a `CSVMETA1` header followed by
+packed `(chunk_id, file_id, content_type)` rows, with file paths appended
+to a sibling `.files` NDJSON dictionary. Path and content filters then run
+as numpy masks, and saves append only new rows. Legacy JSON v2 sidecars are
+accepted and migrate on the next save.
+
 # Methods
 
 | Method | Description |
 |---|---|
-| `__init__(vectors_bin_path: Path, vectors_meta_path: Path, removed_path: Path \| None = None) -> None` | Initialize an in-memory vector index backed by three on-disk files. |
+| `__init__(vectors_bin_path: Path, vectors_meta_path: Path, removed_path: Path \| None = None, compact: bool = False) -> None` | Initialize an in-memory vector index backed by three on-disk files; *compact* selects the binary sidecar. |
 | `load() -> None` | Load vectors, metadata, and tombstones from disk, if they exist. |
+| `set_path_lookup(lookup: Any, bulk_lookup: Any = None) -> None` | Attach `chunk_id -> file_path` resolvers used by compact metadata, with an optional bulk resolver for legacy rows. |
 | `save() -> None` | Persist the delta since the last save (appended rows + tombstones). |
 | `add(chunk_id: int, embedding: np.ndarray, metadata: dict[str, Any]) -> int` | Append one vector + metadata entry and return its physical index. |
 | `add_batch(chunk_ids: list[int], embeddings: list[np.ndarray], metadata_list: list[dict[str, Any]]) -> list[int]` | Append multiple vectors + metadata entries atomically. |

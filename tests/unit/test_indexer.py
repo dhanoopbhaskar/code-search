@@ -474,7 +474,7 @@ def test_stale_sweep_removes_all_rows_for_deleted_file(
             (str(deleted_file),),
         ).fetchone()["n"]
         fts_rows = conn.execute(
-            "SELECT COUNT(*) AS n FROM chunks_fts WHERE file_path = ?;",
+            "SELECT COUNT(*) AS n FROM paths_fts WHERE file_path = ?;",
             (str(deleted_file),),
         ).fetchone()["n"]
         sym_rows = conn.execute(

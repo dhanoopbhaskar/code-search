@@ -8,7 +8,7 @@ An AI code context engine for air-gapped, CPU-only enterprise environments. Comb
 - **Symbol definition lookup** — resolve any symbol by fully qualified name (FQN)
 - **Call graph traversal** — navigate upstream callers and downstream callees
 - **Session-aware ranking** — recently modified files rank higher in results
-- **MCP protocol server** — expose the full search, symbol, graph, and impact toolset to MCP-compatible AI assistants
+- **MCP protocol server** — expose the full search, symbol, graph, architecture, coverage, and impact toolset to MCP-compatible AI assistants
 - **Enterprise compliance** — no outbound network calls during search or serving, secret redaction, append-only audit logging
 
 ## Requirements
@@ -71,6 +71,7 @@ code-search start                                  # once per machine/session
 code-search search "<query>" --json --paths-only   # discovery
 code-search search "<regex>" --mode exhaustive --regex  # enumeration
 code-search symbol <Fqn>                           # definitions
+code-search view <Fqn|file> --budget 2000          # compact outline/read
 code-search graph <Fqn> --explain-unresolved       # structural answers
 ```
 
@@ -92,7 +93,7 @@ additive. To index ignored paths anyway, set
 code-search search "how is JWT validation implemented" --limit 5
 code-search search "database connection pool settings" --content config   # config chunks only
 code-search search "how to run the dev server" --content docs             # docs chunks only
-code-search search "public Comment save" --mode exhaustive --matching literal --json
+code-search search "public Comment save" --matching literal --json
 ```
 
 `--content {code,config,docs,all,code_focused}` scopes a search to one content
@@ -143,16 +144,33 @@ envelope carries an accurate direction to include it (`--content config` or
 match set, and `enumerate` lists the definitions of a named symbol kind (for
 example "list all controllers").
 
-`--matching {literal,all_tokens,any_token}` selects the exhaustive matching
-semantics per request (default `all_tokens`): `literal` treats the whole
-query as one verbatim substring, `any_token` keeps OR semantics. Every
-exhaustive result set labels its `matching_semantics` so a count is never
-presented as an exact-phrase count.
+`--matching {literal,all_tokens,any_token}` selects exact line-wise matching
+per request: `literal` treats the whole query as one verbatim substring,
+`any_token` keeps OR semantics. Supplying `--matching` implies
+`--mode exhaustive`, so `--matching literal` alone returns the exact set and
+count; without the flag, exhaustive mode keeps its configured default
+(`all_tokens`). Every exhaustive result set labels its `matching_semantics` so
+a count is never presented as an exact-phrase count.
 
 `--regex` compiles the query as a regular expression and scans line by line;
 it requires `--mode exhaustive` and labels the result set
 `matching_semantics: "regex"`. An invalid pattern is reported as an
 `invalid_regex` explanation rather than silently returning nothing.
+
+`code-search ask "<question>"` routes one question to the right surface:
+identifiers and definition phrasing go to symbol resolution, "who calls" /
+"what does X call" to the call graph, "who implements" to implementation
+lookup, a quoted literal to exhaustive search, and everything else to ranked
+search. The reply is one compact payload with `answer_type`, an `answer`
+object, and follow-up `next` suggestions; `--budget` caps its output in tokens
+and `--strict` applies the abstention gate to ranked answers. The MCP `ask`
+tool exposes the same router.
+
+`code-search start --watch` (or `serve --watch`) starts a daemon-managed
+incremental indexer: change batches are debounced, re-indexed with the policy
+recorded at index time, and followed by a vector/cache reload. The freshness
+signal clears when the run completes, so a watching server does not report a
+stale index for the whole TTL.
 
 For repeated CLI use, run `code-search daemon start` once so a resident
 process owns the model load. `--no-startup-check` skips the transparent
@@ -178,11 +196,36 @@ results use the same hybrid ranking path as code and carry the same per-result
 also detects an out-of-band index rebuild and returns a visible "index changed
 — restart required" envelope instead of silent empty/stale results.
 
+JSON output is compact by default; add `--pretty` for indentation. `--meta
+short` (the default) collapses `freshness` to one value and omits
+`model_status`; `--meta full` keeps the diagnostic object.
+
 ### Look up a symbol
 
 ```bash
 code-search symbol "myproject.auth.jwt.validate_token"
+code-search symbol "ArticleService" --outline          # members, no class body
+code-search view "ArticleService" --budget 2000        # compact read
+code-search view src/main/java/com/example/ArticleService.java --body --max-lines 80
 ```
+
+`symbol` resolves a signature-qualified overload in one call (for example
+`OrderService.findOrderById(Long,boolean)`); fully qualified stored parameter
+types and Java primitives/boxed types match their short spellings. A genuinely
+ambiguous name exits `3`, an unknown name exits `2`, and a resolved definition
+exits `0`, so scripts can branch without parsing the payload.
+
+`view` is the compact read path: containers longer than 200 lines default to an
+outline with `source_omitted: true`; `--body` forces the source and `--outline`
+forces the member list. `--max-lines` and `--budget` bound the result.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--outline` | — | Return member declarations instead of the source body |
+| `--max-lines N` | — | Cap the returned source lines |
+| `--json` | — | Structured JSON output |
+| `--pretty` | off | Pretty-print JSON (compact by default) |
+| `--meta short\|full` | `short` | Short collapses freshness to one value and omits `model_status`; `full` preserves the diagnostic object |
 
 ### Traverse the call graph
 
@@ -193,12 +236,25 @@ code-search graph "myproject.auth.jwt.validate_token" --transitive --depth 2
 
 Each caller/callee appears once at its minimum depth. Direct-only is the
 default; add `--transitive` to expand to `--depth` (bounded by the configured
-graph depth). Pass `--direction implements` to return the static types that
-implement an interface method instead:
+graph depth). Results are paged: one bounded page per direction (default 50,
+`--limit N`) plus a `paging` object carrying the exact total and the next
+`--offset`, so a symbol with hundreds of callers does not dump the whole graph
+into an agent's context. Pass `--direction implements` to return the static
+types that implement an interface method instead:
 
 ```bash
 code-search graph "myproject.auth.ArticleRepository.findBySlug" --direction implements
 ```
+
+Receiver-qualified calls resolve through the declared field, parameter, or
+local type. Type spellings are reduced to their base name, so
+`execute(ProcessContext<Order> context)` makes `context.getPayload()` address
+`ProcessContext.getPayload` instead of the unaddressable
+`ProcessContext<Order>.getPayload`. When the declared type inherits the method,
+the nearest superclass or interface declaration is used. A call through an
+interface method additionally gets a derived `CALLS` edge to each implementing
+method (`properties.via = "interface_dispatch"`, tier `type_infer`), so path
+and impact walks reach the code that actually handles the call.
 
 ### Find interface implementations
 
@@ -232,8 +288,9 @@ code-search query "who calls ArticleRepository.save" --depth 3 --json
 |------|---------|-------------|
 | `--depth N` | `2` | Traversal depth (max: 4) |
 | `--max-nodes N` | `120` | Maximum graph nodes (max: 200) |
-| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`IMPORTS` and `REFERENCES` are opt-in) |
+| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`IMPORTS`, `REFERENCES`, `IMPLEMENTS`, `USAGE`, and `CALL_REFERENCE` are opt-in) |
 | `--token-budget N` | `1500` | Soft output budget; the answer is trimmed deterministically |
+| `--direction DIR` | `both` | `both`, `inbound` (callers/importers), or `outbound` (callees/imports) |
 | `--json` | — | Structured JSON output |
 
 ### Shortest path
@@ -247,7 +304,7 @@ code-search path "ArticleController.favoriteArticle" "ArticleRepository.save" --
 |------|---------|-------------|
 | `--undirected` | off | Traverse edges in both directions |
 | `--max-hops N` | `6` | Maximum path length (max: 6) |
-| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`CALLS`, `INHERITS`, `REFERENCES`, `IMPORTS`) |
+| `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`CALLS`, `INHERITS`, `IMPLEMENTS`, `REFERENCES`, `USAGE`, `CALL_REFERENCE`, `IMPORTS`) |
 | `--json` | — | Structured JSON output |
 
 ### Explain a symbol
@@ -267,8 +324,12 @@ a network call.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--depth N` | `1` | Ego-graph depth (max: 4) |
-| `--relations LIST` | `CALLS,INHERITS` | Comma-separated relations to include (`CALLS`, `INHERITS`, `REFERENCES`, `IMPORTS`) |
+| `--relations LIST` | `CALLS,INHERITS` | Comma-separated relations to include (`CALLS`, `INHERITS`, `IMPLEMENTS`, `REFERENCES`, `USAGE`, `CALL_REFERENCE`, `IMPORTS`) |
+| `--budget N` | — | Approximate output-token budget; edges then nodes are trimmed |
+| `--full` | — | Emit the duplicated engine payload instead of short ids and a legend |
 | `--json` | — | Structured JSON output |
+| `--pretty` | off | Pretty-print JSON (compact by default) |
+| `--meta short\|full` | `short` | Short collapses freshness to one value |
 
 ### Impact analysis and architecture map
 
@@ -280,8 +341,119 @@ code-search map --output graph-report.md
 
 | Command | Flags | Description |
 |---|---|---|
-| `affected` | `--since REF`, `--depth N`, `--json` | Reverse-traverse callers, subtypes, and importers of changed files |
-| `map` | `--output FILE`, `--top N`, `--max-communities N`, `--json` | Write a deterministic architecture report (god nodes, communities, import cycles) |
+| `affected` | `--since REF`, `--base-branch REF`, `--scope MODE`, `--direction DIR`, `--depth N`, `--fixpoint`, `--edge-types LIST`, `--no-imports`, `--seed-filter MODE`, `--json`, `--full`, `--pretty`, `--meta short\|full` | Report changed files and their blast radius with one canonical symbol list, production/test buckets, and per-symbol risk labels; `--full` keeps the legacy duplicated views |
+| `map` | `--output FILE`, `--top N`, `--max-communities N`, `--aspects LIST`, `--json` | Write a deterministic architecture report (god nodes, communities, import cycles); `--aspects` returns a bounded section instead |
+
+Impact results also carry `parents` (the parent FQN and edge type that first
+reached each impacted symbol) so a blast-radius answer is reproducible and
+auditable. When the in-memory adjacency snapshot is warm, affected answers
+report `summary.adjacency = "cache"`; the SQL fallback reports `"sql"`.
+
+### Graph performance and the adjacency cache
+
+`path`, `impact`, and the Cypher recursive walks read the graph through a
+process-wide, generation-keyed adjacency snapshot. The snapshot is a compact
+CSR copy of resolved symbol edges, built with one sequential scan and keyed by
+`(database path, index_generation)`. A reindex changes the generation, and any
+committed write drops the entry eagerly, so a query never serves an edge the
+index no longer has.
+
+The cache is bounded and best-effort: it defaults to
+`min(256 MB, 25% of available memory)`, refuses a snapshot that would exceed
+the budget, expires idle entries, and falls back to the SQL path on any build
+failure. `CODE_SEARCH_GRAPH_CACHE_MAX_BYTES=0` or
+`CODE_SEARCH_GRAPH_CACHE_ENABLED=false` disables it.
+
+Measure the current index (or a generated graph) with:
+
+```bash
+.venv/bin/python scripts/benchmark_graph.py --repo test-repo --context test-repo/.context --reuse
+.venv/bin/python scripts/benchmark_graph.py --synthetic-symbols 100000 --synthetic-fanout 4
+```
+
+The report includes `path_6_hops`, `path_6_hops_sql`, `impact_depth_3`,
+`impact_depth_3_sql`, Cypher baselines, and the cache's size/hit/build counters.
+
+### Graph discovery and coverage
+
+```bash
+code-search schema --json
+code-search outline src/main/java/com/example/article/ArticleService.java
+code-search symbols --kind class --name-pattern '.*Service' --min-degree 1 --include-entry-points
+code-search dead-code --json
+code-search coverage --scope src --json
+```
+
+| Command | Flags | Description |
+|---|---|---|
+| `schema` | `--diagnostics`, `--limit N`, `--offset N`, `--json` | Stored labels, supported/emitted edge types, tiers, unresolved targets, coverage, generation |
+| `outline` | `--kind LIST`, `--limit N`, `--offset N`, `--include-docstring`, `--json` | One file's declarations in source order with an exact total |
+| `symbols` | `--name-pattern RE`, `--qn-pattern RE`, `--kind LIST`, `--file-pattern GLOB`, `--min-degree N`, `--max-degree N`, `--edge-types LIST`, `--include-entry-points`, `--include-connected`, `--limit N`, `--offset N`, `--json` | Structural symbol search over regex/kind/file/degree, not text similarity |
+| `dead-code` | `--kinds LIST`, `--include-entry-points`, `--include-tests`, `--limit N`, `--offset N`, `--json` | Callables with no proven production reference, with confidence, test-only usage, and unresolved same-name evidence |
+| `coverage` | `--scope PREFIX`, `--max-rows N`, `--json` | Per-file or per-scope gaps (`partial`, `unusable`, `skipped`, `excluded`, `not_indexed`) with freshness and a recommended action |
+
+`schema`, `outline`, `symbols`, `dead-code`, and `coverage` have matching MCP
+tools (`get_graph_schema`, `get_file_outline`, `search_symbols`,
+`find_dead_code`, `check_index_coverage`). `get_architecture`,
+`detect_changes`, and `cypher_query` complete the MCP-side discovery set.
+`ask` routes one question to the right tool, and `doctor` reports index, model,
+daemon, and graph health. High-volume tools accept `max_output_tokens` (soft
+budget) and `profile` (`compact`/`outline`/`full`) so an agent can bound the
+reply it receives.
+Dead-code results are candidates with evidence, never permission to delete
+code: per-row `incoming.unresolved_same_name` and `used_only_by_tests` show
+where a dynamic caller may keep a symbol alive. A clean coverage result means
+no gap was recorded for the current generation — not that every reference
+resolved.
+
+### Query the graph with the read-only Cypher subset
+
+The fixed graph commands cover common questions. For precise multi-hop and
+aggregate questions, `cypher` accepts a deliberately small, read-only Cypher
+subset over the same index:
+
+```bash
+code-search cypher 'MATCH (f:Function) WHERE NOT EXISTS { (f)<-[:CALLS]-(src) WHERE src.is_test = 0 } RETURN f.name, f.file_path ORDER BY f.name LIMIT 50'
+code-search cypher 'MATCH (c:Class)-[:IMPLEMENTS]->(i:Interface) RETURN i.name AS interface, count(c) AS implementations ORDER BY implementations DESC'
+code-search cypher 'MATCH (a:Function)-[:CALLS*1..3]->(b:Function) RETURN a.name AS source, b.name AS target ORDER BY source, target'
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--limit N` | `100` | Maximum rows returned (max: 500) |
+| `--offset N` | `0` | Row offset; ignored when `--cursor` is set |
+| `--cursor C` | — | Generation-keyed cursor from the previous page (`next_cursor`) |
+| `--timeout-ms N` | `5000` | Wall-clock deadline (max: 30000) |
+| `--json` | — | Structured JSON output |
+
+Supported clauses are `MATCH`, `OPTIONAL MATCH`, `WHERE`, `WITH`, `UNWIND`,
+`RETURN`, `ORDER BY`, `SKIP`, `LIMIT`, `DISTINCT`, `UNION [ALL]`, and `CASE`.
+Patterns support labelled nodes (`Function`, `Method`, `Class`, `Interface`,
+`Enum`, `Constructor`, `Field`, `Variable`, `Import`, `TypeAlias`), synthetic
+`File`, `Module`, and `Unresolved` nodes, directed relationships, inline
+property maps, and bounded `[*1..5]` paths. `CONTAINS` is a synthetic structural
+edge from `parent_symbol_id`; `IMPORTS` between `File` nodes comes from
+`module_edges`. `WHERE` supports comparisons, `AND`/`OR`/`NOT`/`XOR`, `IN`,
+`CONTAINS`, `STARTS WITH`, `ENDS WITH`, `IS [NOT] NULL`, `=~` (full match), label
+tests, and `EXISTS { ... }`. Aggregates are `count`, `sum`, `avg`, `min`, `max`,
+and `collect`; scalar functions are `labels`, `type`, `id`, `coalesce`,
+`toLower`, `toUpper`, `toString`, `size`/`length`, `substring`, `replace`, and
+`trim`.
+
+The query is read-only and parameterized: caller literals never become SQL.
+Unsupported syntax returns an explicit `unsupported ...` error instead of an
+empty result. Results are bounded by the row, byte, and time caps, and ordered
+deterministically. `MATCH (f) RETURN f` returns a JSON object for a whole node;
+`labels()` returns the single canonical label string, and
+`size()`/`length()` measure string length (use `collect` and `UNWIND` for list
+work). `find_dead_code` also reports its equivalent Cypher query as
+`canonical_query`. A `UNION` applies the final `RETURN`'s `ORDER BY`/`LIMIT`.
+`OPTIONAL MATCH ... WHERE`, `WITH *`, `$parameters`, aggregates in `UNWIND`, and
+variable-length paths inside `OPTIONAL MATCH` or `EXISTS` are intentionally
+unsupported. The `=~` operator is a Python regular expression (full match,
+capped at 500 characters); Python's regex engine cannot be interrupted by the
+SQLite deadline, so keep patterns simple. Empty results are not proof of
+completeness: run `code-search coverage` before trusting a negative answer.
 
 ### Repeatable queries with the query daemon
 
@@ -332,7 +504,7 @@ code-search metrics --format prometheus
 
 ### View audit logs
 
-Every search, symbol lookup, call graph, find_related, implementation-lookup, graph-query, path, explain, impact, and map query is recorded in an append-only SQLite audit log at `.context/audit.db` (rows cannot be updated or deleted). View the most recent entries:
+Every search, symbol lookup, call graph, find_related, implementation-lookup, graph-query, path, explain, impact, dead-code, and map query is recorded in an append-only SQLite audit log at `.context/audit.db` (rows cannot be updated or deleted). View the most recent entries:
 
 ```bash
 sqlite3 .context/audit.db \
@@ -340,7 +512,7 @@ sqlite3 .context/audit.db \
    FROM audit_log_entries ORDER BY id DESC LIMIT 20;"
 ```
 
-Filter by query type (`search`, `get_symbol_definition`, `get_call_neighbors`, `find_related`, `get_implementations`, `query_graph`, `shortest_path`, `explain_symbol`, `get_impact`, `map`):
+Filter by query type (`search`, `get_symbol_definition`, `get_call_neighbors`, `find_related`, `get_implementations`, `query_graph`, `shortest_path`, `explain_symbol`, `get_impact`, `map`, `get_graph_schema`, `get_file_outline`, `search_symbols`, `find_dead_code`, `get_architecture`, `check_index_coverage`, `detect_changes`, `cypher_query`):
 
 ```bash
 sqlite3 .context/audit.db \
@@ -463,7 +635,7 @@ make check
 │   ├── cli/          # CLI entry point
 │   │   └── main.py         # code-search CLI commands
 │   ├── mcp/          # MCP protocol server
-│   │   └── server.py       # FastMCP stdio server with 9 tools
+│   │   └── server.py       # FastMCP stdio server with 19 tools
 │   └── context/      # Context directory management
 │       └── __init__.py     # .context/ directory setup
 ```
@@ -552,4 +724,10 @@ The install script detects the `deps/` directory and uses `pip --no-index --find
 | `CODE_SEARCH_SESSION_TTL_HOURS` | `24` | Session entry TTL in hours |
 | `CODE_SEARCH_RRF_K` | `60` | RRF ranking constant |
 | `CODE_SEARCH_MAX_RESULTS` | `50` | Maximum results per search |
+| `CODE_SEARCH_GRAPH_CACHE_ENABLED` | `true` | Enable the generation-keyed in-memory adjacency cache |
+| `CODE_SEARCH_GRAPH_CACHE_MAX_BYTES` | `min(256 MB, 25% RAM)` | Cache byte budget; `0` disables the cache and forces the SQL path |
+| `CODE_SEARCH_GRAPH_CACHE_IDLE_SECONDS` | `900` | Drop snapshots unused for this long; `0` disables idle expiry |
+| `CODE_SEARCH_SQLITE_CACHE_KIB` | `65536` | Per-connection SQLite page cache in KiB; `0` keeps SQLite's default |
+| `CODE_SEARCH_SQLITE_MMAP_BYTES` | `268435456` | SQLite memory-mapped I/O window; `0` disables memory mapping |
+| `CODE_SEARCH_SQLITE_TEMP_STORE_MEMORY` | `true` | Keep temporary SQLite tables in memory |
 

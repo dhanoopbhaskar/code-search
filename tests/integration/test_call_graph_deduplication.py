@@ -159,6 +159,36 @@ def test_depth_one_is_direct_and_deeper_is_indirect(dedup_comps: dict[str, Any])
     assert indirect == {"leaf"}
 
 
+@pytest.mark.integration
+@pytest.mark.slow
+def test_payload_pages_wide_fan_in_with_exact_totals(dedup_comps: dict[str, Any]) -> None:
+    """A paged payload returns one bounded span and the unpaged total."""
+    data = json.loads(
+        _call_neighbors_payload(
+            dedup_comps["symbol_store"],
+            dedup_comps["edge_store"],
+            "root",
+            "callees",
+            3,
+            None,
+            False,
+            dedup_comps["db"],
+            limit=1,
+            offset=0,
+        )
+    )
+
+    assert len(data["callees"]) == 1
+    assert data["paging"]["callees"] == {
+        "returned": 1,
+        "total": 2,
+        "limit": 1,
+        "offset": 0,
+        "has_more": True,
+        "next_offset": 1,
+    }
+
+
 def _mcp_payload(
     comps: dict[str, Any],
     symbol: str,
@@ -346,7 +376,7 @@ def test_no_schema_or_column_change(dedup_comps: dict[str, Any]) -> None:
     ``symbols``/``graph_edges`` columns are unchanged."""
     from code_search.engine.graph import SCHEMA_VERSION
 
-    assert SCHEMA_VERSION == 16
+    assert SCHEMA_VERSION == 19
     with dedup_comps["db"].connect() as conn:
         symbol_cols = {r["name"] for r in conn.execute("PRAGMA table_info(symbols);")}
         edge_cols = {r["name"] for r in conn.execute("PRAGMA table_info(graph_edges);")}
@@ -364,7 +394,13 @@ def test_no_schema_or_column_change(dedup_comps: dict[str, Any]) -> None:
         "declared_rules",
         "language",
         "conventional_fqn",
+        "canonical_fqn",
         "parent_symbol_id",
+        "visibility",
+        "is_test",
+        "is_entry_point",
+        "entry_point_reason",
+        "importance",
         "created_at",
         "updated_at",
     }
@@ -378,5 +414,6 @@ def test_no_schema_or_column_change(dedup_comps: dict[str, Any]) -> None:
         "resolution_tier",
         "resolved",
         "target_raw",
+        "properties",
         "created_at",
     }

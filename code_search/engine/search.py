@@ -8,10 +8,14 @@ Provides three layers:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import re
+import shutil
+import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, cast
 
@@ -51,7 +55,7 @@ from code_search.engine.match_boost import (
     normalize_name,
     strongest_tier,
 )
-from code_search.engine.paths import normalize_indexed_path
+from code_search.engine.paths import normalize_indexed_path, repo_relative_path
 from code_search.engine.query_terms import collapse_terms, morphological_variants
 from code_search.engine.reranking import demote_test_file_candidates
 from code_search.engine.scent_detection import (
@@ -1182,8 +1186,43 @@ class HybridSearch:
         self._vocab_by_language: dict[str, set[str]] | None = None
         self._analysis: QueryAnalysis | None = None
         self._test_paths_cache: list[str] | None = None
+        self._content_type_cache: dict[str, str] = {}
+        self._index_root: Path | None = None
+        self._index_root_resolved = False
+        self._signal_paths: dict[str, str] = {}
         if no_model:
             logger.debug("HybridSearch running in --no-model fast path")
+
+    def _signal_path(self, file_path: str) -> str:
+        """Return the repo-relative spelling that path-shape signals must use.
+
+        Test-root, non-canonical, file-role and path-class classification all
+        match path segments and substrings, so the stored absolute path lets
+        the checkout location change the verdict — a clone under ``vendor/``
+        marks every chunk non-canonical and demotes the whole result set.
+        Resolved once from the index metadata and memoised per stored path.
+
+        Args:
+            file_path: The stored (usually absolute) file path.
+
+        Returns:
+            The repo-relative POSIX path, or *file_path* when the index root
+            is unknown or the path lies outside it.
+        """
+        cached = self._signal_paths.get(file_path)
+        if cached is not None:
+            return cached
+        if not self._index_root_resolved:
+            self._index_root_resolved = True
+            try:
+                stored_root = IndexMetadataStore(self._db).get("index_root")
+            except Exception:
+                stored_root = None
+            if stored_root:
+                self._index_root = Path(stored_root)
+        resolved = repo_relative_path(file_path, self._index_root)
+        self._signal_paths[file_path] = resolved
+        return resolved
 
     def _vector_layer_health(self) -> bool:
         """Return whether the vector layer is genuinely usable for this query.
@@ -1370,6 +1409,7 @@ class HybridSearch:
         matching: str | None = None,
         regex: bool = False,
         allow_weak: bool = False,
+        strict: bool = False,
     ) -> dict[str, Any]:
         """Run the full hybrid search pipeline and stamp the per-request timer.
 
@@ -1403,6 +1443,10 @@ class HybridSearch:
             regex: Exhaustive-only regular-expression mode; *query* is compiled
                 as a Python regex instead of being tokenized. Ignored outside
                 exhaustive mode.
+            strict: When true, a low-confidence ranked pool with no definition
+                hit and informative coverage below
+                ``exact_token_coverage_min`` becomes a ``no_match`` envelope
+                with the weak rows under ``alternatives``.
 
         Returns:
             The search envelope with ``query_time_ms`` attached. Every envelope
@@ -1434,6 +1478,7 @@ class HybridSearch:
                 # build files must not outrank code on shared vocabulary.
                 effective_content = "code"
 
+        vector_used = [False]
         envelope = self._search_impl(
             query,
             limit=limit,
@@ -1445,6 +1490,7 @@ class HybridSearch:
             matching=matching,
             regex=regex,
             allow_weak=allow_weak,
+            vector_used=vector_used,
         )
 
         effective = envelope.get("content") or DEFAULT_CONTENT_SCOPE
@@ -1472,9 +1518,81 @@ class HybridSearch:
                 envelope["results"] = filtered
                 if envelope.get("truncated") is not None:
                     envelope["truncated"] = envelope.get("total_matches", 0) > len(filtered)
+        if strict and envelope.get("mode") == "ranked":
+            envelope = self._strict_abstention(envelope, query)
         envelope["query_time_ms"] = round((time.monotonic() - start) * 1000, 3)
-        self._stamp_model_status(envelope, was_warm)
+        # A cold request that waited for the model and fused the vector arm is
+        # a hybrid response, even though the model was cold when it arrived.
+        self._stamp_model_status(envelope, was_warm or vector_used[0])
         return envelope
+
+    def _strict_abstention(self, envelope: dict[str, Any], query: str) -> dict[str, Any]:
+        """Return a ``no_match`` envelope when *strict* confidence is too weak.
+
+        The gate fires only when the top row is low-confidence, no returned row
+        is a definition, and the query's informative sub-words are poorly
+        covered by the returned rows. The weak rows are preserved under
+        ``alternatives`` so a caller that opted into strict mode can still
+        inspect them.
+
+        Args:
+            envelope: The ranked or rescue envelope produced for *query*.
+            query: The raw user query.
+
+        Returns:
+            The original envelope when it is trustworthy, else a ``no_match``
+            envelope carrying the original rows as alternatives.
+        """
+        results = envelope.get("results") or []
+        if not results:
+            return envelope
+        top_band = results[0].get("confidence_band")
+        if top_band != "low":
+            return envelope
+        if any(r.get("is_definition") for r in results):
+            return envelope
+        informative = self._bm25.informative_tokens(query)
+        coverage = self._informative_coverage(informative, results)
+        floor = self._settings.exact_token_coverage_min
+        if coverage >= floor:
+            return envelope
+        rejected = self._no_match_envelope(
+            bool(envelope.get("vector_health")),
+            [],
+            query,
+            envelope.get("content") or "all",
+            reason="strict_low_confidence",
+        )
+        rejected["alternatives"] = results
+        rejected["total_matches"] = envelope.get("total_matches", len(results))
+        rejected["no_match_signals"] = {
+            "confidence": top_band,
+            "coverage": round(coverage, 3),
+            "coverage_floor": floor,
+            "definition_hit": False,
+        }
+        return rejected
+
+    @staticmethod
+    def _informative_coverage(informative: list[str], results: list[dict[str, Any]]) -> float:
+        """Return the fraction of *informative* sub-words present in the top rows.
+
+        Args:
+            informative: The query's informative sub-words.
+            results: The returned ranked rows.
+
+        Returns:
+            Coverage in ``[0, 1]``; ``0.0`` when the query has no informative
+            words.
+        """
+        if not informative:
+            return 0.0
+        top = results[:5]
+        present = 0
+        for word in informative:
+            if any(word in (row.get("content") or "").lower() for row in top):
+                present += 1
+        return present / len(informative)
 
     def _token_savings(self, results: list[dict[str, Any]]) -> dict[str, Any]:
         """Estimate tokens returned versus reading the whole files.
@@ -1601,6 +1719,7 @@ class HybridSearch:
         matching: str | None = None,
         regex: bool = False,
         allow_weak: bool = False,
+        vector_used: list[bool] | None = None,
     ) -> dict[str, Any]:
         """Run the full hybrid search pipeline for *query*.
 
@@ -1651,6 +1770,9 @@ class HybridSearch:
             regex: Exhaustive-only regular-expression mode; ignored for the
                 ranked and enumerate paths.
             allow_weak: Bypass the post-rank abstention gate.
+            vector_used: Optional one-item sink set to ``True`` when the
+                response fused the vector arm, including after a cold-start
+                wait. Used to stamp the response's ranked path honestly.
 
         Returns:
             The search envelope (see above); ``results`` is empty when the
@@ -1682,7 +1804,16 @@ class HybridSearch:
         # otherwise reject it.
         match_context = self._build_query_match_context(query)
         name_context = self._build_query_name_context(query, match_context)
-        pool = max(limit * multiplier, self._settings.search_candidate_pool_min)
+        # Rank a fixed candidate pool sized for the largest display limit, not
+        # one derived from this request's ``limit``. Fusion normalises scores
+        # over the pool and the additive passes scale against its maximum, so a
+        # limit-derived pool makes the same query rank differently at different
+        # limits. A fixed pool keeps the ordering prefix-stable: the top five
+        # hits of a limit-50 request are the limit-5 result set.
+        pool = max(
+            self._settings.max_results * multiplier,
+            self._settings.search_candidate_pool_min,
+        )
 
         # Retrieval runs on the expanded query text (recall-only): expansion
         # terms contribute candidate tokens to the BM25 query and enrich the
@@ -1707,8 +1838,10 @@ class HybridSearch:
             precheck and (precheck["annotations"] or precheck["quotes"] or precheck["literals"])
         )
         lexical_only = bool(precheck and exact_arms)
-        # Warm the model off the request path; a cold query must never block on
-        # the load, so the vector arm is deferred until the model is in memory.
+        # Warm the model off the request path, so a cold query is served from
+        # the lexical arm instead of blocking on the load. The one exception is
+        # a gate rejection that only the deferred vector leg could overturn;
+        # that case waits for the bounded warmup budget in the gate block below.
         if not self._no_model:
             begin_warmup = getattr(self._embedding_generator, "begin_warmup", None)
             if callable(begin_warmup):
@@ -1754,6 +1887,26 @@ class HybridSearch:
             accepted, vector_results = self._query_quality_gate(
                 query, len(bm25_results), informative, raw_vector_results
             )
+            if (
+                not accepted
+                and defer_vector
+                and self._cold_model_retry_worthwhile(informative, bm25_results)
+                and self._wait_for_cold_model()
+            ):
+                # The gate's vector leg was empty only because the model was
+                # still loading. Long, paraphrase-shaped queries rely on that
+                # leg (their exact-token coverage is low by construction), so
+                # re-run the vector arm and the gate once the bounded warmup
+                # budget elapses instead of dropping to the lexical rescue
+                # ladder and returning a different, worse result pool.
+                raw_vector_results = self._vector_search.search(
+                    retrieval_query, top_k=pool, content=content
+                )
+                defer_vector = False
+                model_warm = True
+                accepted, vector_results = self._query_quality_gate(
+                    query, len(bm25_results), informative, raw_vector_results
+                )
             if not accepted and match_context.symbol_resolved:
                 # A symbol-shaped partial reference that resolves to an indexed
                 # declaration is admitted; the resolved definition chunk(s) are
@@ -1779,6 +1932,8 @@ class HybridSearch:
             vector_results = [
                 (cid, sc) for cid, sc in vector_results if sc >= self._settings.min_vector_cosine
             ]
+        if vector_used is not None:
+            vector_used[0] = not defer_vector
         if symbol_name is None:
             # NL production queries: demote test-file chunks inside the
             # candidate pool (pre-fusion) so keyword-dense test classes cannot
@@ -1920,7 +2075,7 @@ class HybridSearch:
                 continue
             if language and chunk["language"] != language:
                 continue
-            is_test = _is_test_file(chunk["file_path"])
+            is_test = _is_test_file(self._signal_path(chunk["file_path"]))
             if not include_tests and is_test:
                 continue
             candidate_chunks.append(chunk)
@@ -1946,9 +2101,13 @@ class HybridSearch:
 
         def path_class_of(file_path: str) -> PathClass:
             # Resolve each file's class once via the shared classifier; the
-            # barrel arm is DB-backed and raises on database failure.
+            # barrel arm is DB-backed and raises on database failure. The
+            # path-shape arms see the repo-relative spelling so the checkout
+            # location cannot reclassify the corpus.
             if file_path not in path_class_cache:
-                path_class_cache[file_path] = PathClass.of(self._db, file_path)
+                path_class_cache[file_path] = PathClass.of(
+                    self._db, file_path, signal_path=self._signal_path(file_path)
+                )
             return path_class_cache[file_path]
 
         code_context = self._code_language_context(language)
@@ -1973,9 +2132,12 @@ class HybridSearch:
         fused_vector_map = {cid: sc for cid, sc in vector_results}
         for chunk in candidate_chunks:
             chunk_id = chunk["id"]
-            is_test = _is_test_file(chunk["file_path"])
-            is_non_canonical = _is_non_canonical(chunk["file_path"])
-            file_role_of = file_role(chunk["file_path"], analysis_paths=analysis_paths)
+            # Path-shape signals read the repo-relative spelling, so a checkout
+            # under ``vendor/`` or ``tests/`` cannot reclassify every chunk.
+            signal_path = self._signal_path(chunk["file_path"])
+            is_test = _is_test_file(signal_path)
+            is_non_canonical = _is_non_canonical(signal_path)
+            file_role_of = file_role(signal_path, analysis_paths=analysis_paths)
             if (
                 code_intent
                 and code_scope
@@ -2207,6 +2369,7 @@ class HybridSearch:
             "confidence": envelope_band(confidence_buckets),
             "explanation": None,
             "best_effort": True,
+            "reliable": envelope_band(confidence_buckets) != "low",
             "no_match": False,
             "content": content,
             "token_savings": self._token_savings(results),
@@ -2394,11 +2557,14 @@ class HybridSearch:
         """Return whether *file_path* is a demoted (non-production) role.
 
         Reuses the pipeline's existing test/non-canonical/file-role predicates
-        so the match-boost layer never invents a second classifier.
+        so the match-boost layer never invents a second classifier. The
+        predicates see the repo-relative spelling so the checkout location
+        cannot demote the corpus.
         """
-        if _is_test_file(file_path) or _is_non_canonical(file_path):
+        signal_path = self._signal_path(file_path)
+        if _is_test_file(signal_path) or _is_non_canonical(signal_path):
             return True
-        role = file_role(file_path, analysis_paths=analysis_paths)
+        role = file_role(signal_path, analysis_paths=analysis_paths)
         return role in (FileRole.INFRA, FileRole.RESOURCE, FileRole.ANALYSIS)
 
     def _exact_symbol_rows(self, name_context: QueryNameContext) -> list[Any]:
@@ -2771,7 +2937,9 @@ class HybridSearch:
             fqn_terms = set(
                 decompose_query((row["fqn"] or "").rsplit("::", 1)[-1], expand_variants=False)
             )
-            path_terms = set(decompose_query(row["file_path"] or "", expand_variants=False))
+            path_terms = set(
+                decompose_query(self._signal_path(row["file_path"]), expand_variants=False)
+            )
             matched = [
                 term
                 for term in terms
@@ -2781,7 +2949,7 @@ class HybridSearch:
                 continue
             ratio = len(matched) / len(terms)
             test_factor = 1.0
-            if _is_test_file(row["file_path"]):
+            if _is_test_file(self._signal_path(row["file_path"])):
                 test_factor = 1.0 if self._test_intent(query) else self._settings.noise_penalty
             boost = min(
                 pool_max * self._settings.endpoint_intent_boost * (0.5 + 0.5 * ratio) * test_factor,
@@ -2866,7 +3034,7 @@ class HybridSearch:
             if len(matched) != len(concept_terms):
                 continue
             test_factor = 1.0
-            if _is_test_file(row["file_path"]):
+            if _is_test_file(self._signal_path(row["file_path"])):
                 test_factor = 1.0 if self._test_intent(query) else self._settings.noise_penalty
             boost = min(
                 pool_max * self._settings.constant_intent_boost * test_factor,
@@ -3082,7 +3250,9 @@ class HybridSearch:
         try:
             with self._db.connect() as conn:
                 for term in terms:
-                    params: list[Any] = [f"fqn : {term}*"]
+                    # The scored index carries the repo-relative FQN, so this
+                    # matches symbol names without seeing the checkout location.
+                    params: list[Any] = [f"fqn_rel : {term}*"]
                     if content not in ("all", DEFAULT_CONTENT_SCOPE):
                         params.append(content)
                     rows = conn.execute(
@@ -3150,7 +3320,7 @@ class HybridSearch:
             if not has_evidence and ratio < 0.34:
                 continue
             test_factor = 1.0
-            if _is_test_file(row["file_path"]):
+            if _is_test_file(self._signal_path(row["file_path"])):
                 test_factor = 1.0 if self._test_intent(query) else self._settings.noise_penalty
             boost = min(
                 pool_max * self._settings.concept_symbol_boost * ratio * test_factor,
@@ -3697,6 +3867,47 @@ class HybridSearch:
 
         return True, raw_vector_results
 
+    def _cold_model_retry_worthwhile(
+        self, informative: list[str], bm25_results: list[tuple[int, float]]
+    ) -> bool:
+        """Return whether a cold-vector gate rejection should be re-evaluated.
+
+        Waiting for the model only changes the verdict when the query has
+        lexical support: at least the minimum informative tokens and at least
+        one lexical hit. An out-of-domain query would still be rejected after
+        the wait, so it must not consume the bounded warmup budget.
+
+        Args:
+            informative: The query's informative tokens.
+            bm25_results: The lexical arm's hits.
+
+        Returns:
+            ``True`` when the request may wait for the deferred model.
+        """
+        if self._no_model or getattr(self._embedding_generator, "warmup_external", False):
+            return False
+        if not bm25_results or len(informative) < self._settings.informative_tokens_min:
+            return False
+        return callable(getattr(self._embedding_generator, "wait_warm", None))
+
+    def _wait_for_cold_model(self) -> bool:
+        """Wait up to ``warmup_wait_s`` for the deferred embedding model.
+
+        Returns:
+            ``True`` when the model is warm after the wait, else ``False``.
+        """
+        timeout = self._settings.warmup_wait_s
+        if timeout <= 0:
+            return False
+        wait = getattr(self._embedding_generator, "wait_warm", None)
+        if not callable(wait):
+            return False
+        try:
+            return bool(wait(timeout))
+        except Exception:
+            logger.warning("Cold-start model wait failed", exc_info=True)
+            return False
+
     @staticmethod
     def _results_saturated(informative: list[str], chunks: list[dict[str, Any]]) -> bool:
         """Require at least one candidate chunk to match an informative sub-word.
@@ -3846,7 +4057,15 @@ class HybridSearch:
         )
         bm25 = BM25Search(self._db, relaxed, filter_stopwords=self._settings.filter_stopwords)
         pool = max(limit, limit * self._settings.search_top_k_multiplier)
-        bm25_results = bm25.search(query, top_k=pool)
+        # Mirror the ranked path: expansions are recall-only, and applying the
+        # content scope inside BM25 stops out-of-scope chunks from consuming
+        # the candidate pool before the post-fetch scope filter runs.
+        retrieval_query = (
+            self._expansion_table.expanded_text(query)
+            if self._expansion_table is not None
+            else query
+        )
+        bm25_results = bm25.search(retrieval_query, top_k=pool, content=content)
         if not bm25_results:
             return None
         symbol_ids = self._rescue_symbol_ids()
@@ -3875,7 +4094,7 @@ class HybridSearch:
             if cid in chunk_map
             and _in_scope(chunk_map[cid])
             and (not language or chunk_map[cid]["language"] == language)
-            and (include_tests or not _is_test_file(chunk_map[cid]["file_path"]))
+            and (include_tests or not _is_test_file(self._signal_path(chunk_map[cid]["file_path"])))
         ]
         if not candidate_chunks:
             return None
@@ -3905,6 +4124,7 @@ class HybridSearch:
                 conf, self._settings.confidence_high_floor, self._settings.confidence_medium_floor
             )
             bands.append(band)
+            signal_path = self._signal_path(chunk["file_path"])
             results.append(
                 {
                     "chunk_id": chunk["id"],
@@ -3921,10 +4141,12 @@ class HybridSearch:
                     "semantic_contribution": rescue_contribution,
                     "is_definition": bool(chunk["is_definition"]),
                     "role": "definition" if chunk["is_definition"] else "reference",
-                    "file_role": file_role(chunk["file_path"], analysis_paths=analysis_paths),
-                    "is_test_file": _is_test_file(chunk["file_path"]),
-                    "is_non_canonical": _is_non_canonical(chunk["file_path"]),
-                    "path_class": PathClass.of(self._db, chunk["file_path"]),
+                    "file_role": file_role(signal_path, analysis_paths=analysis_paths),
+                    "is_test_file": _is_test_file(signal_path),
+                    "is_non_canonical": _is_non_canonical(signal_path),
+                    "path_class": PathClass.of(
+                        self._db, chunk["file_path"], signal_path=signal_path
+                    ),
                     "chunk_type": chunk.get("chunk_type", "ast"),
                     "chunk_node_type": chunk.get("chunk_node_type"),
                     "content_type": chunk.get("content_type", "code"),
@@ -3952,6 +4174,7 @@ class HybridSearch:
                 "confidence": envelope_band(bands),
             },
             "best_effort": True,
+            "reliable": envelope_band(bands) != "low",
             "content": content,
         }
 
@@ -4032,6 +4255,7 @@ class HybridSearch:
                 conf, self._settings.confidence_high_floor, self._settings.confidence_medium_floor
             )
             bands.append(band)
+            signal_path = self._signal_path(row["file_path"])
             results.append(
                 {
                     "chunk_id": row["id"],
@@ -4048,10 +4272,10 @@ class HybridSearch:
                     "semantic_contribution": rescue_contribution,
                     "is_definition": bool(row["is_definition"]),
                     "role": "definition" if row["is_definition"] else "reference",
-                    "file_role": file_role(row["file_path"], analysis_paths=analysis_paths),
-                    "is_test_file": _is_test_file(row["file_path"]),
-                    "is_non_canonical": _is_non_canonical(row["file_path"]),
-                    "path_class": PathClass.of(self._db, row["file_path"]),
+                    "file_role": file_role(signal_path, analysis_paths=analysis_paths),
+                    "is_test_file": _is_test_file(signal_path),
+                    "is_non_canonical": _is_non_canonical(signal_path),
+                    "path_class": PathClass.of(self._db, row["file_path"], signal_path=signal_path),
                     "chunk_type": row["chunk_type"],
                     "chunk_node_type": row["chunk_node_type"],
                     "content_type": row["content_type"],
@@ -4077,6 +4301,7 @@ class HybridSearch:
                 "confidence": envelope_band(bands),
             },
             "best_effort": True,
+            "reliable": envelope_band(bands) != "low",
             "content": content,
         }
 
@@ -4112,6 +4337,7 @@ class HybridSearch:
                 "confidence": "none",
             },
             "best_effort": True,
+            "reliable": False,
             "no_match": True,
             "content": content,
         }
@@ -4335,13 +4561,122 @@ class HybridSearch:
         except Exception as exc:
             logger.warning("Test-file path lookup failed: %s", exc)
             return []
-        return [r["file_path"] for r in rows if _is_test_file(r["file_path"])]
+        return [r["file_path"] for r in rows if _is_test_file(self._signal_path(r["file_path"]))]
 
     def _cached_test_file_paths(self) -> list[str]:
         """Return the test-file paths, caching them until the next reload."""
         if self._test_paths_cache is None:
             self._test_paths_cache = self._test_file_paths()
         return self._test_paths_cache
+
+    def _content_type_for(self, stored_path: str) -> str:
+        """Return the classified content type for *stored_path*, cached.
+
+        Classification uses the path only, so the value is stable for the life
+        of the loaded index. The cache is cleared by :meth:`reset_caches`.
+        """
+        cached = self._content_type_cache.get(stored_path)
+        if cached is None:
+            cached = classify_content_type(stored_path).value
+            self._content_type_cache[stored_path] = cached
+        return cached
+
+    @staticmethod
+    def _ripgrep_path() -> str | None:
+        """Return the ``rg`` executable when available, else ``None``."""
+        return shutil.which("rg")
+
+    def _ripgrep_literal(
+        self,
+        files: list[tuple[str, Path]],
+        needle: str,
+    ) -> list[dict[str, Any]] | None:
+        """Return per-line literal matches for *files* using ``rg --json``.
+
+        *files* is ``(stored_path, resolved_path)`` in deterministic order.
+        The return value is a list of ``{stored_path, line_number, line,
+        occurrences}`` rows, or ``None`` when ripgrep is unavailable, fails, or
+        times out. A ``None`` result makes the caller fall back to the Python
+        scan, so a broken/absent binary never changes the answer.
+
+        Explicit paths are passed in batches to stay below the platform
+        argument-length limit. ``--no-ignore`` is intentional: the index has
+        already decided which files are in scope, and an explicit path must not
+        be skipped because of a repository ignore rule.
+        """
+        executable = self._ripgrep_path()
+        if executable is None or not files:
+            return None
+        stored_by_resolved: dict[str, str] = {str(resolved): stored for stored, resolved in files}
+        resolved_paths = list(stored_by_resolved)
+        matches: list[dict[str, Any]] = []
+        flags = ["--json", "--no-config", "--no-ignore", "--hidden", "--text", "--no-messages"]
+        if not self._settings.exhaustive_case_sensitive:
+            flags.append("--ignore-case")
+        # A literal needle is passed with ``-F`` so regex metacharacters in a
+        # query such as ``save(Article)`` are matched verbatim.
+        base = [executable, *flags, "--fixed-strings", "--", needle]
+        batch_size = 500
+        for start in range(0, len(resolved_paths), batch_size):
+            batch = resolved_paths[start : start + batch_size]
+            try:
+                proc = subprocess.run(
+                    [*base, *batch],
+                    capture_output=True,
+                    text=True,
+                    timeout=self._settings.exhaustive_rg_timeout_s,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                logger.debug("ripgrep exhaustive scan failed: %s", exc)
+                return None
+            if proc.returncode not in (0, 1):
+                logger.debug(
+                    "ripgrep exhaustive scan exited %s: %s",
+                    proc.returncode,
+                    proc.stderr.strip(),
+                )
+                return None
+            for raw in proc.stdout.splitlines():
+                try:
+                    event = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") != "match":
+                    continue
+                data = event.get("data") or {}
+                path_text = (data.get("path") or {}).get("text")
+                if not isinstance(path_text, str):
+                    continue
+                stored = stored_by_resolved.get(path_text)
+                if stored is None:
+                    continue
+                line_number = int(data.get("line_number") or 0)
+                text = (data.get("lines") or {}).get("text") or ""
+                if text.endswith("\n"):
+                    text = text[:-1]
+                if text.endswith("\r"):
+                    text = text[:-1]
+                occurrences = len(data.get("submatches") or [])
+                matches.append(
+                    {
+                        "stored_path": stored,
+                        "line_number": line_number,
+                        "line": text,
+                        "occurrences": occurrences,
+                    }
+                )
+        order = {stored: index for index, (stored, _resolved) in enumerate(files)}
+        matches.sort(key=lambda row: (order.get(row["stored_path"], 1 << 30), row["line_number"]))
+        return matches
+
+    def _read_indexed_file(self, resolved: Path) -> str | None:
+        """Read one indexed file for the exhaustive scan (thread-pool safe)."""
+        try:
+            return resolved.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            logger.debug("Exhaustive scan could not read %s: %s", resolved, exc)
+            return None
 
     def _count_test_matches(self, query: str, content: str) -> int:
         """Count query-matching chunks that live in test files.
@@ -4530,7 +4865,27 @@ class HybridSearch:
         except Exception as exc:
             logger.debug("Exhaustive index-root lookup failed: %s", exc)
 
-        test_rows: set[str] = set(self._test_file_paths()) if not include_tests else set()
+        test_rows: set[str] = set(self._cached_test_file_paths()) if not include_tests else set()
+        included: list[tuple[str, Path, str | None]] = []
+        for stored_path in indexed_files:
+            if stored_path in test_rows:
+                continue
+            if content in ("code", "config", "docs") and (
+                self._content_type_for(stored_path) != content
+            ):
+                continue
+            if content == DEFAULT_CONTENT_SCOPE and self._content_type_for(stored_path) == "docs":
+                continue
+            resolved = (
+                normalize_indexed_path(stored_path, index_root) if index_root else Path(stored_path)
+            )
+            if resolved is None or not resolved.is_file():
+                continue
+            file_lang = _language_for_file(resolved) if language else None
+            if language and file_lang != language:
+                continue
+            included.append((stored_path, resolved, file_lang))
+
         results: list[dict[str, Any]] = []
         total = 0
         occurrences_per_line: list[int] = []
@@ -4544,112 +4899,120 @@ class HybridSearch:
 
         count_occurrences = matching_semantics == "literal" and len(search_terms) == 1
         scan_needle = search_terms[0] if count_occurrences else None
-        for stored_path in indexed_files:
-            if stored_path in test_rows:
-                continue
-            if (
-                content in ("code", "config", "docs")
-                and classify_content_type(stored_path).value != content
-            ):
-                continue
-            if (
-                content == DEFAULT_CONTENT_SCOPE
-                and classify_content_type(stored_path).value == "docs"
-            ):
-                continue
-            resolved = (
-                normalize_indexed_path(stored_path, index_root) if index_root else Path(stored_path)
+
+        def _result_row(
+            stored_path: str,
+            line_no: int,
+            line: str,
+            occurrences: int,
+            file_lang: str | None,
+        ) -> dict[str, Any]:
+            return {
+                "file_path": stored_path,
+                "line_number": line_no,
+                "line_content": line,
+                "line_start": line_no,
+                "line_end": line_no,
+                "content": line,
+                "fqn": "",
+                "language": file_lang,
+                "content_type": self._content_type_for(stored_path),
+                "score": 1.0,
+                "is_test_file": _is_test_file(self._signal_path(stored_path)),
+                "is_non_canonical": _is_non_canonical(self._signal_path(stored_path)),
+                "vector_degraded": not vector_health,
+                "redacted_count": 0,
+                "confidence": 1.0,
+                "confidence_band": "high",
+                "occurrences": occurrences,
+            }
+
+        rg_matches = (
+            self._ripgrep_literal(
+                [(stored, resolved) for stored, resolved, _lang in included], scan_needle
             )
-            if resolved is None or not resolved.is_file():
-                continue
-            try:
-                text = resolved.read_text(encoding="utf-8", errors="replace")
-            except OSError as exc:
-                logger.debug("Exhaustive scan could not read %s: %s", resolved, exc)
-                continue
-            file_lang = _language_for_file(resolved) if language else None
-            if language and file_lang != language:
-                continue
-            if count_occurrences and scan_needle is not None:
-                if self._settings.exhaustive_case_sensitive:
-                    counted = count_occurrences_per_line(text, scan_needle)
-                else:
-                    counted = count_occurrences_per_line(text.lower(), scan_needle.lower())
-                lines = text.splitlines()
-                for idx, line_no in enumerate(counted["line_numbers"]):
-                    occurrences = counted["per_line"][idx]
-                    line = lines[line_no - 1] if 1 <= line_no <= len(lines) else ""
-                    total += occurrences
-                    occurrences_per_line.append(occurrences)
-                    occurrence_line_numbers.append(line_no)
-                    if len(results) >= cap:
-                        continue
-                    results.append(
-                        {
-                            "file_path": stored_path,
-                            "line_number": line_no,
-                            "line_content": line,
-                            "line_start": line_no,
-                            "line_end": line_no,
-                            "content": line,
-                            "fqn": "",
-                            "language": file_lang,
-                            "content_type": classify_content_type(stored_path).value,
-                            "score": 1.0,
-                            "is_test_file": _is_test_file(stored_path),
-                            "is_non_canonical": _is_non_canonical(stored_path),
-                            "vector_degraded": not vector_health,
-                            "redacted_count": 0,
-                            "confidence": 1.0,
-                            "confidence_band": "high",
-                            "occurrences": occurrences,
-                        }
-                    )
-                continue
-            for line_no, line in enumerate(text.splitlines(), start=1):
-                if pattern is not None:
-                    matches = pattern.findall(line)
-                    matched = bool(matches)
-                    occurrences = len(matches)
-                else:
-                    occurrences = 1
-                    if self._settings.exhaustive_case_sensitive:
-                        if require_all:
-                            matched = all(t in line for t in search_terms)
-                        else:
-                            matched = any(t in line for t in search_terms)
-                    else:
-                        if require_all:
-                            matched = all(t in line.lower() for t in search_lower)
-                        else:
-                            matched = any(t in line.lower() for t in search_lower)
-                if not matched:
+            if count_occurrences and scan_needle is not None
+            else None
+        )
+        if rg_matches is not None:
+            languages = {stored: file_lang for stored, _resolved, file_lang in included}
+            for match in rg_matches:
+                occurrences = int(match["occurrences"])
+                if occurrences <= 0:
                     continue
-                total += 1
+                total += occurrences
+                occurrences_per_line.append(occurrences)
+                occurrence_line_numbers.append(int(match["line_number"]))
                 if len(results) >= cap:
                     continue
                 results.append(
-                    {
-                        "file_path": stored_path,
-                        "line_number": line_no,
-                        "line_content": line,
-                        "line_start": line_no,
-                        "line_end": line_no,
-                        "content": line,
-                        "fqn": "",
-                        "language": file_lang,
-                        "content_type": classify_content_type(stored_path).value,
-                        "score": 1.0,
-                        "is_test_file": _is_test_file(stored_path),
-                        "is_non_canonical": _is_non_canonical(stored_path),
-                        "vector_degraded": not vector_health,
-                        "redacted_count": 0,
-                        "confidence": 1.0,
-                        "confidence_band": "high",
-                        "occurrences": occurrences,
-                    }
+                    _result_row(
+                        str(match["stored_path"]),
+                        int(match["line_number"]),
+                        str(match["line"]),
+                        occurrences,
+                        languages.get(str(match["stored_path"])),
+                    )
                 )
+        else:
+
+            def _scan_file(
+                item: tuple[str, Path, str | None],
+            ) -> tuple[str, str | None, str | None]:
+                stored_path, resolved, file_lang = item
+                return stored_path, self._read_indexed_file(resolved), file_lang
+
+            workers = min(8, max(1, len(included)))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                scanned = pool.map(_scan_file, included) if included else []
+                for stored_path, text, file_lang in scanned:
+                    if text is None:
+                        continue
+                    if count_occurrences and scan_needle is not None:
+                        if self._settings.exhaustive_case_sensitive:
+                            counted = count_occurrences_per_line(text, scan_needle)
+                        else:
+                            counted = count_occurrences_per_line(text.lower(), scan_needle.lower())
+                        lines = text.splitlines()
+                        for idx, line_no in enumerate(counted["line_numbers"]):
+                            occurrences = counted["per_line"][idx]
+                            line = lines[line_no - 1] if 1 <= line_no <= len(lines) else ""
+                            total += occurrences
+                            occurrences_per_line.append(occurrences)
+                            occurrence_line_numbers.append(line_no)
+                            if len(results) >= cap:
+                                continue
+                            results.append(
+                                _result_row(stored_path, line_no, line, occurrences, file_lang)
+                            )
+                        continue
+                    for line_no, line in enumerate(text.splitlines(), start=1):
+                        if pattern is not None:
+                            matches = pattern.findall(line)
+                            matched = bool(matches)
+                            occurrences = len(matches)
+                        else:
+                            occurrences = 1
+                            if self._settings.exhaustive_case_sensitive:
+                                if require_all:
+                                    matched = all(t in line for t in search_terms)
+                                else:
+                                    matched = any(t in line for t in search_terms)
+                            else:
+                                if require_all:
+                                    matched = all(t in line.lower() for t in search_lower)
+                                else:
+                                    matched = any(t in line.lower() for t in search_lower)
+                        if not matched:
+                            continue
+                        total += 1
+                        if len(results) >= cap:
+                            continue
+                        results.append(
+                            _result_row(stored_path, line_no, line, occurrences, file_lang)
+                        )
         truncated = total > len(results)
+
         envelope = {
             "results": results,
             "total_count": total,
@@ -4770,9 +5133,11 @@ class HybridSearch:
                 "score": 1.0,
                 "is_definition": bool(row["is_definition"]),
                 "role": "definition" if row["is_definition"] else "reference",
-                "file_role": file_role(row["file_path"], analysis_paths=analysis_paths),
-                "is_test_file": _is_test_file(row["file_path"]),
-                "is_non_canonical": _is_non_canonical(row["file_path"]),
+                "file_role": file_role(
+                    self._signal_path(row["file_path"]), analysis_paths=analysis_paths
+                ),
+                "is_test_file": _is_test_file(self._signal_path(row["file_path"])),
+                "is_non_canonical": _is_non_canonical(self._signal_path(row["file_path"])),
                 "vector_degraded": not vector_health,
                 "redacted_count": 0,
                 "confidence": 1.0,
@@ -4993,6 +5358,7 @@ class HybridSearch:
         self._vocab_by_language = None
         self._analysis = None
         self._test_paths_cache = None
+        self._content_type_cache = {}
         self._bm25.invalidate_corpus()
 
     def need_index(self) -> bool:

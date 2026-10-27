@@ -21,7 +21,7 @@ from fastmcp import FastMCP
 # key -> (CLI flag, MCP arg, shared default).
 PARITY_TABLE: list[tuple[str, str, str, Any]] = [
     ("Content filter", "--content", "content", None),
-    ("Matching semantics", "--matching", "matching", "all_tokens"),
+    ("Matching semantics", "--matching", "matching", None),
     ("Model toggle", "--no-model", "no_model", False),
     ("Mode", "--mode", "mode", "ranked"),
     ("Language", "--language", "language", None),
@@ -72,7 +72,7 @@ def _mcp_search_options() -> dict[str, Any]:
     def search(
         query: str,
         content: str | None = None,
-        matching: str = "all_tokens",
+        matching: str | None = None,
         no_model: bool = False,
         mode: str = "ranked",
         language: str | None = None,
@@ -90,7 +90,7 @@ def _mcp_search_options() -> dict[str, Any]:
     props = t.parameters["properties"]
     return {
         "content": props["content"].get("default", None),
-        "matching": props["matching"].get("default", "all_tokens"),
+        "matching": props["matching"].get("default"),
         "no_model": props["no_model"].get("default", False),
         "mode": props["mode"].get("default", "ranked"),
         "language": props["language"].get("default", None),
@@ -172,7 +172,7 @@ def test_mcp_search_schema_accepts_content_and_no_model() -> None:
     def search(
         query: str,
         content: str | None = None,
-        matching: str = "all_tokens",
+        matching: str | None = None,
         no_model: bool = False,
         mode: str = "ranked",
         language: str | None = None,
@@ -191,8 +191,8 @@ def test_mcp_search_schema_accepts_content_and_no_model() -> None:
     assert props["content"]["anyOf"][0] == {"type": "string"}
     assert props["content"]["anyOf"][1] == {"type": "null"}
     assert "matching" in props
-    assert props["matching"]["type"] == "string"
-    assert props["matching"]["default"] == "all_tokens"
+    assert props["matching"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
+    assert props["matching"]["default"] is None
     assert "no_model" in props
     assert props["no_model"]["type"] == "boolean"
     assert props["no_model"]["default"] is False
@@ -309,6 +309,63 @@ def test_real_mcp_cli_and_engine_agree_on_scope_and_results(
     args.query = "database configuration"
     assert cli_main.cmd_search(args) == 0
     assert "Override with: --content config" in capsys.readouterr().err
+
+
+@pytest.mark.contract
+def test_matching_literal_implies_exhaustive_on_cli_and_mcp(
+    indexed_transparency: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--matching literal`` is an exact request, not a ranked-mode no-op.
+
+    The same implication applies to the MCP ``matching`` argument so an agent
+    never has to know that ``mode="exhaustive"`` is required as well.
+    """
+    import argparse
+    import asyncio
+
+    from code_search.cli import main as cli_main
+    from code_search.engine.index_service import IndexChangeDetector
+    from code_search.engine.redactor import Redactor
+    from code_search.engine.reranking import Reranker
+    from code_search.mcp.server import create_server
+
+    comps = dict(indexed_transparency)
+    comps["redactor"] = Redactor()
+    comps["reranker"] = Reranker(comps["db"], comps["session_db"], comps["settings"])
+    comps["index_change_detector"] = IndexChangeDetector.from_metadata_store(comps["metadata"])
+
+    monkeypatch.setattr(cli_main, "_initialize_components", lambda _ctx, **_kwargs: comps)
+    monkeypatch.setattr(cli_main, "_ensure_resident_service", lambda _args: False)
+    monkeypatch.setattr(cli_main, "_try_forward_to_daemon", lambda _args: None)
+    args = argparse.Namespace(
+        command="search",
+        query="repository.save",
+        limit=50,
+        language=None,
+        include_tests=True,
+        mode="ranked",
+        content="all",
+        matching="literal",
+        json=True,
+        no_model=False,
+        verbose=False,
+        context_dir=str(comps["context_dir"]),
+    )
+
+    assert cli_main.cmd_search(args) == 0
+    cli_envelope = json.loads(capsys.readouterr().out)
+    assert cli_envelope["mode"] == "exhaustive"
+    assert cli_envelope["matching_semantics"] == "literal"
+
+    mcp = create_server(comps).build_fastmcp()
+    mcp_result = asyncio.run(
+        mcp.call_tool("search", {"query": "repository.save", "matching": "literal"})
+    )
+    mcp_envelope = json.loads(mcp_result.content[0].text)
+    assert mcp_envelope["mode"] == "exhaustive"
+    assert mcp_envelope["matching_semantics"] == "literal"
 
 
 @pytest.mark.contract

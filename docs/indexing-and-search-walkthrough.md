@@ -152,6 +152,7 @@ produced:
 ├── audit.db            # append-only query audit log
 ├── vectors.bin         # raw float32 vectors, no header
 ├── vectors.meta.json   # NDJSON metadata, one line per vector
+├── vectors.meta.json.files  # append-only file-path dictionary for the metadata
 ├── vectors.removed     # append-only tombstone row indices
 └── index.lock          # present only while an index is running
 ```
@@ -160,7 +161,7 @@ Observed sizes for the sample:
 
 | File | Size | Meaning |
 |---|---:|---|
-| `graph.db` | 212,992 B | SQLite database (schema v14) |
+| `graph.db` | 245,760 B | SQLite database (schema v16) |
 | `session.db` | 32,768 B | SQLite database |
 | `audit.db` | 20,480 B | SQLite database |
 | `vectors.bin` | 1,920 B | `15 vectors × 32 dims × 4 bytes` |
@@ -196,7 +197,7 @@ Then the orchestrator enforces invariants **before reading a single file**:
 
 1. **Filesystem lock** (`index.lock`, `O_CREAT | O_EXCL`). Concurrent indexing
    is refused; a lock older than `lock_timeout` may be force-released.
-2. **Schema version check** (`index_version`). The sample records `14`. An older
+2. **Schema version check** (`index_version`). The sample records `16`. An older
    schema forces a full re-index.
 3. **Index status check**. `stale` forces a full re-index. A crashed run that
    left `indexing` is recovered by `cmd_index` when no live lock exists.
@@ -354,8 +355,20 @@ smallest containing symbol. The sample has none, so `symbol_rationale` is empty.
 
 #### Content hash
 
-Each worker also returns `sha256(source_bytes)` and a `parse_failed` flag. These
-become the incremental baseline.
+Each worker also returns `sha256(source_bytes)`, a `parse_failed` flag, and the
+tree-sitter `ERROR`/`MISSING` line ranges. These become the incremental
+baseline and the per-file coverage record.
+
+#### Coverage and generation
+
+After parsing, each file with error ranges gets an `index_coverage` row:
+`parse_partial` for recoverable syntax errors and `parse_unusable` when the
+ranges cover at least 80% of the file. Discovery also records `skipped_read`
+and `skipped_oversized` files, so "not in the graph" never has to be confused
+with "not indexed". Rows are stamped with `index_generation`, a digest of the
+index root, finish time, table counts, schema version, and index format version.
+A later `check_index_coverage` surface can therefore answer whether a gap
+belongs to the current index instead of a previous build.
 
 ### 4.4 Phase 3 — persistence (serial, batched)
 
@@ -415,12 +428,54 @@ Deferred edges are resolved after all symbols exist, in tiers
 5. `range` — target declaration range contains the call's start line.
 6. `fallback` — exactly one symbol shares the leaf name.
 
+Before the class/same-file tiers, a call's argument count filters same-named
+overloads: only candidates with the same parameter count remain. The filter is
+skipped when no candidate matches, so an unknown overload stays unresolved
+rather than attaching to the wrong one. A receiver-qualified target
+(`repository.save`) never falls through to same-file/range/fallback matching for
+a different receiver. When more than one candidate survives any tier, the edge
+is stored as `resolved = 0` with `resolution_tier = 'ambiguous'`, `target_raw`,
+and `properties.candidate_count`; the first candidate is never chosen silently.
+
 Genuine recursive self-calls (`source == target` and the call line is inside the
 symbol's own body) are kept; other self-edges are dropped. Edges that remain
 unresolved are stored only if `capture_unresolved_callees` is true (default),
 with `resolved = 0`, `target_symbol_id = NULL`, and `target_raw` carrying the raw
-callee text. The post-index **edge validation sweep** removes spurious
-self-edges, same-name mis-resolutions, and out-of-range attachments.
+callee text. Resolved edges record `properties` = `{"via": ..., "line": N,
+"arg_count": N}` as evidence, with `via` distinguishing `import`, `type_infer`,
+`same_file`, and AST-only resolution. The post-index **edge validation sweep**
+removes spurious self-edges, same-name mis-resolutions, and out-of-range
+attachments.
+
+#### Edge types
+
+`SymbolExtractor` emits `CALLS` from invocations, `REFERENCES` from type
+annotations, `CALL_REFERENCE` from callables used as values (arguments,
+assignments, bare decorators), and `USAGE` from conservative member accesses
+(`self`/`this`, imported, namespace, or typed receivers). Base clauses start as
+`INHERITS`; the indexer reclassifies a class-to-interface base as `IMPLEMENTS`
+once the target kind is known. `TESTS` is derived: every resolved production
+reference whose source symbol is in a test file and whose target is not becomes
+a test-to-production edge.
+
+#### Trust passes
+
+After the validation sweep, one write transaction rebuilds the derived facts an
+agent query relies on:
+
+1. `canonical_fqn` — project-relative `<path>::<declaration>`, additive to the
+   absolute `fqn`.
+2. `is_test` — refreshed from the shared path classifier.
+3. `TESTS` edges — replaced wholesale from resolved production references.
+4. `is_entry_point` / `entry_point_reason` — tests, `main`, constructors,
+   overrides, exported top-level declarations, annotated handlers, and configured
+   globs (`CODE_SEARCH_ENTRY_POINTS`).
+5. `importance` — the documented weighted degree over incoming `CALLS`/`USAGE`.
+6. `symbol_degrees` — resolved in/out counts per edge type, used by degree
+   filters and hotspot ranking.
+
+`index_format_version` is written last. It is separate from the SQLite schema
+version so a graph-semantics change can force a full rebuild.
 
 #### Module edges
 
@@ -472,6 +527,11 @@ Storage (`VectorIndex`):
   Removal flips an in-memory alive flag and queues a tombstone; a later `save()`
   appends only the delta. Physical rows are never reused, so previously
   persisted rows stay addressable.
+- `vectors.meta.json.files` — append-only file-path dictionary. The default
+  (`legacy`) layout keeps the full row objects in `vectors.meta.json`; the
+  `compact` layout instead writes `vectors.v2.meta` (a `CSVMETA1` header plus
+  packed `chunk_id`/`file_id`/`content_type` rows) and resolves paths through
+  this dictionary so path and content filters run as in-memory masks.
 
 In the sample, every one of the 15 chunks — including config and docs — received
 a vector, hence `15 × 32 × 4 = 1920` bytes.
@@ -491,6 +551,8 @@ Then:
 - **stale-file sweep** — removes rows for files that no longer exist or are now
   excluded (only when a full index or the discovery policy changed);
 - **edge validation sweep**;
+- **trust passes** — canonical FQNs, `TESTS` edges, entry points, importance,
+  and `symbol_degrees`;
 - **metadata writes** (see below);
 - `FreshnessChecker.mark_clean()` seeds a non-stale freshness signal.
 
@@ -500,14 +562,19 @@ Then:
 
 | Key | Value |
 |---|---|
-| `index_version` | `14` |
+| `index_version` | `18` |
+| `index_format_version` | `1` |
 | `representation_scheme_version` | `1` |
 | `index_status` | `ready` |
+| `index_layout` | `legacy` |
+| `graph_indexed` | `true` |
 | `last_indexed_at` | `2026-10-19T15:05:09.332473Z` |
 | `index_root` | `/tmp/cs-demo` |
 | `total_files` | `5` |
 | `total_symbols` | `8` |
 | `total_chunks` | `15` |
+| `corpus_chunk_count` | `15` |
+| `skipped_large_files` | `0` |
 | `languages` | `["python"]` |
 | `supported_languages` | `["python"]` |
 | `test_files_included` | `true` |
@@ -528,6 +595,7 @@ Then:
 | `model_load_path` | `/media/…/models/potion-code-16m-32d` |
 | `freshness_checked_at` | ISO timestamp |
 | `freshness_signal` | JSON (stale, counts, age) |
+| `freshness_scan_duration_s` | scan duration in seconds |
 
 Note that `languages` is derived from **symbols**, which is why the `.properties`
 and `.md` files do not add `properties` or `markdown` to the list.
@@ -549,7 +617,9 @@ and `.md` files do not add `properties` or `markdown` to the list.
 | `symbol_rationale` | NOTE/WHY/HACK/TODO/FIXME/ADR comments attached to symbols | 0 |
 | `rationale_fts` | FTS5 over rationale text | 0 |
 | `doc_links` | Offline doc/config → code links (opt-in) | 0 |
-| `index_metadata` | Index lifecycle and statistics | 28 keys |
+| `prefix_stats` | Corpus term-prefix frequencies used by the lexical arm | 79 |
+| `subword_stats` | Corpus sub-word document frequencies for expansion | 127 |
+| `index_metadata` | Index lifecycle and statistics | 33 keys |
 
 Key constraints:
 
@@ -617,7 +687,8 @@ include `search`, `get_symbol_definition`, `get_call_neighbors`,
 
 ### 5.4 Vectors
 
-`vectors.bin`, `vectors.meta.json`, `vectors.removed` — all append-only.
+`vectors.bin`, `vectors.meta.json`, `vectors.meta.json.files`, `vectors.removed`
+— all append-only.
 `VectorIndex.load()` reconstructs the in-memory `_alive` bitmap and
 `chunk_id → physical index` map. `size` counts only live vectors.
 
@@ -883,6 +954,10 @@ The CLI and MCP server then:
    lower-bounded at `0.0` but not upper-capped: a strong match can exceed `1.0`,
    so unrelated results do not all collapse to `1.00` and lose discrimination.
    Use `--explain-ranking` to print the components behind each score.
+   Every path-shape signal here (usage penalty, docs/config tiers, module
+   cohesion, vendor/minified demotion) is evaluated against the repo-relative
+   path, never the checkout location, so identical corpora rank identically
+   wherever they are cloned.
 2. **Redact** (`Redactor.redact_results`) — pattern-based masking of API keys,
    JWTs, AWS keys, PEM blocks, passwords, bearer tokens, GitHub/Slack/npm
    tokens, DB connection strings, Spring property secrets; replaces matches with
@@ -900,12 +975,21 @@ Every ranked response carries the truthful path it took:
 
 | Field | Cold process | Warm process |
 |---|---|---|
-| `ranked_path` | `lexical_reduced` | `hybrid` |
-| `model_status.state` | `initializing` | `warm` |
-| `warmup_state` | `warming` | `warm` |
-| `degraded_reason` | `warming` | `null` |
-| `semantic_contribution` | `deferred` | `semantic` / `lexical_only` |
+| `ranked_path` | `lexical_reduced`, or `hybrid` after the bounded model wait | `hybrid` |
+| `model_status.state` | `initializing`, or `warm` after the wait | `warm` |
+| `warmup_state` | `warming`, or `warm` after the wait | `warm` |
+| `degraded_reason` | `warming`, or `null` after the wait | `null` |
+| `semantic_contribution` | `deferred`, or `semantic` after the wait | `semantic` / `lexical_only` |
 | `vector_health` | `true` (index has vectors) | `true` |
+
+A cold request is served from the labelled `lexical_reduced` path only when the
+lexical arm alone justifies the answer. When the query's exact-token coverage
+is too low for that (long natural-language paraphrases) and the gate rejection
+is caused by the still-loading model, the request waits up to
+`CODE_SEARCH_WARMUP_WAIT_S` for the background load and then fuses the dense
+arm, reporting `hybrid`/`warm` with no degraded reason. An out-of-domain query
+never spends that budget: it would still be rejected once the model was warm,
+so it returns its honest empty result immediately.
 
 The daemon exists to remove the cold penalty: unless `--no-startup-check` is
 given, `search` starts the resident socket daemon when none is running and

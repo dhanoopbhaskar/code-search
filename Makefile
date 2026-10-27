@@ -1,4 +1,4 @@
-.PHONY: all build install editable bundle bundle-deps clean distclean download-deps help check lint format typecheck test eval-utility
+.PHONY: all build install editable bundle bundle-deps clean distclean download-deps help check lint format typecheck test eval eval-utility
 
 PACKAGE_NAME := code-search
 DIST_DIR := dist
@@ -22,6 +22,7 @@ help:
 	@echo '  make format          - Run ruff format check'
 	@echo '  make typecheck       - Run mypy type check'
 	@echo '  make test            - Run pytest'
+	@echo '  make eval            - Regression eval (payload budgets, overloads, latency)'
 	@echo '  make eval-utility    - Cold/warm utility harness (needs a local corpus)'
 	@echo '  make clean           - Remove build artifacts'
 	@echo '  make distclean       - Remove build, dist, and wheelhouse'
@@ -42,6 +43,9 @@ typecheck:
 
 test:
 	$(_PY) scripts/check.py --test
+
+eval:
+	$(_PY) scripts/regression_eval.py --repo $(if $(REPO),$(REPO),test-repo)
 
 eval-utility:
 	$(_PY) tests/evaluation/tool_utility_eval.py $(if $(REPO),--repo $(REPO))

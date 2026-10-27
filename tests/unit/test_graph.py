@@ -1,9 +1,11 @@
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from code_search.engine.config import Settings
 from code_search.engine.graph import EdgeStore, GraphDatabase
+from code_search.engine.graph_query import GraphQueryService
 from code_search.engine.symbols import SymbolStore
 
 
@@ -736,6 +738,44 @@ class TestCallGraphDeduplication:
         assert len(foo_rows) == 1
         assert foo_rows[0]["depth"] == 2
         assert foo_rows[0]["target_raw"] == "ext.foo"
+
+    def test_call_graph_page_bounds_rows_and_reports_exact_total(
+        self, db: GraphDatabase, edge_store: EdgeStore
+    ) -> None:
+        """A wide fan-in is paged; totals describe the full traversal."""
+        specs = [("m.t", "t")] + [(f"m.c{i}", f"c{i}") for i in range(5)]
+        ids = self._seed(db, specs)
+        edge_store.insert_edges_batch(
+            [
+                {
+                    "source_symbol_id": ids[f"m.c{i}"],
+                    "target_symbol_id": ids["m.t"],
+                    "edge_type": "CALLS",
+                    "source_range": f"[{i + 1},0,{i + 1},5]",
+                }
+                for i in range(5)
+            ]
+        )
+
+        first = edge_store.get_call_graph_page(ids["m.t"], direction="callers", limit=2, offset=0)
+        second = edge_store.get_call_graph_page(ids["m.t"], direction="callers", limit=2, offset=2)
+
+        assert [c["fqn"] for c in first["callers"]] == ["m.c0", "m.c1"]
+        assert first["paging"]["callers"] == {
+            "returned": 2,
+            "total": 5,
+            "limit": 2,
+            "offset": 0,
+            "has_more": True,
+            "next_offset": 2,
+        }
+        assert [c["fqn"] for c in second["callers"]] == ["m.c2", "m.c3"]
+        assert second["paging"]["callers"]["next_offset"] == 4
+
+        last = edge_store.get_call_graph_page(ids["m.t"], direction="callers", limit=2, offset=4)
+        assert [c["fqn"] for c in last["callers"]] == ["m.c4"]
+        assert last["paging"]["callers"]["has_more"] is False
+        assert last["paging"]["callers"]["next_offset"] is None
 
 
 class TestInheritanceTraversal:
@@ -1971,3 +2011,90 @@ def test_initialize_recreates_symbol_name_index_on_existing_db(db: GraphDatabase
     db.initialize()
 
     assert "idx_symbols_name" in _symbol_index_names(db)
+
+
+def test_repeated_unresolved_edges_are_deduplicated(populated_db: GraphDatabase) -> None:
+    """Repeated external references insert one row per ``(source, type, raw)``.
+
+    SQLite's table-level UNIQUE ignores NULL targets, so the partial unique
+    index is what prevents unresolved edges from multiplying.
+    """
+    edge_store = EdgeStore(populated_db)
+    with populated_db.connect() as conn:
+        source = conn.execute("SELECT id FROM symbols WHERE fqn = 'module.func_a';").fetchone()[
+            "id"
+        ]
+
+    edge_store.insert_edges_batch(
+        [
+            {
+                "source_symbol_id": source,
+                "target_symbol_id": None,
+                "edge_type": "CALLS",
+                "resolved": 0,
+                "target_raw": "external.save",
+            }
+            for _ in range(5)
+        ]
+    )
+
+    with populated_db.connect() as conn:
+        rows = conn.execute(
+            "SELECT COUNT(*) AS n FROM graph_edges "
+            "WHERE source_symbol_id = ? AND resolved = 0 AND target_raw = 'external.save';",
+            (source,),
+        ).fetchone()
+    assert rows["n"] == 1
+
+
+def test_caller_traversal_issues_one_recursive_cte(
+    populated_db: GraphDatabase, edge_store_with_data: EdgeStore
+) -> None:
+    """Caller traversal no longer runs a second CTE just to log cycles."""
+    with populated_db.connect() as conn:
+        symbol_id = conn.execute("SELECT id FROM symbols WHERE fqn = 'module.func_c';").fetchone()[
+            "id"
+        ]
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        try:
+            edge_store_with_data.get_call_graph(symbol_id, direction="callers", max_depth=3)
+        finally:
+            conn.set_trace_callback(None)
+    recursive = [statement for statement in statements if "WITH RECURSIVE" in statement]
+    assert len(recursive) == 1
+
+
+def test_impact_opens_one_connection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Impact reuses one reader connection for the whole reverse walk."""
+    settings = Settings(context_dir=tmp_path)
+    db = GraphDatabase(tmp_path / "impact.db", settings)
+    db.initialize()
+    changed = tmp_path / "changed.py"
+    changed.write_text("def changed():\n    return 1\n")
+    with db.write_transaction() as conn:
+        conn.execute(
+            "INSERT INTO symbols (fqn, name, kind, file_path, line_start, line_end, "
+            "column_start, column_end, language) "
+            "VALUES (?, 'changed', 'function', ?, 0, 2, 0, 1, 'python');",
+            (f"{changed}::changed", str(changed)),
+        )
+        conn.execute(
+            "INSERT INTO code_chunks (file_path, line_start, line_end, content, language) "
+            "VALUES (?, 0, 2, 'def changed():\n    return 1', 'python');",
+            (str(changed),),
+        )
+    service = GraphQueryService(db, SymbolStore(db, settings), EdgeStore(db), None, settings)
+
+    created: list[int] = []
+    original = db._create_connection
+
+    def counted() -> Any:
+        created.append(1)
+        return original()
+
+    db.close()
+    monkeypatch.setattr(db, "_create_connection", counted)
+    service.impact([str(changed)], depth=3)
+
+    assert len(created) == 1

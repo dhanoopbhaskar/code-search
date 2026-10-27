@@ -13,7 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from code_search.engine.paths import normalize_indexed_path, resolve_stored_path
+from code_search.engine.paths import (
+    normalize_indexed_path,
+    repo_relative_path,
+    resolve_stored_path,
+)
 
 
 def _build_sqlite(tmp_path: Path, stored_paths: list[str]) -> sqlite3.Connection:
@@ -146,3 +150,18 @@ def test_resolve_stored_path_no_match_returns_none(tmp_path: Path) -> None:
     candidate = normalize_indexed_path("src/a.py", root)
     assert candidate is not None
     assert resolve_stored_path(candidate, conn) is None
+
+
+def test_repo_relative_path_strips_the_checkout_prefix(tmp_path: Path) -> None:
+    root = tmp_path / "test_article_documentation" / "corpus"
+    assert repo_relative_path(str(root / "docs" / "README.md"), root) == "docs/README.md"
+
+
+def test_repo_relative_path_keeps_outside_paths(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    outside = tmp_path / "elsewhere" / "a.py"
+    assert repo_relative_path(str(outside), root) == str(outside)
+
+
+def test_repo_relative_path_without_root_keeps_input() -> None:
+    assert repo_relative_path("/tmp/repo/a.py", None) == "/tmp/repo/a.py"

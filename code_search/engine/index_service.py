@@ -8,7 +8,10 @@ envelope.
 from __future__ import annotations
 
 import logging
+import threading
+from contextlib import suppress
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from code_search.engine.index_metadata import IndexMetadata, IndexStatus
@@ -154,3 +157,143 @@ class IndexChangeDetector:
                 self._metadata.mtime.isoformat().replace("+00:00", "Z"),
             )
         return self._metadata
+
+
+class LiveIndexUpdater:
+    """Keep a long-running server's index current with the working tree.
+
+    Wraps :class:`~code_search.engine.watcher.FileWatcher` so the daemon and the
+    MCP server observe edits without a second foreground process. A change batch
+    is debounced by the watcher, re-indexed incrementally with the discovery
+    policy recorded at index time, and followed by an in-memory reload of the
+    vector index and search caches. The orchestrator calls
+    ``FreshnessChecker.mark_clean()`` at the end of every successful run, so the
+    stale flag clears without waiting for the freshness TTL.
+
+    Re-index runs are serialised: a batch that arrives while another run is in
+    flight waits for it instead of starting a second writer.
+    """
+
+    def __init__(
+        self,
+        comps: dict[str, Any],
+        root_path: Path | None = None,
+        exclusion_patterns: set[str] | None = None,
+    ) -> None:
+        """Create an updater bound to an initialised component registry.
+
+        Args:
+            comps: The registry returned by ``_initialize_components``; it must
+                carry ``metadata``, ``orchestrator``, ``vector_index``,
+                ``search``, ``embedding_gen``, and ``settings``.
+            root_path: Directory to watch; defaults to the recorded
+                ``index_root`` and then the context directory's parent.
+            exclusion_patterns: Extra path parts to skip; always combined with
+                ``.context`` so the index never watches its own output.
+        """
+        from code_search.engine.watcher import create_watcher
+
+        metadata = comps["metadata"]
+        context_dir = Path(comps["context_dir"])
+        recorded_root = metadata.get("index_root")
+        self._root_path = Path(root_path or recorded_root or context_dir.parent).resolve()
+        self._comps = comps
+        self._lock = threading.RLock()
+        self._exclusion_patterns = set(exclusion_patterns or ()) | {".context"}
+        self._settings = comps["settings"]
+        self._watcher = create_watcher(
+            root_path=self._root_path,
+            index_callback=self._on_change,
+            exclusion_patterns=self._exclusion_patterns,
+            settings=self._settings,
+        )
+
+    @property
+    def root_path(self) -> Path:
+        """Return the directory being watched."""
+        return self._root_path
+
+    def start(self) -> None:
+        """Start polling for changes in a background thread."""
+        self._watcher.start()
+
+    def stop(self) -> None:
+        """Stop polling and wait for the watcher thread to exit."""
+        self._watcher.stop()
+
+    def reindex_once(self) -> dict[str, Any] | None:
+        """Run one incremental index with the recorded discovery policy.
+
+        Returns:
+            The orchestrator summary, or ``None`` when the run failed (the
+            failure is logged and the previous index is left in place).
+        """
+        with self._lock:
+            metadata = self._comps["metadata"]
+            include_tests = metadata.get("index_include_tests") != "false"
+            include_resources = metadata.get("index_include_resources") == "true"
+            resource_extensions = tuple(metadata.get_json("index_resource_extensions") or [])
+            recorded_exclusions = set(metadata.get_json("index_exclusion_patterns") or [])
+            try:
+                summary = self._comps["orchestrator"].index_codebase(
+                    root_path=self._root_path,
+                    force=False,
+                    incremental=True,
+                    verbose=False,
+                    exclusion_patterns=recorded_exclusions | self._exclusion_patterns,
+                    include_tests=include_tests,
+                    include_resources=include_resources,
+                    resource_extensions=resource_extensions or None,
+                )
+            except Exception as exc:
+                logger.warning("Incremental re-index failed: %s", exc)
+                return None
+            self.reload()
+            return dict(summary)
+
+    def reload(self) -> None:
+        """Reload vectors and drop caches so the next query sees the new index."""
+        with self._lock:
+            embedding_gen = self._comps.get("embedding_gen")
+            vector_index = self._comps.get("vector_index")
+            if vector_index is not None:
+                try:
+                    vector_index.load()
+                except Exception as exc:
+                    logger.warning("Vector index reload failed: %s", exc)
+            search_engine = self._comps.get("search")
+            if search_engine is not None:
+                try:
+                    search_engine.reset_caches()
+                except Exception as exc:
+                    logger.warning("Search cache reset failed: %s", exc)
+                if embedding_gen is not None:
+                    search_engine._embedding_generator = embedding_gen
+            symbol_store = self._comps.get("symbol_store")
+            invalidate = getattr(symbol_store, "invalidate_resolution_cache", None)
+            if callable(invalidate):
+                with suppress(Exception):
+                    invalidate()
+            detector = self._comps.get("index_change_detector")
+            metadata = self._comps.get("metadata")
+            if detector is not None and metadata is not None:
+                try:
+                    detector.mark_reload_complete(metadata)
+                except Exception as exc:
+                    logger.warning("Index-change detector update failed: %s", exc)
+
+    def _on_change(self, files: list[Path]) -> None:
+        """Re-index one debounced change batch.
+
+        Args:
+            files: The changed paths reported by the watcher. The incremental
+                index discovers its own diff, so the list is only logged.
+        """
+        logger.info("Detected %d changed file(s); refreshing the index", len(files))
+        summary = self.reindex_once()
+        if summary is not None:
+            logger.info(
+                "Incremental re-index complete: %s files, %s symbols",
+                summary.get("total_files"),
+                summary.get("total_symbols"),
+            )

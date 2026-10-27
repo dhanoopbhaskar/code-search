@@ -4,7 +4,7 @@ title: "ASTParser"
 description: "Tree-sitter based multi-language AST parser producing chunk boundaries and node trees."
 resource: code_search/engine/parser.py#ASTParser
 tags: [parsing, tree-sitter, ast]
-generated: { by: code-documenter/skill-v1.0, at: 2026-09-28T00:00:00Z }
+generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
 status: draft
 sources:
   - resource: code_search/engine/parser.py
@@ -18,7 +18,10 @@ multiple languages, producing chunk boundaries consumed by the indexing
 pipeline and parse trees consumed by
 [`SymbolExtractor`](../types/SymbolExtractor.md). `.tsx` files are parsed
 with the internal `tsx` grammar dialect while their public language token
-stays `typescript`, so filters and stored values are unchanged. Defined in
+stays `typescript`, so filters and stored values are unchanged. Declaration
+nodes are normalised to canonical chunk types across grammars (Go
+`type_spec`, Kotlin interfaces, Go `method_elem`), and YAML root `pair`
+nodes are emitted as non-definition chunks. Defined in
 [`engine.parser`](../modules/engine/parser.md).
 
 # Methods
@@ -34,3 +37,4 @@ stays `typescript`, so filters and stored values are unchanged. Defined in
 | `is_excluded_file(file_path: Path, root_path: Path) -> bool` | Check whether *file_path* is excluded by exclusion patterns or, when enabled, a `.gitignore` rule (see [`GitIgnoreMatcher`](GitIgnoreMatcher.md)). |
 | `get_chunks_for_file(file_path: Path, source_bytes: bytes) -> list[ParsedNode]` | Extract indexable AST chunks (definitions, declarations, imports, comments, etc.), including JS/TS `function_declaration` and `lexical_declaration` anchors. |
 | `_lexical_declaration_defines_function(node: object) -> bool` | Return whether a JS/TS `lexical_declaration` binds a function value (arrow function, function expression, or call such as `createAsyncThunk`). |
+| `_canonical_chunk_node_type(node: object, node_type: str) -> str` | Map grammar-specific declaration nodes (Go `type_spec`/`method_elem`, Kotlin `object_declaration`/interfaces) onto canonical chunk types. |

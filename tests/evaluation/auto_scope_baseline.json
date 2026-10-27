@@ -8,12 +8,15 @@
       },
       "notes func 3": {
         "content": "code",
-        "result_count": 10,
+        "result_count": 7,
         "result_files": [
           "f0.py",
           "f1.py",
           "f2.py",
-          "f3.py"
+          "f3.py",
+          "f4.py",
+          "f5.py",
+          "f6.py"
         ]
       },
       "parse config file": {

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from code_search.engine.search import _bounded_score, rrf_fusion, tokenize
+from code_search.engine.search import VectorSearch, _bounded_score, rrf_fusion, tokenize
 
 
 def test_bounded_score_is_monotonic_and_below_one() -> None:
@@ -299,6 +299,157 @@ def test_trust_gate_disabled_bypasses_coverage(tmp_path: Path) -> None:
         raw_vector_results=[(6, 0.227)],
     )
     assert accepted is True
+
+
+class _WarmableVectorSearch(VectorSearch):
+    """A ``VectorSearch`` subtype whose model warms during ``wait_warm``."""
+
+    def __init__(self, results: list[tuple[int, float]]) -> None:
+        self._results = results
+        self.calls = 0
+
+    def search(self, _query: str = "", top_k: int = 10, content: str = "all") -> list:
+        self.calls += 1
+        return self._results
+
+
+class _ColdModelGenerator:
+    """Embedding-generator stub that reports cold until it is waited on."""
+
+    def __init__(self) -> None:
+        self._warm = False
+        self.wait_calls: list[float | None] = []
+        self.warmup_external = False
+
+    def begin_warmup(self) -> None:
+        """No-op: the test drives the warm transition through ``wait_warm``."""
+
+    def is_warm(self) -> bool:
+        """Report the current model state."""
+        return self._warm
+
+    def wait_warm(self, timeout: float | None = None) -> bool:
+        """Record the wait and finish warmup."""
+        self.wait_calls.append(timeout)
+        self._warm = True
+        return True
+
+
+class _GateBM25:
+    """BM25 stub exposing the signals the query-quality gate reads."""
+
+    def __init__(self, results: list[tuple[int, float]], informative: list[str]) -> None:
+        self._results = results
+        self._informative = informative
+        self.top_ks: list[int | None] = []
+
+    def search(self, _query: str = "", **kwargs: object) -> list[tuple[int, float]]:
+        top_k = kwargs.get("top_k")
+        self.top_ks.append(top_k if isinstance(top_k, int) else None)
+        return self._results
+
+    def count(self, _query: str = "", **_kwargs: object) -> int:
+        return len(self._results)
+
+    def informative_tokens(self, _query: str) -> list[str]:
+        return self._informative
+
+    def concept_subwords(self, _query: str) -> list[str]:
+        return self._informative
+
+    def present_terms(self, terms: set[str]) -> set[str]:
+        return set(self._informative) & set(terms)
+
+
+def _cold_gate_search(
+    tmp_path: Path,
+    *,
+    bm25_results: list[tuple[int, float]],
+    informative: list[str],
+    vector_results: list[tuple[int, float]],
+) -> tuple[object, _GateBM25, _WarmableVectorSearch, _ColdModelGenerator]:
+    """Gate-enabled search over ``_mixed_db`` with a cold model and stub arms."""
+    from code_search.engine.language import QueryAnalysis
+
+    hs = _hybrid_search(tmp_path, relevance_gate=True, relevance_threshold=0.0)
+    bm25 = _GateBM25(bm25_results, informative)
+    vector = _WarmableVectorSearch(vector_results)
+    gen = _ColdModelGenerator()
+    hs._bm25 = bm25
+    hs._vector_search = vector
+    hs._embedding_generator = gen
+    hs._vector_layer_health = lambda: True
+    # Low exact-token coverage is what makes a long paraphrase depend on the
+    # vector leg; a warm model's cosine is the only signal that can admit it.
+    hs._build_analysis = lambda query, **_kwargs: QueryAnalysis(
+        query=query, expanded_text=query, exact_tokens=["token"], coverage=0.25
+    )
+    return hs, bm25, vector, gen
+
+
+def test_cold_long_query_waits_for_model_and_keeps_ranked_path(tmp_path: Path) -> None:
+    """A gate rejection caused only by the cold vector arm re-runs after warmup.
+
+    Long issue-style queries have low exact-token coverage, so the quality
+    gate admits them on the vector leg. When that leg is deferred because the
+    model is still loading, the request must wait for the bounded warmup
+    budget and fuse the vector arm instead of dropping to the lexical rescue
+    ladder.
+    """
+    hs, _, vector, gen = _cold_gate_search(
+        tmp_path,
+        bm25_results=[(1, 10.0), (2, 5.0)],
+        informative=["token", "article"],
+        vector_results=[(1, 0.9)],
+    )
+
+    env = hs.search("websocket real time notifications", limit=5)
+
+    assert gen.wait_calls, "a cold gate rejection must wait for the model"
+    assert vector.calls == 1, "the deferred vector arm must run after warmup"
+    assert env["mode"] == "ranked"
+    assert env["results"]
+    assert env["ranked_path"] == "hybrid"
+    assert env["degraded_reason"] is None
+
+
+def test_cold_query_without_lexical_support_does_not_wait(tmp_path: Path) -> None:
+    """An out-of-domain query must not spend the warmup budget."""
+    hs, _, vector, gen = _cold_gate_search(
+        tmp_path,
+        bm25_results=[],
+        informative=[],
+        vector_results=[(1, 0.9)],
+    )
+
+    env = hs.search("wqrble florble", limit=5)
+
+    assert gen.wait_calls == []
+    assert vector.calls == 0
+    assert env["results"] == []
+
+
+def test_candidate_pool_is_independent_of_requested_limit(tmp_path: Path) -> None:
+    """The ranking pool must not shrink or grow with the display limit.
+
+    Fusion normalises over the pool and additive passes scale against its
+    maximum, so a limit-derived pool makes the same query rank differently at
+    different limits.
+    """
+    hs = _hybrid_search(tmp_path, relevance_gate=False, relevance_threshold=0.0)
+    bm25 = _GateBM25([(1, 10.0), (2, 5.0)], [])
+    hs._bm25 = bm25
+    hs._vector_search = _MockVectorSearch([])
+
+    hs.search("issue_token", limit=5)
+    hs.search("issue_token", limit=50)
+
+    settings = hs._settings
+    expected = max(
+        settings.max_results * settings.search_top_k_multiplier,
+        settings.search_candidate_pool_min,
+    )
+    assert bm25.top_ks == [expected, expected]
 
 
 def test_decompose_query_preserves_camel_case_boundaries() -> None:
@@ -2230,6 +2381,56 @@ def test_exhaustive_within_cap_is_complete(tmp_path: Path) -> None:
     assert len(env["results"]) == 12
     assert env["truncated"] is False
     assert env["complete"] is True
+
+
+def test_ripgrep_backend_matches_python_scan(tmp_path: Path) -> None:
+    """The rg fast path and the in-process fallback return the same counts."""
+    import shutil
+
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep is not installed")
+
+    hs = _exhaustive_search(tmp_path, exhaustive_max_lines=100)
+    with_rg = hs.search("token", limit=50, mode="exhaustive", matching="literal")
+
+    original = hs._ripgrep_literal
+    hs._ripgrep_literal = lambda _files, _needle: None  # type: ignore[method-assign]
+    try:
+        without_rg = hs.search("token", limit=50, mode="exhaustive", matching="literal")
+    finally:
+        hs._ripgrep_literal = original  # type: ignore[method-assign]
+
+    assert with_rg["total_count"] == without_rg["total_count"] == 12
+    assert with_rg["occurrences_per_line"] == without_rg["occurrences_per_line"]
+    assert with_rg["occurrence_line_numbers"] == without_rg["occurrence_line_numbers"]
+    assert [row["file_path"] for row in with_rg["results"]] == [
+        row["file_path"] for row in without_rg["results"]
+    ]
+    assert [row["line_number"] for row in with_rg["results"]] == [
+        row["line_number"] for row in without_rg["results"]
+    ]
+
+
+def test_ripgrep_counts_multiple_occurrences_on_one_line(tmp_path: Path) -> None:
+    """Per-line occurrence counts survive the rg backend."""
+    import shutil
+
+    if shutil.which("rg") is None:
+        pytest.skip("ripgrep is not installed")
+
+    hs = _exhaustive_search(tmp_path, exhaustive_max_lines=100)
+    repeated = tmp_path / "repeated.py"
+    repeated.write_text("token token token\ntoken\n")
+    with hs._db.write_transaction() as conn:
+        conn.execute(
+            "INSERT INTO file_checksums (file_path, checksum) VALUES (?, '');",
+            (str(repeated),),
+        )
+
+    env = hs.search("token", limit=50, mode="exhaustive", matching="literal")
+
+    assert env["total_count"] == 16  # 12 single hits + 3 + 1
+    assert env["occurrences_per_line"][-2:] == [3, 1]
 
 
 def _enumeration_db(tmp_path: Path) -> object:

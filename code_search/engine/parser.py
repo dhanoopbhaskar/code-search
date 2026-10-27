@@ -78,6 +78,8 @@ LANGUAGE_MAP: dict[str, str] = {
     ".kt": "kotlin",
     ".kts": "kotlin",
     ".php": "php",
+    ".groovy": "groovy",
+    ".gvy": "groovy",
     ".sh": "shell",
     ".bash": "shell",
     ".zsh": "shell",
@@ -314,6 +316,7 @@ SUPPORTED_LANGUAGES: set[str] = {
     "swift",
     "kotlin",
     "php",
+    "groovy",
     "shell",
     "yaml",
     "toml",
@@ -333,6 +336,7 @@ LANGUAGE_GRAMMAR_MAP: dict[str, str] = {
     "swift": "tree_sitter_swift",
     "kotlin": "tree_sitter_kotlin",
     "php": "tree_sitter_php",
+    "groovy": "tree_sitter_groovy",
     "shell": "tree_sitter_bash",
     "yaml": "tree_sitter_yaml",
     "toml": "tree_sitter_toml",
@@ -466,6 +470,11 @@ class ASTParser:
         self._custom_ext_map: dict[str, str] = {}
         self._custom_grammar_map: dict[str, str] = {}
         self._custom_supported: set[str] = set()
+        # The indexer asks for the same file's tree several times (symbols,
+        # edges, chunks, and parse-error coverage). Reuse the last tree when the
+        # exact source object is passed again; parse trees are immutable.
+        self._last_parse_source: bytes | None = None
+        self._last_parse_tree: Any = None
         if language_config is not None:
             default_languages: dict[str, dict[str, Any]] = {}
             for lang in LANGUAGE_GRAMMAR_MAP:
@@ -533,7 +542,12 @@ class ASTParser:
             return None
         try:
             source = source_bytes if source_bytes is not None else file_path.read_bytes()
+            if source_bytes is not None and self._last_parse_source is source:
+                return self._last_parse_tree
             tree = parser.parse(source)
+            if source_bytes is not None:
+                self._last_parse_source = source
+                self._last_parse_tree = tree
             return tree
         except Exception as exc:
             logger.warning("Failed to parse %s: %s", file_path, exc)
@@ -758,6 +772,22 @@ class ASTParser:
         except Exception:
             pass
         return " ".join(t for t in texts if t.strip())
+
+    def is_supported_file(self, file_path: Path) -> bool:
+        """Return whether *file_path* has a supported source extension.
+
+        Used by coverage reporting to distinguish "this file was never a
+        supported source file" from "this source file is missing from the
+        index". Resource/prose opt-ins are not considered here; an indexed
+        resource file is discovered through ``file_checksums`` instead.
+
+        Args:
+            file_path: The candidate file path.
+
+        Returns:
+            ``True`` when the file extension maps to a configured language.
+        """
+        return file_path.suffix.lower() in self._get_ext_map()
 
     def is_excluded_file(self, file_path: Path, root_path: Path) -> bool:
         """Check whether *file_path* is excluded by patterns or ``.gitignore``.
