@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -403,13 +404,7 @@ class QueryDaemon:
                 self._live_index.stop()
             self._live_index = None
         if NAMED_PIPE_TRANSPORT and self._server is not None:
-            # A pipe listener has no ``shutdown``; a client connection is what
-            # unblocks ``accept`` so the loop can observe the cleared flag.
-            # The accepted connection carries no request and is discarded.
-            with suppress(Exception):
-                from multiprocessing.connection import Client
-
-                Client(str(self._socket_path), family="AF_PIPE").close()
+            self._wake_pipe_accept()
         with self._stop_lock:
             server, self._server = self._server, None
             if server is not None:
@@ -419,6 +414,28 @@ class QueryDaemon:
                 with suppress(OSError, AttributeError):
                     server.close()
         write_state(self._context_dir, "stopped")
+
+    def _wake_pipe_accept(self) -> None:
+        """Unblock a named-pipe ``accept`` so the serve loop can exit.
+
+        A pipe listener has no ``shutdown``, and closing the handle does not
+        reliably cancel a pending ``ConnectNamedPipe``. A client connection
+        completes the pending accept; the loop then observes the cleared
+        running flag and returns. The listener publishes its next instance just
+        after each accept, so a connection can briefly fail as busy — retry
+        until the instance is available.
+        """
+        from multiprocessing.connection import Client
+
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            try:
+                Client(str(self._socket_path), family="AF_PIPE").close()
+                return
+            except OSError as exc:
+                if getattr(exc, "winerror", None) != 231:  # ERROR_PIPE_BUSY
+                    return
+                time.sleep(0.01)
 
     @property
     def is_running(self) -> bool:
