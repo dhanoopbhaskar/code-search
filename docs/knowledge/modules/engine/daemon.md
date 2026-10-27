@@ -1,7 +1,7 @@
 ---
 type: Module
 title: "engine.daemon"
-description: "Local AF_UNIX socket query daemon holding the embedding model and SQLite connections warm across CLI invocations, with a lifecycle-state file for readiness probes."
+description: "Local IPC query daemon (AF_UNIX socket or Windows named pipe) holding the embedding model and SQLite connections warm across CLI invocations, with a lifecycle-state file for readiness probes."
 resource: code_search/engine/daemon.py
 tags: [engine, daemon, ipc]
 generated: { by: code-documenter/skill-v1.0, at: 2026-10-23T08:32:00Z }
@@ -13,11 +13,13 @@ sources:
 
 # Overview
 
-Local AF_UNIX socket query daemon holding the embedding model and SQLite
-connections warm for repeated CLI invocations, avoiding the per-invocation
-model load cost (0.5-2s on CPU). Handles JSON requests over an AF_UNIX socket
-(`.context/code-search.sock`, or a deterministic hashed runtime path when
-the conventional path exceeds the `AF_UNIX` limit) serving search, symbol
+Local IPC query daemon holding the embedding model and SQLite connections
+warm for repeated CLI invocations, avoiding the per-invocation model load cost
+(0.5-2s on CPU). Handles JSON requests over a local endpoint — an `AF_UNIX`
+socket on Linux/macOS (`.context/code-search.sock`, or a deterministic hashed
+runtime path when the conventional path exceeds the `AF_UNIX` limit) and a
+deterministic named pipe on Windows, which has no network listener — serving
+search, symbol
 resolution, implementations, graph traversal, and related-chunk queries;
 every action's payload carries the shared freshness signal, while only the
 `search` action additionally writes an audit entry and runs index-change
@@ -28,7 +30,7 @@ index is `ready`, and applies the same compact/root-relative result shaping
 as the in-process CLI, including `allow_weak`, `paths_only`, and the
 `max_snippet_lines=0` no-content contract.
 
-The control socket is bound before component initialisation, and a
+The endpoint is bound before component initialisation, and a
 `code-search.state` file records the lifecycle (`starting`, `warming`,
 `ready`, `failed`, `stopped`). A waiting client can therefore distinguish a
 slow start from a crashed daemon, and non-`ping` requests arriving during
@@ -39,8 +41,8 @@ startup wait up to `startup_wait_s` (default 10 s) or receive a structured
 
 # Key Classes
 
-- [`QueryDaemon`](../../types/QueryDaemon.md) — serves `ping`, `search`, `symbol`, `implementations`, `graph`, and `find_related` over an AF_UNIX socket, one thread per connection.
-- [`DaemonClient`](../../types/DaemonClient.md) — synchronous AF_UNIX socket client used by CLI forwarding and daemon status.
+- [`QueryDaemon`](../../types/QueryDaemon.md) — serves `ping`, `search`, `symbol`, `implementations`, `graph`, and `find_related` over the local endpoint, one thread per connection.
+- [`DaemonClient`](../../types/DaemonClient.md) — synchronous IPC client used by CLI forwarding and daemon status.
 
 # Key Functions
 

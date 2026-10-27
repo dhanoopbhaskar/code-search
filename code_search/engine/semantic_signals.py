@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 
 from code_search.engine.config import Settings
@@ -75,7 +75,7 @@ def _package_segments(file_path: str) -> set[str]:
     Returns:
         Set of namespace directory segments (filename excluded).
     """
-    parent_parts = Path(file_path).parent.parts
+    parent_parts = PurePosixPath(file_path.replace("\\", "/")).parent.parts
     last_marker = -1
     for i, segment in enumerate(parent_parts):
         if segment in _SOURCE_ROOT_MARKERS:

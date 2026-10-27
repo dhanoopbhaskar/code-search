@@ -24,7 +24,7 @@ from code_search.engine.daemon import (
 
 pytestmark = pytest.mark.skipif(
     not hasattr(socket, "AF_UNIX"),
-    reason="the daemon requires AF_UNIX (Windows 10 1803+ / Server 2019+)",
+    reason="exercises the POSIX AF_UNIX transport directly; Windows uses named pipes",
 )
 
 

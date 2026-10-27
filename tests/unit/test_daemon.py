@@ -18,12 +18,19 @@ from typing import Any
 import pytest
 
 from code_search.engine.daemon import (
+    NAMED_PIPE_TRANSPORT,
     DaemonClient,
     QueryDaemon,
     daemon_status,
     default_socket_path,
     detached_spawn_kwargs,
     process_exists,
+)
+
+# A stale socket *file* is a POSIX-only failure mode; named pipes are kernel
+# objects with no filesystem entry to leak.
+_requires_socket_files = pytest.mark.skipif(
+    NAMED_PIPE_TRANSPORT, reason="named pipes have no socket file to leak or unlink"
 )
 
 
@@ -56,9 +63,9 @@ def _start_daemon_with_fake(
     thread = threading.Thread(target=daemon.start, daemon=True)
     thread.start()
     deadline = time.monotonic() + 5
-    while not socket_path.exists() and time.monotonic() < deadline:
+    while not DaemonClient.is_serving(socket_path, timeout=0.1) and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert socket_path.exists(), "daemon failed to bind its socket"
+    assert DaemonClient.is_serving(socket_path, timeout=1.0), "daemon failed to bind its endpoint"
     return daemon, thread, comps
 
 
@@ -78,6 +85,7 @@ def test_ping_reports_warm_false_then_true(monkeypatch, tmp_path: Path) -> None:
         thread.join(timeout=5)
 
 
+@_requires_socket_files
 def test_daemon_start_is_idempotent_when_socket_exists(tmp_path: Path) -> None:
     import argparse
 
@@ -96,6 +104,7 @@ def test_daemon_start_is_idempotent_when_socket_exists(tmp_path: Path) -> None:
     assert cmd_daemon(args) == 0
 
 
+@_requires_socket_files
 def test_dead_socket_reports_not_running_without_hanging(tmp_path: Path) -> None:
     socket_path = default_socket_path(tmp_path)
     socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -127,6 +136,7 @@ def test_is_serving_true_for_live_listener(monkeypatch, tmp_path: Path) -> None:
         thread.join(timeout=5)
 
 
+@_requires_socket_files
 def test_is_serving_false_for_stale_socket(tmp_path: Path) -> None:
     """A socket file with no listener is not reported as serving."""
     socket_path = default_socket_path(tmp_path)
@@ -136,6 +146,7 @@ def test_is_serving_false_for_stale_socket(tmp_path: Path) -> None:
     assert DaemonClient.is_serving(socket_path, timeout=0.1) is False
 
 
+@_requires_socket_files
 def test_ensure_resident_service_keeps_starting_daemon(monkeypatch, tmp_path: Path) -> None:
     """A live pid plus a socket that starts answering is not unlinked."""
     import argparse
@@ -168,6 +179,7 @@ def test_ensure_resident_service_keeps_starting_daemon(monkeypatch, tmp_path: Pa
     assert spawned == []
 
 
+@_requires_socket_files
 def test_ensure_resident_service_removes_stale_socket(tmp_path: Path) -> None:
     """A socket without a live pid is removed so the next call can start cleanly."""
     import argparse

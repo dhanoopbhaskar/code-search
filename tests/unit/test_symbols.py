@@ -91,7 +91,7 @@ def test_extract_function_symbol(extractor: SymbolExtractor, tmp_path: Path) -> 
     assert sym["name"] == "greet"
     assert sym["kind"] == "function"
     assert sym["fqn"].endswith("::greet")
-    assert sym["file_path"] == str(py_file)
+    assert sym["file_path"] == py_file.as_posix()
     assert sym["language"] == "python"
 
 

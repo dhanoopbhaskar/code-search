@@ -55,7 +55,7 @@ class TestReportArtifactDemotion:
             ).fetchall()
         assert rows, "the report artifact must be indexed"
         ranked = _reranked(indexed_relevance["search"], QUOTED_QUERIES[0], limit=50)
-        artifact_results = [r for r in ranked if str(Path(r["file_path"])).endswith(ARTIFACT)]
+        artifact_results = [r for r in ranked if Path(r["file_path"]).as_posix().endswith(ARTIFACT)]
         # The artifact is reachable in an uncapped ranked result (demotion,
         # not exclusion) and carries the analysis role.
         for r in artifact_results:
@@ -67,6 +67,6 @@ class TestReportArtifactDemotion:
         """An explicit query that legitimately targets the artifact still
         reaches it — the suppression is a demotion, not a hard drop."""
         ranked = _reranked(indexed_relevance["search"], "code-search vs grep benchmark", limit=50)
-        assert any(str(Path(r["file_path"])).endswith(ARTIFACT) for r in ranked), (
+        assert any(Path(r["file_path"]).as_posix().endswith(ARTIFACT) for r in ranked), (
             "explicit artifact query must reach the report"
         )

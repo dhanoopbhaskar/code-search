@@ -43,7 +43,7 @@ def test_groovy_regex_fallback_extracts_types_and_methods(tmp_path: Path) -> Non
     assert spec["language"] == "groovy"
     assert spec["kind"] == "class"
     assert spec["line_start"] == 3
-    assert all(symbol["file_path"] == str(path) for symbol in symbols)
+    assert all(symbol["file_path"] == path.as_posix() for symbol in symbols)
 
 
 def test_groovy_regex_fallback_used_when_grammar_reports_error(

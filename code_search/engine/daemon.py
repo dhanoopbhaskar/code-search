@@ -3,11 +3,11 @@
 Holds the vector model + SQLite connections warm so repeated CLI invocations
 pay socket round-trip latency instead of a per-invocation model load (roughly
 0.5-2 s on CPU, depending on the model and disk). Requests and responses are
-newline-delimited JSON over a local ``AF_UNIX`` socket under ``.context/`` (or a
-short runtime path when that location exceeds the ``AF_UNIX`` limit) — no
-network, air-gap preserved. ``AF_UNIX`` is available on Linux, macOS, and
-Windows 10 1803+ / Server 2019+, so every supported platform uses the same
-transport.
+newline-delimited JSON over a local IPC endpoint under ``.context/`` (or a short
+runtime path when that location exceeds the ``AF_UNIX`` limit) — no network,
+air-gap preserved. Linux and macOS use ``AF_UNIX`` sockets; CPython on Windows
+does not expose ``AF_UNIX``, so Windows uses a named pipe
+(``multiprocessing.connection``) instead of falling back to a network listener.
 """
 
 from __future__ import annotations
@@ -65,14 +65,75 @@ def _daemon_freshness(comps: dict[str, Any]) -> dict[str, Any]:
 
 
 # ``sockaddr_un.sun_path`` is 104 bytes including the NUL terminator on macOS
-# (103 usable) and 108 bytes on Linux and Windows (107 usable); use the
-# smallest supported limit so a path chosen on one platform also binds on
-# another.
+# (103 usable) and 108 bytes on Linux (107 usable); use the smallest supported
+# limit so a path chosen on one platform also binds on another. Named pipes
+# have no such limit.
 _MAX_UNIX_SOCKET_PATH = 103 if sys.platform == "darwin" else 107
 
+# CPython only exposes ``AF_UNIX`` where the C build defines the address
+# family; the Windows build does not, even though Windows itself supports unix
+# sockets. Named pipes (``multiprocessing.connection``) are the local IPC
+# transport there, so no platform opens a network listener.
+NAMED_PIPE_TRANSPORT = os.name == "nt" and not hasattr(socket, "AF_UNIX")
+
 # typeshed omits ``AF_UNIX`` on Windows, so resolve it dynamically to keep the
-# module type-checking on every platform. Every supported platform provides it.
-_AF_UNIX = cast(int, getattr(socket, "AF_UNIX", None))
+# module type-checking on every platform.
+_AF_UNIX = cast(int, getattr(socket, "AF_UNIX", 0))
+
+
+def _pipe_name(context_dir: Path) -> str:
+    """Return the deterministic named-pipe address for *context_dir*.
+
+    Args:
+        context_dir: The daemon's context directory (``.context/``).
+
+    Returns:
+        A ``\\\\.\\pipe\\...`` address unique to the user and repository.
+    """
+
+    digest = hashlib.sha256(os.fsencode(str(context_dir.expanduser().resolve()))).hexdigest()[:16]
+    return rf"\\.\pipe\code-search-{_user_tag()}-{digest}"
+
+
+def _parse_request(line: bytes) -> dict[str, Any] | None:
+    """Return the JSON object encoded in *line*, or ``None`` when invalid."""
+    try:
+        parsed = json.loads(line.decode("utf-8"))
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def prepare_socket_path(socket_path: Path) -> None:
+    """Make *socket_path* usable for a fresh bind.
+
+    POSIX sockets live in a directory and leave a stale file behind after an
+    unclean exit, so the parent is created and the stale entry removed. Named
+    pipes are kernel objects with no filesystem entries, so there is nothing to
+    prepare.
+
+    Args:
+        socket_path: The IPC endpoint the daemon will bind.
+    """
+
+    if NAMED_PIPE_TRANSPORT:
+        return
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    with suppress(OSError):
+        socket_path.unlink()
+
+
+def endpoint_exists(socket_path: Path) -> bool:
+    """Return whether a daemon endpoint is present.
+
+    Args:
+        socket_path: The IPC endpoint to inspect.
+
+    Returns:
+        ``True`` when the POSIX socket file exists or a named-pipe listener is
+        reachable.
+    """
+    return DaemonClient.is_running(socket_path)
 
 
 def _unix_socket_path_fits(path: Path) -> bool:
@@ -110,21 +171,25 @@ def _user_tag() -> str:
 
 
 def default_socket_path(context_dir: Path) -> Path:
-    """Return the IPC socket path the daemon binds for *context_dir*.
+    """Return the IPC endpoint the daemon binds for *context_dir*.
 
-    Prefers the conventional ``context_dir / "code-search.sock"``. When that
-    path exceeds the ``AF_UNIX`` limit (103 bytes on macOS, 107 elsewhere),
-    falls back to a deterministic hashed name under ``$XDG_RUNTIME_DIR`` (when
-    set) or the platform temp directory, so a deep checkout path cannot stop
-    the daemon from binding.
+    On POSIX this prefers the conventional ``context_dir / "code-search.sock"``.
+    When that path exceeds the ``AF_UNIX`` limit (103 bytes on macOS, 107
+    elsewhere), it falls back to a deterministic hashed name under
+    ``$XDG_RUNTIME_DIR`` (when set) or the platform temp directory, so a deep
+    checkout path cannot stop the daemon from binding. On Windows the endpoint
+    is a deterministic named pipe address instead.
 
     Args:
         context_dir: The daemon's context directory (``.context/``).
 
     Returns:
-        The socket path to bind; identical for every process resolving the
-        same *context_dir*.
+        The endpoint to bind; identical for every process resolving the same
+        *context_dir*.
     """
+
+    if NAMED_PIPE_TRANSPORT:
+        return Path(_pipe_name(context_dir))
 
     conventional = context_dir / "code-search.sock"
     if _unix_socket_path_fits(conventional):
@@ -221,7 +286,7 @@ class QueryDaemon:
         self._verbose = verbose
         self._watch = watch
         self._live_index: Any | None = None
-        self._server: socket.socket | None = None
+        self._server: Any | None = None
         self._running = threading.Event()
         self._comps: dict[str, Any] | None = None
         self._lock = threading.Lock()
@@ -229,9 +294,9 @@ class QueryDaemon:
         self._stop_lock = threading.Lock()
 
     def start(self) -> None:
-        """Initialise components, bind the socket, and serve connections forever.
+        """Initialise components, bind the endpoint, and serve connections forever.
 
-        The IPC socket is bound before the expensive component
+        The IPC endpoint is bound before the expensive component
         initialisation so a waiting client can observe ``starting``/``warming``
         instead of mistaking a slow start for a crashed daemon. Model warm-up
         runs in the background; ``ping`` reports readiness and the recorded
@@ -242,16 +307,27 @@ class QueryDaemon:
             logging.basicConfig(level=logging.DEBUG, stream=sys.stderr)
         write_state(self._context_dir, "starting")
 
-        self._socket_path.parent.mkdir(parents=True, exist_ok=True)
-        with suppress(OSError):
-            self._socket_path.unlink()
+        prepare_socket_path(self._socket_path)
 
-        server = socket.socket(_AF_UNIX, socket.SOCK_STREAM)
-        self._server = server
-        server.bind(str(self._socket_path))
-        server.listen(8)
+        if NAMED_PIPE_TRANSPORT:
+            from multiprocessing.connection import Listener
+
+            self._server = Listener(str(self._socket_path), family="AF_PIPE")
+            accept = self._server.accept
+            logger.info("Query daemon named pipe bound on %s", self._socket_path)
+        else:
+            server = socket.socket(_AF_UNIX, socket.SOCK_STREAM)
+            self._server = server
+            server.bind(str(self._socket_path))
+            server.listen(8)
+
+            def accept() -> Any:
+                """Return the next client socket from the listening socket."""
+                conn, _addr = server.accept()
+                return conn
+
+            logger.info("Query daemon socket bound on %s", self._socket_path)
         self._running.set()
-        logger.info("Query daemon socket bound on %s", self._socket_path)
 
         init_thread = threading.Thread(
             target=self._initialize, name="code-search-daemon-init", daemon=True
@@ -260,8 +336,8 @@ class QueryDaemon:
 
         while self._running.is_set():
             try:
-                conn, _addr = server.accept()
-            except OSError:
+                conn = accept()
+            except (OSError, EOFError):
                 break
             threading.Thread(
                 target=self._handle_connection,
@@ -311,12 +387,16 @@ class QueryDaemon:
             logger.warning("Live index watcher failed to start: %s", exc)
 
     def stop(self) -> None:
-        """Stop servicing requests, close the socket, and remove its path.
+        """Stop servicing requests, close the endpoint, and remove its path.
 
-        Clears the running flag (which ends ``start``'s accept loop), shuts
-        down and closes the listening server socket, and unlinks the socket
-        file so a stale path cannot block a later ``start``.
+        Unlinks the POSIX socket file, clears the running flag (which ends
+        ``start``'s accept loop), and closes the listening endpoint. Removing
+        the file first guarantees it is gone by the time a waiting
+        ``start`` caller observes the loop exit.
         """
+        if not NAMED_PIPE_TRANSPORT:
+            with suppress(OSError):
+                self._socket_path.unlink()
         self._running.clear()
         if self._live_index is not None:
             with suppress(Exception):
@@ -325,12 +405,11 @@ class QueryDaemon:
         with self._stop_lock:
             server, self._server = self._server, None
             if server is not None:
-                with suppress(OSError):
-                    server.shutdown(socket.SHUT_RDWR)
-                with suppress(OSError):
+                if not NAMED_PIPE_TRANSPORT:
+                    with suppress(OSError):
+                        server.shutdown(socket.SHUT_RDWR)
+                with suppress(OSError, AttributeError):
                     server.close()
-        with suppress(OSError):
-            self._socket_path.unlink()
         write_state(self._context_dir, "stopped")
 
     @property
@@ -359,20 +438,28 @@ class QueryDaemon:
             logger.warning("Daemon connection error: %s", exc)
 
     @staticmethod
-    def _read_request(conn: socket.socket) -> dict[str, Any] | None:
-        """Read and parse one newline-delimited JSON request from *conn*.
+    def _read_request(conn: Any) -> dict[str, Any] | None:
+        """Read and parse one JSON request from *conn*.
 
-        Accumulates bytes until a newline is seen, then parses the line as
-        JSON. Returns ``None`` when the connection closes before a full
-        request arrives or when the line is not a JSON object.
+        Socket connections carry newline-delimited JSON, accumulated until the
+        newline; a named-pipe connection carries one whole message. Returns
+        ``None`` when the connection closes before a full request arrives or
+        when the payload is not a JSON object.
 
         Args:
-            conn: The client socket to read from.
+            conn: The client socket or named-pipe connection to read from.
 
         Returns:
             The parsed request dict, or ``None`` when no valid request is
             received.
         """
+        if NAMED_PIPE_TRANSPORT:
+            try:
+                data = conn.recv_bytes()
+            except (EOFError, OSError):
+                return None
+            return _parse_request(data)
+
         buffer = b""
         while True:
             chunk = conn.recv(65536)
@@ -381,24 +468,24 @@ class QueryDaemon:
             buffer += chunk
             if b"\n" in buffer:
                 line, _rest = buffer.split(b"\n", 1)
-                try:
-                    parsed = json.loads(line.decode("utf-8"))
-                except Exception:
-                    return None
-                return parsed if isinstance(parsed, dict) else None
+                return _parse_request(line)
 
     @staticmethod
-    def _send_response(conn: socket.socket, payload: dict[str, Any]) -> None:
+    def _send_response(conn: Any, payload: dict[str, Any]) -> None:
         """Write *payload* to *conn* as newline-delimited JSON.
 
         Non-JSON-serialisable values (e.g. paths) fall back to their string
         form via ``default=str``.
 
         Args:
-            conn: The client socket to write to.
+            conn: The client socket or named-pipe connection to write to.
             payload: The response dict to serialise and send.
         """
-        conn.sendall((json.dumps(payload, default=str) + "\n").encode("utf-8"))
+        line = (json.dumps(payload, default=str) + "\n").encode("utf-8")
+        if NAMED_PIPE_TRANSPORT:
+            conn.send_bytes(line)
+        else:
+            conn.sendall(line)
 
     def _dispatch(self, request: dict[str, Any]) -> dict[str, Any]:
         """Route a parsed request to its handler and wrap failures.
@@ -975,15 +1062,21 @@ class DaemonClient:
 
     @staticmethod
     def is_running(socket_path: Path) -> bool:
-        """Return whether a daemon socket file currently exists at *socket_path*.
+        """Return whether a daemon endpoint is currently reachable.
+
+        POSIX has a socket file to inspect, which is a cheap liveness
+        heuristic (a stale file may briefly report ``True``). Named pipes have
+        no filesystem entry, so reachability is probed instead.
 
         Args:
-            socket_path: The IPC socket path to probe.
+            socket_path: The IPC endpoint to probe.
 
         Returns:
-            ``True`` when the socket file exists; note this is a liveness
-            heuristic — a stale file may briefly report ``True``.
+            ``True`` when the endpoint file exists (POSIX) or answers a ping
+            (named pipe).
         """
+        if NAMED_PIPE_TRANSPORT:
+            return DaemonClient.is_serving(socket_path, timeout=0.1)
         return socket_path.exists()
 
     @staticmethod
@@ -994,13 +1087,13 @@ class DaemonClient:
         stale socket file left behind by a crashed daemon.
 
         Args:
-            socket_path: The IPC socket path to probe.
+            socket_path: The IPC endpoint to probe.
             timeout: Connect/read timeout in seconds.
 
         Returns:
-            ``True`` when the socket answers a ``ping`` request.
+            ``True`` when the endpoint answers a ``ping`` request.
         """
-        if not socket_path.exists():
+        if not NAMED_PIPE_TRANSPORT and not socket_path.exists():
             return False
         try:
             response = DaemonClient(socket_path, timeout=timeout).request("ping")
@@ -1011,9 +1104,9 @@ class DaemonClient:
     def request(self, action: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         """Send one request to the daemon and return its parsed response.
 
-        Opens a fresh connection, writes ``{action, params}`` as newline-
-        delimited JSON, and reads until a newline-delimited JSON object is
-        received.
+        Opens a fresh connection, writes ``{action, params}``, and reads the
+        JSON object the daemon returns. POSIX sockets use newline-delimited
+        JSON; named pipes send one whole message per direction.
 
         Args:
             action: The daemon action to invoke (e.g. ``ping``, ``search``).
@@ -1027,10 +1120,28 @@ class DaemonClient:
                 sending a response.
         """
         payload = {"action": action, "params": params or {}}
+        line = (json.dumps(payload) + "\n").encode("utf-8")
+        if NAMED_PIPE_TRANSPORT:
+            from multiprocessing.connection import Client
+
+            conn = Client(str(self._socket_path), family="AF_PIPE")
+            try:
+                conn.send_bytes(line)
+                if not conn.poll(self._timeout):
+                    raise TimeoutError("daemon did not answer in time")
+                data = conn.recv_bytes()
+            finally:
+                with suppress(Exception):
+                    conn.close()
+            parsed = json.loads(data.decode("utf-8"))
+            if isinstance(parsed, dict):
+                return parsed
+            raise RuntimeError("daemon returned a non-object response")
+
         with socket.socket(_AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(self._timeout)
             sock.connect(str(self._socket_path))
-            sock.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+            sock.sendall(line)
             buffer = b""
             while True:
                 chunk = sock.recv(65536)
@@ -1048,11 +1159,11 @@ class DaemonClient:
 def daemon_status(context_dir: Path) -> dict[str, Any]:
     """Return ``{running, warm, socket, pid}`` for *context_dir*'s daemon.
 
-    ``running`` is reported only when the socket exists and answers ``ping``
-    within the timeout; ``warm`` mirrors the daemon's model readiness.
+    ``running`` is reported only when the endpoint answers ``ping`` within the
+    timeout; ``warm`` mirrors the daemon's model readiness.
     """
     sock = default_socket_path(context_dir)
-    if not sock.exists():
+    if not NAMED_PIPE_TRANSPORT and not sock.exists():
         return {"running": False, "warm": False, "socket": str(sock), "pid": None}
     try:
         client = DaemonClient(sock, timeout=1.0)
@@ -1066,13 +1177,16 @@ def daemon_status(context_dir: Path) -> dict[str, Any]:
             "pid": _read_pidfile(context_dir),
         }
     except Exception:
-        return {
+        status: dict[str, Any] = {
             "running": False,
             "warm": False,
-            "state": read_state(context_dir),
             "socket": str(sock),
             "pid": _read_pidfile(context_dir),
         }
+        state = read_state(context_dir)
+        if state is not None:
+            status["state"] = state
+        return status
 
 
 def _pidfile_path(context_dir: Path) -> Path:
@@ -1129,8 +1243,8 @@ def process_exists(pid: int) -> bool:
         import ctypes
         from ctypes import wintypes
 
-        win_dll = ctypes.WinDLL  # type: ignore[attr-defined]
-        get_last_error = ctypes.get_last_error  # type: ignore[attr-defined]
+        win_dll = cast(Any, ctypes).WinDLL
+        get_last_error = cast(Any, ctypes).get_last_error
         kernel32 = win_dll("kernel32", use_last_error=True)
         access = 0x1000  # PROCESS_QUERY_LIMITED_INFORMATION
         still_active = 259

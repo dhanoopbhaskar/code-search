@@ -16,7 +16,7 @@ An AI code context engine for air-gapped, CPU-only enterprise environments. Comb
 - Python 3.11+
 - 4+ cores, 8GB+ RAM
 - Linux, macOS, or Windows 10 1803+ / Server 2019+ (CPU-only, no GPU required)
-- The background daemon uses local `AF_UNIX` sockets on every platform, so no network listener is opened
+- The background daemon uses a local IPC endpoint (`AF_UNIX` sockets on Linux/macOS, a named pipe on Windows), so no network listener is opened
 - No network access required for search or serving when the embedding model is available locally (air-gap compliant)
 
 ## Installation
@@ -459,14 +459,15 @@ completeness: run `code-search coverage` before trusting a negative answer.
 
 Every CLI invocation is a fresh process, and loading the vector model takes
 time. The CLI handles this transparently: with no daemon running, `search`
-starts the local `AF_UNIX` query daemon in the background and forwards to it
+starts the local query daemon (an `AF_UNIX` socket on Linux/macOS, a named
+pipe on Windows) in the background and forwards to it
 once it answers `ping`; the daemon waits briefly for the shared model load
 (bounded by `CODE_SEARCH_WARMUP_WAIT_S`, default 5 seconds) so the first
 forwarded query is usually hybrid. If the model does not warm in time, the
 response is the labelled `lexical_reduced` cold path; if no daemon becomes
 reachable, the invocation answers locally from that same cold path. Subsequent
 invocations are served warm and fast. You can also manage the daemon explicitly
-(air-gapped, socket under `.context/`):
+(air-gapped, IPC endpoint under `.context/`):
 
 ```bash
 code-search daemon start

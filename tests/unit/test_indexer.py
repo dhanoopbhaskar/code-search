@@ -352,7 +352,7 @@ def test_content_hash_diffing_skips_unchanged_files(tmp_path: Path) -> None:
     assert result["total_files"] == 0
 
     # Modify one file
-    (repo / "src" / "mod.py").write_text("def foo(): return 999\n")
+    (repo / "src" / "mod.py").write_bytes(b"def foo(): return 999\n")
     result = orchestrator.index_codebase(root_path=repo, incremental=True, verbose=False)
     assert result["total_files"] == 1
 

@@ -18,6 +18,25 @@ from typing import Any
 IndexConnection = sqlite3.Connection
 
 
+def portable_path(path: str | Path) -> str:
+    """Return *path* in POSIX spelling.
+
+    Stored paths are ranked against, compared as substrings, embedded in FQNs,
+    and matched by callers that assume ``/`` separators. Rendering through
+    :meth:`pathlib.Path.as_posix` keeps one spelling on every platform instead
+    of letting the host separator leak into the index.
+
+    Args:
+        path: A path, absolute or relative, as a string or ``Path``.
+
+    Returns:
+        The path with ``/`` separators. On POSIX this is the input unchanged.
+    """
+    if not path:
+        return ""
+    return Path(path).as_posix()
+
+
 def repo_relative_path(path: str | Path, root: Path | None) -> str:
     """Return *path* relative to *root*, or unchanged when it lies outside it.
 

@@ -37,7 +37,7 @@ def _rg_member_set(files: list[Path], term: str) -> set[tuple[str, int]]:
     contract the exhaustive envelope promises.
     """
     proc = subprocess.run(
-        ["rg", "-F", "-n", "--", term, *[str(p) for p in files]],
+        ["rg", "-F", "-n", "--null", "--", term, *[str(p) for p in files]],
         capture_output=True,
         text=True,
     )
@@ -45,7 +45,10 @@ def _rg_member_set(files: list[Path], term: str) -> set[tuple[str, int]]:
         raise RuntimeError(f"rg failed for {term!r}: {proc.stderr}")
     hits: set[tuple[str, int]] = set()
     for line in proc.stdout.splitlines():
-        path, lineno, _rest = line.split(":", 2)
+        # ``--null`` separates the path from ``line:text`` with a NUL byte, so
+        # a Windows drive-letter colon cannot be mistaken for the separator.
+        path, rest = line.split("\0", 1)
+        lineno, _rest = rest.split(":", 1)
         hits.add((str(Path(path).resolve()), int(lineno)))
     return hits
 
@@ -57,7 +60,7 @@ def _rg_regex_member_set(files: list[Path], pattern: str) -> set[tuple[str, int]
     the contract of ``search(..., mode="exhaustive", regex=True)``.
     """
     proc = subprocess.run(
-        ["rg", "-n", "--", pattern, *[str(p) for p in files]],
+        ["rg", "-n", "--null", "--", pattern, *[str(p) for p in files]],
         capture_output=True,
         text=True,
     )
@@ -65,7 +68,10 @@ def _rg_regex_member_set(files: list[Path], pattern: str) -> set[tuple[str, int]
         raise RuntimeError(f"rg failed for {pattern!r}: {proc.stderr}")
     hits: set[tuple[str, int]] = set()
     for line in proc.stdout.splitlines():
-        path, lineno, _rest = line.split(":", 2)
+        # ``--null`` separates the path from ``line:text`` with a NUL byte, so
+        # a Windows drive-letter colon cannot be mistaken for the separator.
+        path, rest = line.split("\0", 1)
+        lineno, _rest = rest.split(":", 1)
         hits.add((str(Path(path).resolve()), int(lineno)))
     return hits
 

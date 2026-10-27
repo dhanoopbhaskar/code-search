@@ -158,8 +158,9 @@ def relativize_results(
     if not root:
         return results
     from code_search.engine.graph_query import relative_display
+    from code_search.engine.paths import portable_path
 
-    prefix = str(Path(root).resolve())
+    prefix = portable_path(Path(root).resolve())
     out: list[dict[str, Any]] = []
     for result in results:
         copy = dict(result)
@@ -168,7 +169,8 @@ def relativize_results(
             copy["file_path"] = relative_display(str(file_path), root)
         fqn = copy.get("fqn")
         if isinstance(fqn, str) and fqn.startswith(prefix):
-            copy["fqn"] = fqn[len(prefix) :].lstrip("/\\")
+            suffix = fqn[len(prefix) :].lstrip("/\\")
+            copy["fqn"] = suffix.replace("\\", "/")
         out.append(copy)
     return out
 

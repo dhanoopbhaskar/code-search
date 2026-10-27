@@ -3503,6 +3503,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         daemon_status,
         default_socket_path,
         detached_spawn_kwargs,
+        prepare_socket_path,
     )
 
     socket_path = Path(args.port) if args.port else default_socket_path(context_dir)
@@ -3582,7 +3583,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             print("daemon is still starting", file=sys.stderr)
             return 1
 
-    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    prepare_socket_path(socket_path)
     log_path = context_dir / "code-search-daemon.log"
     command = [
         _sys.executable,
@@ -3669,14 +3670,17 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
         DaemonClient,
         default_socket_path,
         detached_spawn_kwargs,
+        endpoint_exists,
         pid_is_alive,
+        prepare_socket_path,
     )
 
     context_dir = _resolve_context_dir(args)
     socket_path = default_socket_path(context_dir)
-    serving = socket_path.exists() and DaemonClient.is_serving(socket_path, timeout=0.1)
-    if socket_path.exists() and not serving:
-        # A starting daemon binds its socket before the model is ready, so a
+    present = endpoint_exists(socket_path)
+    serving = present and DaemonClient.is_serving(socket_path, timeout=0.1)
+    if present and not serving:
+        # A starting daemon binds its endpoint before the model is ready, so a
         # first failed probe is not proof that the socket is stale. When its
         # pidfile names a live process, retry briefly before removing
         # anything; only a dead pid or an expired retry window is treated as
@@ -3700,13 +3704,12 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
             # A stale socket from a crashed/killed daemon must not make every
             # invocation pay a failed connection before falling back. Remove it
             # so the next invocation can start a fresh service cleanly.
-            with suppress(OSError):
-                socket_path.unlink()
+            prepare_socket_path(socket_path)
             with suppress(OSError):
                 (context_dir / "code-search.pid").unlink()
             return False
         serving = True
-    if not socket_path.exists():
+    if not present:
         if pid_is_alive(context_dir):
             # Another client already spawned a daemon that has not bound yet.
             # Wait for it instead of creating a competing process.
@@ -3718,7 +3721,7 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
                     break
                 time.sleep(0.05)
             return False
-        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        prepare_socket_path(socket_path)
         log_path = context_dir / "code-search-daemon.log"
         with log_path.open("a", buffering=1) as log_handle:
             proc = subprocess.Popen(

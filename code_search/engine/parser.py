@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from code_search.engine.config import LanguageConfig, Settings
+from code_search.engine.paths import portable_path
 
 logger = logging.getLogger(__name__)
 
@@ -1116,7 +1117,7 @@ class ASTParser:
                 )
                 rules = declared_rules or self._annotation_rules(node, source_bytes)
                 chunk: ParsedNode = {
-                    "file_path": str(file_path),
+                    "file_path": portable_path(file_path),
                     "line_start": line_start,
                     "line_end": line_end,
                     "content": text,
@@ -1161,7 +1162,7 @@ class ASTParser:
                 if text.strip():
                     chunks.append(
                         {
-                            "file_path": str(file_path),
+                            "file_path": portable_path(file_path),
                             "line_start": line_start,
                             "line_end": line_end,
                             "content": text,
@@ -1178,7 +1179,7 @@ class ASTParser:
                 if text.strip():
                     chunks.append(
                         {
-                            "file_path": str(file_path),
+                            "file_path": portable_path(file_path),
                             "line_start": line_start,
                             "line_end": line_end,
                             "content": text,
@@ -1197,7 +1198,7 @@ class ASTParser:
             if text.strip():
                 chunks.append(
                     {
-                        "file_path": str(file_path),
+                        "file_path": portable_path(file_path),
                         "line_start": line_start,
                         "line_end": line_end,
                         "content": text,
@@ -1215,7 +1216,7 @@ class ASTParser:
             if text.strip():
                 chunks.append(
                     {
-                        "file_path": str(file_path),
+                        "file_path": portable_path(file_path),
                         "line_start": line_start,
                         "line_end": line_end,
                         "content": text,

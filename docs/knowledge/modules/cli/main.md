@@ -41,7 +41,7 @@ queries.
 | `serve` | Start the MCP server over stdio |
 | `list-languages` | List supported languages with extensions and grammar mappings |
 | `download-models` | Download embedding models to the Hugging Face cache |
-| `daemon` | Manage the local AF_UNIX socket query daemon (start/stop/status/run) |
+| `daemon` | Manage the local query daemon (AF_UNIX socket or named pipe, start/stop/status/run) |
 
 # Key Functions
 

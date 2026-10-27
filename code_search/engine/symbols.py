@@ -23,6 +23,7 @@ from code_search.engine.graph import (
     read_source_slice,
 )
 from code_search.engine.parser import LANGUAGE_MAP, ASTParser
+from code_search.engine.paths import portable_path
 from code_search.engine.symbol_resolution import (
     ResolutionResult,
     normalize_signature,
@@ -181,9 +182,9 @@ def build_symbol_fqn(
     """
     if parent_fqn:
         parent_part = parent_fqn.split("::", 1)[1] if "::" in parent_fqn else parent_fqn
-        fqn = f"{file_path}::{parent_part}.{name}"
+        fqn = f"{portable_path(file_path)}::{parent_part}.{name}"
     else:
-        fqn = f"{file_path}::{name}"
+        fqn = f"{portable_path(file_path)}::{name}"
     if param_types:
         fqn = f"{fqn}({','.join(param_types)})"
     return fqn
@@ -324,14 +325,14 @@ class SymbolExtractor:
                 "enum": "enum",
                 "trait": "trait",
             }[kind_token]
-            fqn = build_symbol_fqn(str(file_path), None, name, None)
+            fqn = build_symbol_fqn(portable_path(file_path), None, name, None)
             symbols.append(
                 {
                     "fqn": fqn,
                     "conventional_fqn": f"{package_name}.{name}" if package_name else name,
                     "name": name,
                     "kind": kind,
-                    "file_path": str(file_path),
+                    "file_path": portable_path(file_path),
                     "line_start": line_start,
                     "line_end": line_end,
                     "column_start": 0,
@@ -348,7 +349,7 @@ class SymbolExtractor:
                 if not method_name:
                     continue
                 method_line = text.count("\n", 0, method.start()) + 1
-                method_fqn = build_symbol_fqn(str(file_path), fqn, method_name, None)
+                method_fqn = build_symbol_fqn(portable_path(file_path), fqn, method_name, None)
                 symbols.append(
                     {
                         "fqn": method_fqn,
@@ -359,7 +360,7 @@ class SymbolExtractor:
                         ),
                         "name": method_name,
                         "kind": "method",
-                        "file_path": str(file_path),
+                        "file_path": portable_path(file_path),
                         "line_start": method_line,
                         "line_end": method_line,
                         "column_start": 0,
@@ -762,7 +763,7 @@ class SymbolExtractor:
         # with them so a call inside a nested arrow resolves its receiver.
         module_types = (
             self._collect_ts_local_types(root_node, source_bytes)
-            if self._is_javascript_like(str(file_path))
+            if self._is_javascript_like(portable_path(file_path))
             else None
         )
 
@@ -800,7 +801,11 @@ class SymbolExtractor:
             if name_node is not None:
                 name = self._parser.get_node_text(name_node, source_bytes)
                 if name:
-                    new_fqn = f"{current_fqn}.{name}" if current_fqn else f"{file_path}::{name}"
+                    new_fqn = (
+                        f"{current_fqn}.{name}"
+                        if current_fqn
+                        else f"{portable_path(file_path)}::{name}"
+                    )
                     if node_type in _INHERITANCE_DEF_NODES:
                         self._extract_inheritance_edges(
                             node, source_bytes, edges, new_fqn, import_map=None
@@ -904,20 +909,26 @@ class SymbolExtractor:
         except Exception:
             return
         if node_type == "import_statement":
-            self._extract_import_edges(node, source_bytes, edges, current_fqn=str(file_path))
+            self._extract_import_edges(
+                node, source_bytes, edges, current_fqn=portable_path(file_path)
+            )
             return
         if node_type == "import_from_statement":
             self._extract_import_edges(
-                node, source_bytes, edges, current_fqn=str(file_path), is_from=True
+                node, source_bytes, edges, current_fqn=portable_path(file_path), is_from=True
             )
             return
         if node_type == "import_declaration":
-            self._extract_import_edges(node, source_bytes, edges, current_fqn=str(file_path))
+            self._extract_import_edges(
+                node, source_bytes, edges, current_fqn=portable_path(file_path)
+            )
             return
         if node_type == "export_statement":
             text = self._parser.get_node_text(node, source_bytes) or ""
             if " from " in text:
-                self._extract_import_edges(node, source_bytes, edges, current_fqn=str(file_path))
+                self._extract_import_edges(
+                    node, source_bytes, edges, current_fqn=portable_path(file_path)
+                )
             return
         try:
             for child in node.children:
@@ -1254,7 +1265,7 @@ class SymbolExtractor:
             if name_node is not None:
                 name = self._parser.get_node_text(name_node, source_bytes)
                 if name:
-                    new_fqn = build_symbol_fqn(str(file_path), current_fqn, name)
+                    new_fqn = build_symbol_fqn(portable_path(file_path), current_fqn, name)
                     if node_type in (
                         "method_declaration",
                         "method_definition",
@@ -1298,7 +1309,7 @@ class SymbolExtractor:
                     ):
                         scoped_types = self._collect_parameter_types(node, source_bytes)
                         scoped_types.update(self._collect_local_var_types(node, source_bytes))
-                        if self._is_javascript_like(str(file_path)):
+                        if self._is_javascript_like(portable_path(file_path)):
                             scoped_types.update(self._collect_ts_local_types(node, source_bytes))
                         if scoped_types:
                             scoped = dict(class_field_types or {})
@@ -1551,7 +1562,7 @@ class SymbolExtractor:
         name = self._parser.get_node_text(name_node, source_bytes)
         if not name:
             return None
-        fqn = build_symbol_fqn(str(file_path), parent_fqn, name)
+        fqn = build_symbol_fqn(portable_path(file_path), parent_fqn, name)
         if node.type in (
             "method_declaration",
             "method_definition",
@@ -2442,7 +2453,7 @@ class SymbolExtractor:
         name = self._anonymous_symbol_name(node, source_bytes)
         if not name:
             return None
-        return build_symbol_fqn(str(file_path), parent_fqn, name)
+        return build_symbol_fqn(portable_path(file_path), parent_fqn, name)
 
     def _extract_anonymous_symbol(
         self,
@@ -2464,11 +2475,11 @@ class SymbolExtractor:
             line_start, col_start, line_end, col_end = self._parser.get_node_range(node)
             lang = LANGUAGE_MAP.get(file_path.suffix.lower(), "unknown")
             return {
-                "fqn": build_symbol_fqn(str(file_path), parent_fqn, name),
+                "fqn": build_symbol_fqn(portable_path(file_path), parent_fqn, name),
                 "conventional_fqn": None,
                 "name": name,
                 "kind": "class",
-                "file_path": str(file_path),
+                "file_path": portable_path(file_path),
                 "line_start": line_start,
                 "line_end": line_end,
                 "column_start": col_start,
@@ -2560,7 +2571,7 @@ class SymbolExtractor:
             if kind == "function" and parent_fqn is not None:
                 kind = "method"
 
-            rel_path = str(file_path)
+            rel_path = portable_path(file_path)
             full_parent_fqn = parent_fqn
             param_types = self._extract_param_types(node, source_bytes)
             fqn = build_symbol_fqn(rel_path, parent_fqn, name, param_types)
@@ -2580,7 +2591,7 @@ class SymbolExtractor:
                 "conventional_fqn": conventional_fqn,
                 "name": name,
                 "kind": kind,
-                "file_path": str(file_path),
+                "file_path": portable_path(file_path),
                 "line_start": line_start,
                 "line_end": line_end,
                 "column_start": col_start,
