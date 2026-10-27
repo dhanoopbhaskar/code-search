@@ -168,9 +168,12 @@ def relativize_results(
         if file_path:
             copy["file_path"] = relative_display(str(file_path), root)
         fqn = copy.get("fqn")
-        if isinstance(fqn, str) and fqn.startswith(prefix):
-            suffix = fqn[len(prefix) :].lstrip("/\\")
-            copy["fqn"] = suffix.replace("\\", "/")
+        if isinstance(fqn, str):
+            # A stored FQN may carry an absolute path prefix in either native
+            # or POSIX spelling (legacy rows), so normalize before comparing.
+            portable_fqn = portable_path(fqn)
+            if portable_fqn.startswith(prefix):
+                copy["fqn"] = portable_fqn[len(prefix) :].lstrip("/")
         out.append(copy)
     return out
 

@@ -647,7 +647,7 @@ def test_indexer_writes_nonempty_file_path_and_fqn_to_vector_metadata(tmp_path: 
     assert meta_path.exists()
     entries = [json.loads(line) for line in meta_path.read_text().splitlines() if line.strip()]
     assert entries, "expected indexed vector metadata entries"
-    real_paths = {str(repo / "src" / "mod.py"), str(repo / "src" / "bar.py")}
+    real_paths = {(repo / "src" / "mod.py").as_posix(), (repo / "src" / "bar.py").as_posix()}
     for entry in entries:
         file_path = entry.get("file_path") or ""
         fqn = entry.get("fqn") or ""

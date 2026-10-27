@@ -3375,6 +3375,7 @@ class SymbolStore:
             A list of symbol records (as ``dict``) for the file, possibly
             empty.
         """
+        file_path = portable_path(file_path)
         with self._db.connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM symbols WHERE file_path = ? ORDER BY line_start;",

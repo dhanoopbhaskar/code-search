@@ -232,8 +232,8 @@ class TestCliIndex:
         try:
             rows = conn.execute("SELECT file_path FROM symbols").fetchall()
             paths = {r["file_path"] for r in rows}
-            assert str(test_repo / "src" / "main.py") in paths
-            assert str(test_repo / "node_modules" / "dep.js") not in paths
+            assert (test_repo / "src" / "main.py").as_posix() in paths
+            assert (test_repo / "node_modules" / "dep.js").as_posix() not in paths
         finally:
             conn.close()
 
@@ -258,8 +258,9 @@ class TestCliIndex:
         try:
             rows = conn.execute("SELECT file_path FROM symbols").fetchall()
             paths = {r["file_path"] for r in rows}
-            assert str(test_repo / "src" / "lib.py") in paths, "Source file should be indexed"
-            expected = str(test_repo / "test" / "test_lib.py")
+            source_path = (test_repo / "src" / "lib.py").as_posix()
+            assert source_path in paths, "Source file should be indexed"
+            expected = (test_repo / "test" / "test_lib.py").as_posix()
             assert expected not in paths, "Test file should be excluded"
         finally:
             conn.close()
