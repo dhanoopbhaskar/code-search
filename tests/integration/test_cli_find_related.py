@@ -103,7 +103,7 @@ def _normalized_result(result: dict[str, Any], repo: Path) -> tuple[Any, ...]:
     if path.is_absolute():
         path = path.relative_to(repo)
     fqn = result.get("fqn") or ""
-    prefix = f"{repo.resolve()}/"
+    prefix = f"{repo.resolve().as_posix()}/"
     if fqn.startswith(prefix):
         fqn = fqn[len(prefix) :]
     return (

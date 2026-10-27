@@ -67,7 +67,7 @@ def test_discover_files(parser: ASTParser, tmp_path: Path) -> None:
     (pycache_dir / "main.cpython-311.pyc").write_text("")
 
     files = parser.discover_files(tmp_path)
-    paths = [str(f.relative_to(tmp_path)) for f in files]
+    paths = [f.relative_to(tmp_path).as_posix() for f in files]
     assert "src/main.py" in paths
     assert "src/utils.js" in paths
     assert "node_modules/pkg/index.js" not in paths
@@ -82,7 +82,7 @@ def test_discover_files_exclusion_patterns(parser: ASTParser, tmp_path: Path) ->
     (vendor_dir / "lib.py").write_text("y = 2")
 
     files = parser.discover_files(tmp_path, exclusion_patterns={"vendor"})
-    paths = [str(f.relative_to(tmp_path)) for f in files]
+    paths = [f.relative_to(tmp_path).as_posix() for f in files]
     assert "src/main.py" in paths
     assert "vendor/lib.py" not in paths
 
@@ -96,7 +96,7 @@ def test_custom_exclusions_layer_over_defaults(parser: ASTParser, tmp_path: Path
         (tmp_path / d / "lib.py").write_text("y = 2")
 
     files = parser.discover_files(tmp_path, exclusion_patterns={"vendor"})
-    paths = [str(f.relative_to(tmp_path)) for f in files]
+    paths = [f.relative_to(tmp_path).as_posix() for f in files]
     assert "src/main.py" in paths
     assert "vendor/lib.py" not in paths
     assert "build/lib.py" not in paths
@@ -340,7 +340,7 @@ def test_exclusion_patterns_exclude_build_output_dirs(parser: ASTParser, tmp_pat
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
         (tmp_path / d / "gen.py").write_text("x = 1")
     files = parser.discover_files(tmp_path)
-    paths = [str(f.relative_to(tmp_path)) for f in files]
+    paths = [f.relative_to(tmp_path).as_posix() for f in files]
     assert "src/main.py" in paths
     for d in ("target", "out", "bin", ".gradle", ".next", ".output"):
         assert not any(p.startswith(f"{d}/") for p in paths), f"{d} should be excluded"
@@ -353,7 +353,7 @@ def test_build_generated_excluded_via_build(parser: ASTParser, tmp_path: Path) -
     gen_dir.mkdir(parents=True)
     (gen_dir / "gen.py").write_text("x = 1")
     files = parser.discover_files(tmp_path)
-    paths = [str(f.relative_to(tmp_path)) for f in files]
+    paths = [f.relative_to(tmp_path).as_posix() for f in files]
     assert "src/main.py" in paths
     assert not any(p.startswith("build/") for p in paths)
 
@@ -367,7 +367,7 @@ def test_tool_and_ide_dirs_excluded(parser: ASTParser, tmp_path: Path) -> None:
         (tmp_path / d / "gen.py").write_text("x = 1")
 
     files = parser.discover_files(tmp_path)
-    paths = [str(f.relative_to(tmp_path)) for f in files]
+    paths = [f.relative_to(tmp_path).as_posix() for f in files]
 
     assert "src/main.py" in paths
     for d in excluded:
@@ -381,7 +381,7 @@ def test_ds_store_is_excluded(parser: ASTParser, tmp_path: Path) -> None:
     (tmp_path / "src" / "main.py").write_text("x = 1")
 
     files = parser.discover_files(tmp_path)
-    paths = {str(f.relative_to(tmp_path)) for f in files}
+    paths = {f.relative_to(tmp_path).as_posix() for f in files}
 
     assert paths == {"src/main.py"}
     assert parser.is_excluded_file(tmp_path / ".DS_Store", tmp_path) is True

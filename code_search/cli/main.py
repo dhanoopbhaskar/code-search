@@ -14,6 +14,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from collections.abc import Callable
 from contextlib import suppress
@@ -445,9 +446,10 @@ def _start_watcher(
 ) -> None:
     """Block running a file watcher that re-indexes changed files.
 
-    Installs SIGINT/SIGTERM handlers that stop the watcher, then blocks in
-    ``signal.pause`` so Ctrl+C performs a clean shutdown. On every change
-    batch the watcher runs an incremental re-index.
+    Installs SIGINT/SIGTERM handlers that stop the watcher, then blocks on a
+    stop event so Ctrl+C performs a clean shutdown. ``signal.pause`` is POSIX
+    only; a short event wait is used instead so the handlers run on Windows
+    too. On every change batch the watcher runs an incremental re-index.
 
     Args:
         root_path: The codebase root being watched.
@@ -479,10 +481,12 @@ def _start_watcher(
         settings=comps["settings"],
     )
 
+    stop_event = threading.Event()
+
     def handle_signal(signum: int, _frame: object) -> None:
         """Stop the watcher cleanly when SIGINT/SIGTERM is received."""
         logger.info("Shutting down file watcher (signal %d)...", signum)
-        watcher.stop()
+        stop_event.set()
 
     signal.signal(signal.SIGINT, handle_signal)
     signal.signal(signal.SIGTERM, handle_signal)
@@ -490,8 +494,11 @@ def _start_watcher(
     watcher.start()
     print("File watcher started. Press Ctrl+C to stop.")
     try:
-        signal.pause()
+        while not stop_event.wait(0.5):
+            pass
     except KeyboardInterrupt:
+        pass
+    finally:
         watcher.stop()
 
 
@@ -3467,8 +3474,24 @@ def _print_prometheus_metrics(meta: dict[str, str], comps: dict[str, Any]) -> No
     print(f"code_search_audit_entries_total {entries}")
 
 
+def _wait_for_process_exit(pid: int, timeout: float) -> bool:
+    """Wait for *pid* to exit, returning whether it did within *timeout*.
+
+    Used after a graceful shutdown request and before a forced termination so
+    the socket file is not removed while the daemon is still using it.
+    """
+    from code_search.engine.daemon import process_exists
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not process_exists(pid):
+            return True
+        time.sleep(0.05)
+    return not process_exists(pid)
+
+
 def cmd_daemon(args: argparse.Namespace) -> int:
-    """Start, stop, or report status of the local unix-socket query daemon."""
+    """Start, stop, or report status of the local query daemon."""
     import subprocess
     import sys as _sys
 
@@ -3479,6 +3502,8 @@ def cmd_daemon(args: argparse.Namespace) -> int:
         clear_pidfile,
         daemon_status,
         default_socket_path,
+        detached_spawn_kwargs,
+        prepare_socket_path,
     )
 
     socket_path = Path(args.port) if args.port else default_socket_path(context_dir)
@@ -3512,15 +3537,27 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             print("not running")
             return 0
         pid = status.get("pid")
-        if pid:
+        # Ask the daemon to stop itself so cleanup (socket unlink, log flush)
+        # runs on every platform; Windows cannot deliver SIGTERM to a detached
+        # process without terminating it outright.
+        with suppress(Exception):
+            DaemonClient(socket_path, timeout=2.0).request("shutdown")
+        if pid and not _wait_for_process_exit(pid, 5.0):
             try:
                 os.kill(pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
             except OSError as exc:
                 logger.warning("Failed to signal daemon pid %d: %s", pid, exc)
-        with suppress(FileNotFoundError):
-            socket_path.unlink()
+            _wait_for_process_exit(pid, 5.0)
+        # A terminated process can still hold the socket file briefly on
+        # Windows, so retry the unlink instead of failing silently.
+        deadline = time.monotonic() + 5.0
+        while socket_path.exists() and time.monotonic() < deadline:
+            with suppress(OSError):
+                socket_path.unlink()
+            if socket_path.exists():
+                time.sleep(0.05)
         clear_pidfile(context_dir)
         print("stopped")
         return 0
@@ -3546,7 +3583,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             print("daemon is still starting", file=sys.stderr)
             return 1
 
-    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    prepare_socket_path(socket_path)
     log_path = context_dir / "code-search-daemon.log"
     command = [
         _sys.executable,
@@ -3566,7 +3603,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             command,
             stdout=log_handle,
             stderr=log_handle,
-            start_new_session=True,
+            **detached_spawn_kwargs(),
             stdin=subprocess.DEVNULL,
             env=os.environ.copy(),
         )
@@ -3632,14 +3669,18 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
     from code_search.engine.daemon import (
         DaemonClient,
         default_socket_path,
+        detached_spawn_kwargs,
+        endpoint_exists,
         pid_is_alive,
+        prepare_socket_path,
     )
 
     context_dir = _resolve_context_dir(args)
     socket_path = default_socket_path(context_dir)
-    serving = socket_path.exists() and DaemonClient.is_serving(socket_path, timeout=0.1)
-    if socket_path.exists() and not serving:
-        # A starting daemon binds its socket before the model is ready, so a
+    present = endpoint_exists(socket_path)
+    serving = present and DaemonClient.is_serving(socket_path, timeout=0.1)
+    if present and not serving:
+        # A starting daemon binds its endpoint before the model is ready, so a
         # first failed probe is not proof that the socket is stale. When its
         # pidfile names a live process, retry briefly before removing
         # anything; only a dead pid or an expired retry window is treated as
@@ -3663,13 +3704,12 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
             # A stale socket from a crashed/killed daemon must not make every
             # invocation pay a failed connection before falling back. Remove it
             # so the next invocation can start a fresh service cleanly.
-            with suppress(OSError):
-                socket_path.unlink()
+            prepare_socket_path(socket_path)
             with suppress(OSError):
                 (context_dir / "code-search.pid").unlink()
             return False
         serving = True
-    if not socket_path.exists():
+    if not present:
         if pid_is_alive(context_dir):
             # Another client already spawned a daemon that has not bound yet.
             # Wait for it instead of creating a competing process.
@@ -3681,7 +3721,7 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
                     break
                 time.sleep(0.05)
             return False
-        socket_path.parent.mkdir(parents=True, exist_ok=True)
+        prepare_socket_path(socket_path)
         log_path = context_dir / "code-search-daemon.log"
         with log_path.open("a", buffering=1) as log_handle:
             proc = subprocess.Popen(
@@ -3698,7 +3738,7 @@ def _ensure_resident_service(args: argparse.Namespace) -> bool:
                 ],
                 stdout=log_handle,
                 stderr=log_handle,
-                start_new_session=True,
+                **detached_spawn_kwargs(),
                 stdin=subprocess.DEVNULL,
                 env=os.environ.copy(),
             )
@@ -4614,7 +4654,7 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser = subparsers.add_parser(
         "start", parents=[global_args], help="Start the daemon (alias for 'daemon start')"
     )
-    start_parser.add_argument("--port", help="Unix socket path")
+    start_parser.add_argument("--port", help="IPC socket path")
     start_parser.add_argument(
         "--watch",
         action="store_true",
@@ -4625,7 +4665,7 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser(
         "status", parents=[global_args], help="Report daemon status (alias for 'daemon status')"
     )
-    status_parser.add_argument("--port", help="Unix socket path")
+    status_parser.add_argument("--port", help="IPC socket path")
     status_parser.set_defaults(func=cmd_status)
 
     doctor_parser = subparsers.add_parser(
@@ -4654,29 +4694,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     daemon_sub = daemon_parser.add_subparsers(dest="daemon_action", required=True)
     daemon_start = daemon_sub.add_parser("start", parents=[global_args], help="Start the daemon")
-    daemon_start.add_argument("--port", help="Unix socket path")
+    daemon_start.add_argument("--port", help="IPC socket path")
     daemon_start.add_argument(
         "--watch",
         action="store_true",
         help="Watch the indexed tree and incrementally re-index changed files",
     )
     daemon_stop = daemon_sub.add_parser("stop", parents=[global_args], help="Stop the daemon")
-    daemon_stop.add_argument("--port", help="Unix socket path")
+    daemon_stop.add_argument("--port", help="IPC socket path")
     daemon_status_parser = daemon_sub.add_parser(
         "status", parents=[global_args], help="Report daemon status"
     )
-    daemon_status_parser.add_argument("--port", help="Unix socket path")
+    daemon_status_parser.add_argument("--port", help="IPC socket path")
     daemon_wait_parser = daemon_sub.add_parser(
         "wait", parents=[global_args], help="Wait until the daemon is warm"
     )
-    daemon_wait_parser.add_argument("--port", help="Unix socket path")
+    daemon_wait_parser.add_argument("--port", help="IPC socket path")
     daemon_wait_parser.add_argument(
         "--timeout", type=float, default=30.0, help="Seconds to wait for a warm daemon"
     )
     daemon_run = daemon_sub.add_parser(
         "run", parents=[global_args], help="Run the daemon in the foreground"
     )
-    daemon_run.add_argument("--port", help="Unix socket path")
+    daemon_run.add_argument("--port", help="IPC socket path")
     daemon_run.add_argument(
         "--watch",
         action="store_true",
@@ -4688,6 +4728,22 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_console_encoding() -> None:
+    """Use UTF-8 for console output on Windows.
+
+    Windows consoles default to a legacy code page, so printing a non-ASCII
+    path or code snippet would raise ``UnicodeEncodeError``. ``replace`` keeps
+    an unrepresentable glyph from aborting the command.
+    """
+    if os.name != "nt":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            with suppress(OSError, ValueError):
+                reconfigure(encoding="utf-8", errors="replace")
+
+
 def main() -> None:
     """Parse arguments and dispatch to the selected subcommand handler.
 
@@ -4695,6 +4751,7 @@ def main() -> None:
     chosen handler inside an air-gap enforcement context, exiting with the
     handler's exit code (or ``1`` on an unexpected exception).
     """
+    _configure_console_encoding()
     parser = build_parser()
     args = parser.parse_args()
     try:

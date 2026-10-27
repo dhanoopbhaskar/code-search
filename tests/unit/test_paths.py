@@ -79,7 +79,10 @@ def test_symlink_variant_resolves(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     (root / "src").mkdir(parents=True)
     (root / "src" / "real.py").write_text("def real(): pass")
-    (root / "link.py").symlink_to(root / "src" / "real.py")
+    try:
+        (root / "link.py").symlink_to(root / "src" / "real.py")
+    except OSError:
+        pytest.skip("symlink creation is not permitted on this platform")
     result = normalize_indexed_path("link.py", root)
     assert result == (root / "src" / "real.py").resolve()
 
@@ -111,7 +114,10 @@ def test_resolve_stored_path_symlink_fallback(tmp_path: Path) -> None:
     real = root / "src" / "real.py"
     real.write_text("def real(): pass")
     link = root / "src" / "link.py"
-    link.symlink_to(real)
+    try:
+        link.symlink_to(real)
+    except OSError:
+        pytest.skip("symlink creation is not permitted on this platform")
     stored = str(link)
     conn = _build_sqlite(tmp_path, [stored])
     candidate = normalize_indexed_path("src/real.py", root)

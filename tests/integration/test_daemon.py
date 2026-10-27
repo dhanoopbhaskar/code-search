@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import socket
 import threading
 import time
@@ -18,10 +17,14 @@ from typing import Any
 import pytest
 
 from code_search.engine.daemon import (
-    _MAX_UNIX_SOCKET_PATH,
     DaemonClient,
     QueryDaemon,
     default_socket_path,
+)
+
+pytestmark = pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"),
+    reason="exercises the POSIX AF_UNIX transport directly; Windows uses named pipes",
 )
 
 
@@ -207,14 +210,17 @@ def test_daemon_status_running(daemon_env: dict[str, Any]) -> None:
 
 def test_default_socket_path_under_context(tmp_path: Path) -> None:
     """The default socket sits under the context dir unless that path is too long."""
-    socket_path = default_socket_path(tmp_path)
+    from code_search.engine import daemon as daemon_module
+
     conventional = tmp_path / "code-search.sock"
+    socket_path = default_socket_path(tmp_path)
     assert socket_path == default_socket_path(tmp_path), "socket path must be deterministic"
-    assert len(os.fsencode(socket_path)) <= _MAX_UNIX_SOCKET_PATH
-    if len(os.fsencode(conventional)) <= _MAX_UNIX_SOCKET_PATH:
+    assert daemon_module._unix_socket_path_fits(socket_path)
+    if daemon_module._unix_socket_path_fits(conventional):
         assert socket_path == conventional
     else:
-        assert socket_path.name.startswith("code-search-")
+        # macOS temp paths can exceed the shorter sockaddr_un limit.
+        assert socket_path != conventional
 
 
 def test_daemon_implementations_action(indexed_implementations: dict[str, Any]) -> None:

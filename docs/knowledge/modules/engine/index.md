@@ -5,7 +5,7 @@
 * [classification](classification.md) - content-type / rank-class classification helpers.
 * [confidence](confidence.md) - calibrated confidence scoring and bands.
 * [config](config.md) - `Settings` dataclass reading all `CODE_SEARCH_*` environment variables, and `LanguageConfig` loader.
-* [daemon](daemon.md) - background `QueryDaemon` and `DaemonClient` for warm-index serving over a Unix socket.
+* [daemon](daemon.md) - background `QueryDaemon` and `DaemonClient` for warm-index serving over an `AF_UNIX` socket (Linux/macOS) or named pipe (Windows).
 * [embed_representation](embed_representation.md) - builds the enclosing-context + chunk text passed to the embedding model.
 * [embeddings](embeddings.md) - `EmbeddingGenerator` and the Model2Vec-backed `VectorIndex`.
 * [expansions](expansions.md) - query synonym/expansion table loading.

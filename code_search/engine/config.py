@@ -32,10 +32,17 @@ _GRAPH_CACHE_CEILING_BYTES = 256 * 1024 * 1024
 
 
 def _available_memory_bytes() -> int:
-    """Return the platform's available physical memory, or ``0`` when unknown."""
+    """Return the platform's available physical memory, or ``0`` when unknown.
+
+    ``os.sysconf`` exists only where the C library exposes it (not on Windows),
+    so it is resolved dynamically.
+    """
+    sysconf = getattr(os, "sysconf", None)
+    if sysconf is None:
+        return 0
     try:
-        return int(os.sysconf("SC_PAGE_SIZE")) * int(os.sysconf("SC_AVPHYS_PAGES"))
-    except (AttributeError, OSError, ValueError):
+        return int(sysconf("SC_PAGE_SIZE")) * int(sysconf("SC_AVPHYS_PAGES"))
+    except (OSError, ValueError):
         return 0
 
 

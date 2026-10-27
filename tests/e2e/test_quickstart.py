@@ -242,12 +242,12 @@ def test_scenario_10_exact_fqn_lookup(tmp_path: Path) -> None:
     )
     orchestrator.index_codebase(root_path=repo, force=True)
 
-    a_fqn = f"{repo}/module_a.py::Logger"
-    b_fqn = f"{repo}/module_b.py::Logger"
+    a_fqn = f"{repo.as_posix()}/module_a.py::Logger"
+    b_fqn = f"{repo.as_posix()}/module_b.py::Logger"
     sym_a = edge_store.get_symbol_definition(a_fqn)
     sym_b = edge_store.get_symbol_definition(b_fqn)
     assert sym_a is not None, f"Symbol {a_fqn} not found"
     assert sym_b is not None, f"Symbol {b_fqn} not found"
     assert sym_a["id"] != sym_b["id"]
-    assert sym_a["file_path"] == f"{repo}/module_a.py"
-    assert sym_b["file_path"] == f"{repo}/module_b.py"
+    assert sym_a["file_path"] == f"{repo.as_posix()}/module_a.py"
+    assert sym_b["file_path"] == f"{repo.as_posix()}/module_b.py"

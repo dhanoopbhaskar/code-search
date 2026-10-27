@@ -146,7 +146,7 @@ def air_gap_enforcement() -> Generator[None, None, None]:
             network, so they are exempt from air-gap blocking.
             """
             try:
-                return bool(self.family == _socket_module.AF_UNIX)
+                return bool(self.family == getattr(_socket_module, "AF_UNIX", None))
             except Exception:
                 return False
 

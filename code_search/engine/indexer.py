@@ -51,7 +51,7 @@ from code_search.engine.graph_passes import (
 )
 from code_search.engine.parser import ASTParser
 from code_search.engine.parser import _is_lockfile as _is_lockfile_path
-from code_search.engine.paths import repo_relative_path
+from code_search.engine.paths import portable_path, repo_relative_path
 from code_search.engine.search import identify_subwords
 from code_search.engine.symbols import SymbolExtractor, SymbolStore
 
@@ -232,7 +232,7 @@ def _build_type_hierarchy(
         info = {
             "fqn": str(row["fqn"]),
             "name": str(row["name"]),
-            "file_path": str(row["file_path"] or ""),
+            "file_path": portable_path(row["file_path"] or ""),
             "conventional_fqn": str(row["conventional_fqn"] or ""),
         }
         type_fqns.add(info["fqn"])
@@ -331,7 +331,7 @@ def _extract_rationale(
         rationale.append(
             {
                 "fqn": enclosing.get("fqn", ""),
-                "file_path": str(file_path),
+                "file_path": portable_path(file_path),
                 "line_start": index,
                 "line_end": index,
                 "kind": kind,
@@ -428,7 +428,7 @@ def _process_file_worker(args: tuple[Path, bytes, str, tuple[str, ...] | None]) 
             chunk["chunk_node_type"] = "raw_text"
         chunk["content_type"] = classify_content_type(file_path).value
         if _is_lockfile_path(file_path):
-            chunk["fqn"] = f"{file_path}::lockfile"
+            chunk["fqn"] = f"{portable_path(file_path)}::lockfile"
         else:
             chunk["fqn"] = _resolve_chunk_fqn(chunk, syms)
         chunk["embed_context"] = derive_enclosing_context(chunk, syms)
@@ -436,7 +436,7 @@ def _process_file_worker(args: tuple[Path, bytes, str, tuple[str, ...] | None]) 
     content_hash = hashlib.sha256(source_bytes).hexdigest()
 
     return {
-        "file_path": str(file_path),
+        "file_path": portable_path(file_path),
         "symbols": syms,
         "edges": edges,
         "chunks": chunks,
@@ -645,7 +645,7 @@ def _module_fallback_chunk(
             continue
         chunks.append(
             {
-                "file_path": str(file_path),
+                "file_path": portable_path(file_path),
                 "line_start": i,
                 "line_end": i + len(block) - 1,
                 "content": block_text,
@@ -723,7 +723,7 @@ def _prose_heading_chunks(
             block_start = start + offset
             chunks.append(
                 {
-                    "file_path": str(file_path),
+                    "file_path": portable_path(file_path),
                     "line_start": block_start,
                     "line_end": block_start + len(block) - 1,
                     "content": content,
@@ -758,7 +758,7 @@ def _fallback_chunk_file(
                 if chunk_text.strip():
                     chunks.append(
                         {
-                            "file_path": str(file_path),
+                            "file_path": portable_path(file_path),
                             "line_start": block_start,
                             "line_end": block_start + len(block_lines) - 1,
                             "content": chunk_text,
@@ -777,7 +777,7 @@ def _fallback_chunk_file(
         if chunk_text.strip():
             chunks.append(
                 {
-                    "file_path": str(file_path),
+                    "file_path": portable_path(file_path),
                     "line_start": block_start,
                     "line_end": block_start + len(block_lines) - 1,
                     "content": chunk_text,
@@ -795,7 +795,7 @@ def _fallback_chunk_file(
     if not chunks and text.strip():
         return [
             {
-                "file_path": str(file_path),
+                "file_path": portable_path(file_path),
                 "line_start": 0,
                 "line_end": total_lines - 1,
                 "content": text.rstrip("\n"),
@@ -810,7 +810,7 @@ def _fallback_chunk_file(
         merged_content = "\n".join(text.rstrip("\n").split("\n"))
         return [
             {
-                "file_path": str(file_path),
+                "file_path": portable_path(file_path),
                 "line_start": 0,
                 "line_end": total_lines - 1,
                 "content": merged_content,
@@ -866,7 +866,7 @@ def _lockfile_chunk(file_path: Path, source_bytes: bytes, language: str) -> dict
     excerpt = text[:_LOCKFILE_CHUNK_CHARS]
     line_count = text.count("\n")
     return {
-        "file_path": str(file_path),
+        "file_path": portable_path(file_path),
         "line_start": 0,
         "line_end": max(0, min(line_count, excerpt.count("\n"))),
         "content": excerpt,
@@ -1054,7 +1054,7 @@ class IndexOrchestrator:
                         oversized.append(candidate)
                         coverage_events.append(
                             {
-                                "file_path": str(candidate),
+                                "file_path": portable_path(candidate),
                                 "kind": "skipped_oversized",
                                 "detail": f"size exceeds max_file_bytes={max_bytes}",
                             }
@@ -1063,7 +1063,7 @@ class IndexOrchestrator:
                 except OSError as exc:
                     coverage_events.append(
                         {
-                            "file_path": str(candidate),
+                            "file_path": portable_path(candidate),
                             "kind": "skipped_read",
                             "detail": f"stat failed: {exc.__class__.__name__}",
                         }
@@ -1115,7 +1115,7 @@ class IndexOrchestrator:
 
                 files_to_process = []
                 for fp in all_files:
-                    fp_str = str(fp)
+                    fp_str = portable_path(fp)
                     stored_hash = existing_checksums.pop(fp_str, None)
                     baseline = baselines.get(fp_str)
                     if (
@@ -1214,7 +1214,7 @@ class IndexOrchestrator:
             # Remove stale entries for modified files before dispatching to workers
             if incremental:
                 for fp in files_to_process:
-                    fp_str = str(fp)
+                    fp_str = portable_path(fp)
                     with self._db.write_transaction() as conn:
                         old_chunks = conn.execute(
                             "SELECT id FROM code_chunks WHERE file_path = ?;", (fp_str,)
@@ -1256,7 +1256,7 @@ class IndexOrchestrator:
                 except Exception as exc:
                     coverage_events.append(
                         {
-                            "file_path": str(fp),
+                            "file_path": portable_path(fp),
                             "kind": "skipped_read",
                             "detail": f"read failed: {exc.__class__.__name__}",
                         }
@@ -2508,7 +2508,7 @@ class IndexOrchestrator:
                     )
                 except ValueError:
                     return None
-            normalized = str(base)
+            normalized = portable_path(base)
             for candidate in self._ts_module_candidates(normalized):
                 if candidate in all_files:
                     return candidate

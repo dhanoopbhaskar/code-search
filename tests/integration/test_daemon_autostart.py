@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from code_search.engine.daemon import NAMED_PIPE_TRANSPORT
 from tests.conftest import FIXTURES_DIR, _indexed_components
 
 
@@ -112,6 +113,9 @@ def test_one_shot_autostarts_then_forwards_warm(
             thread.join(timeout=5)
 
 
+@pytest.mark.skipif(
+    NAMED_PIPE_TRANSPORT, reason="named pipes have no stale socket file to leave behind"
+)
 def test_dead_socket_does_not_hang_next_query(
     autostart_env: dict[str, Any], capsys: pytest.CaptureFixture[str]
 ) -> None:

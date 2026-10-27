@@ -200,7 +200,9 @@ def test_idle_snapshots_expire(tmp_path: Path) -> None:
     db, _ = _build_graph(tmp_path)
     idle = Settings(context_dir=tmp_path, graph_cache_idle_seconds=0.001)
     assert adjacency_snapshot(db, idle) is not None
-    time.sleep(0.01)
+    # Sleep past the Windows monotonic-clock granularity (GetTickCount64 is
+    # ~15.6 ms on Python 3.12), not merely past the 1 ms idle threshold.
+    time.sleep(0.1)
     assert adjacency_snapshot(db, idle) is not None
     assert adjacency_cache_stats()["builds"] == 2
 

@@ -25,7 +25,7 @@ from code_search.engine.config import _is_test_file
 from code_search.engine.cypher import DEAD_CODE_CYPHER, DEAD_CODE_EDGE_TYPES
 from code_search.engine.graph import GRAPH_EDGE_TYPES, SCHEMA_VERSION, GraphDatabase
 from code_search.engine.graph_metrics import collect_graph_metrics
-from code_search.engine.paths import normalize_indexed_path
+from code_search.engine.paths import normalize_indexed_path, portable_path
 
 #: Stored symbol kinds accepted by the ``symbols.kind`` CHECK constraint.
 SUPPORTED_NODE_KINDS: tuple[str, ...] = (
@@ -153,7 +153,7 @@ def _stored_symbol_path(conn: Any, candidate: str) -> str | None:
     symlink-variant spelling maps back to the indexed file.
     """
     row = conn.execute(
-        "SELECT file_path FROM symbols WHERE file_path = ? LIMIT 1;", (candidate,)
+        "SELECT file_path FROM symbols WHERE file_path = ? LIMIT 1;", (portable_path(candidate),)
     ).fetchone()
     if row is not None:
         return str(row["file_path"])
@@ -1036,7 +1036,8 @@ def render_dead_code_text(payload: dict[str, Any]) -> str:
 def _stored_checksum_path(conn: Any, candidate: str) -> str | None:
     """Return the stored ``file_checksums.file_path`` spelling for *candidate*."""
     row = conn.execute(
-        "SELECT file_path FROM file_checksums WHERE file_path = ? LIMIT 1;", (candidate,)
+        "SELECT file_path FROM file_checksums WHERE file_path = ? LIMIT 1;",
+        (portable_path(candidate),),
     ).fetchone()
     if row is not None:
         return str(row["file_path"])

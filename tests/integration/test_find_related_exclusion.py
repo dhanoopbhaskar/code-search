@@ -49,7 +49,7 @@ def test_find_related_excludes_anchor_file_by_default(transparency_comps: dict[s
     assert results, "expected a non-empty cross-file related set"
     assert len(results) <= 5
     for item in results:
-        assert item["file_path"] != str(anchor), (
+        assert item["file_path"] != anchor.as_posix(), (
             f"neighbour {item['chunk_id']} must not come from the anchor file {anchor}"
         )
         assert item["same_file"] is False
@@ -72,7 +72,7 @@ def test_find_related_same_file_only_is_labeled_not_silent(
     with comps["db"].connect() as conn:
         chunks = conn.execute(
             "SELECT id FROM code_chunks WHERE file_path = ? ORDER BY id;",
-            (str(anchor),),
+            (anchor.as_posix(),),
         ).fetchall()
     assert len(chunks) >= 2, "the anchor file must hold at least two chunks"
     anchor_line = 18
@@ -83,7 +83,7 @@ def test_find_related_same_file_only_is_labeled_not_silent(
     # assert the *labelling invariant*: when same_file results are returned,
     # they carry the explicit flag.
     for item in data["results"]:
-        if item["file_path"] == str(anchor):
+        if item["file_path"] == anchor.as_posix():
             assert item["same_file"] is True, "same-file results must be explicitly flagged"
         else:
             assert item["same_file"] is False, "cross-file results must not be flagged"
@@ -116,7 +116,9 @@ def test_find_related_same_file_only_deterministic_single_file_corpus(tmp_path: 
     assert results, "best-effort same-file result must be returned"
     assert len(results) <= 5
     for item in results:
-        assert item["file_path"] == str(anchor), "best-effort results come from the anchor file"
+        assert item["file_path"] == anchor.as_posix(), (
+            "best-effort results come from the anchor file"
+        )
         assert item["same_file"] is True, "same-file best-effort results must be flagged"
 
 

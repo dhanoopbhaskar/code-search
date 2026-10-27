@@ -66,15 +66,16 @@ script backed by [`main`](../functions/main.md).
 | `make bundle` | Build + create a portable tarball (`scripts/bundle.py`). |
 | `make bundle-deps` | Same as `bundle`, including offline dependency wheels. |
 | `make download-deps` | Download dependency wheels into `wheelhouse/` for offline install. |
-| `make check` / `lint` / `format` / `typecheck` / `test` | Run quality gates via `scripts/check.sh` (with the matching flag). |
+| `make check` / `lint` / `format` / `typecheck` / `test` | Run quality gates via `scripts/check.py` (with the matching flag). |
 | `make eval-utility` | Run the cold/warm tool-utility harness (`tests/evaluation/tool_utility_eval.py`); needs a local corpus, optionally via `REPO=`. |
 | `make clean` | Remove build artifacts (`build/`, `*.egg-info`, `__pycache__`). |
 | `make distclean` | `clean` plus `dist/`, `wheelhouse/`, tox/nox and coverage caches. |
 
 # Scripts
 
-- `scripts/check.sh` — runs lint/format/typecheck/test, invoked by the
-  Makefile quality-gate targets.
+- `scripts/check.py` — cross-platform lint/format/typecheck/test runner,
+  invoked by the Makefile quality-gate targets; `scripts/check.sh` is a thin
+  Unix wrapper around it.
 - `scripts/bundle.py` — builds the portable/offline install tarball;
   `scripts/bundle.sh` is a thin wrapper that locates a Python interpreter
   and execs it.

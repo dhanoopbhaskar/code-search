@@ -18,6 +18,25 @@ from typing import Any
 IndexConnection = sqlite3.Connection
 
 
+def portable_path(path: str | Path) -> str:
+    """Return *path* in POSIX spelling.
+
+    Stored paths are ranked against, compared as substrings, embedded in FQNs,
+    and matched by callers that assume ``/`` separators. Rendering through
+    :meth:`pathlib.Path.as_posix` keeps one spelling on every platform instead
+    of letting the host separator leak into the index.
+
+    Args:
+        path: A path, absolute or relative, as a string or ``Path``.
+
+    Returns:
+        The path with ``/`` separators. On POSIX this is the input unchanged.
+    """
+    if not path:
+        return ""
+    return Path(path).as_posix()
+
+
 def repo_relative_path(path: str | Path, root: Path | None) -> str:
     """Return *path* relative to *root*, or unchanged when it lies outside it.
 
@@ -112,7 +131,7 @@ def resolve_stored_path(candidate: Path, conn: IndexConnection) -> str | None:
     when no indexed file matches — the caller falls through to the existing
     not-found outcome.
     """
-    candidate_str = str(candidate)
+    candidate_str = portable_path(candidate)
     row = conn.execute(
         "SELECT DISTINCT file_path FROM code_chunks WHERE file_path = ? LIMIT 1;",
         (candidate_str,),
