@@ -101,7 +101,7 @@ def _index_sql(db_path: Path, index: str) -> str | None:
         conn.close()
 
 
-def test_v7_database_migrates_to_v18(tmp_path: Path) -> None:
+def test_v7_database_migrates_to_v19(tmp_path: Path) -> None:
     db_path = tmp_path / "graph.db"
     _build_v7_database(db_path)
 
@@ -127,7 +127,7 @@ def test_v7_database_migrates_to_v18(tmp_path: Path) -> None:
             "SELECT value FROM index_metadata WHERE key = 'index_version';"
         ).fetchone()
         assert version is not None
-        assert int(version["value"]) == 18
+        assert int(version["value"]) == 19
         status = conn.execute(
             "SELECT value FROM index_metadata WHERE key = 'index_status';"
         ).fetchone()
@@ -137,7 +137,7 @@ def test_v7_database_migrates_to_v18(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_fresh_database_has_v18_schema_in_base_ddl(tmp_path: Path) -> None:
+def test_fresh_database_has_v19_schema_in_base_ddl(tmp_path: Path) -> None:
     db_path = tmp_path / "graph.db"
     db = GraphDatabase(db_path, Settings(context_dir=tmp_path))
     db.initialize()
@@ -154,7 +154,7 @@ def test_fresh_database_has_v18_schema_in_base_ddl(tmp_path: Path) -> None:
             "SELECT value FROM index_metadata WHERE key = 'index_version';"
         ).fetchone()
         assert version is not None
-        assert int(version["value"]) == 18
+        assert int(version["value"]) == 19
         assert "content_type" in _table_columns(db_path, "code_chunks")
         assert "is_test" in _table_columns(db_path, "code_chunks")
         edge_cols = _table_columns(db_path, "graph_edges")
@@ -201,13 +201,17 @@ def test_v9_database_gains_declared_rules_and_fts_parity(tmp_path: Path) -> None
         version = conn.execute(
             "SELECT value FROM index_metadata WHERE key = 'index_version';"
         ).fetchone()
-        assert int(version["value"]) == 18
+        assert int(version["value"]) == 19
         fts = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'chunks_fts';").fetchone()
         assert fts is not None and "declared_rules" in fts["sql"]
         assert "content_type" in fts["sql"]
+        assert "file_path" not in fts["sql"]
+        paths = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'paths_fts';").fetchone()
+        assert paths is not None and "file_path" in paths["sql"]
         code_count = conn.execute("SELECT COUNT(*) AS n FROM code_chunks;").fetchone()["n"]
         fts_count = conn.execute("SELECT COUNT(*) AS n FROM chunks_fts;").fetchone()["n"]
-        assert code_count == fts_count
+        paths_count = conn.execute("SELECT COUNT(*) AS n FROM paths_fts;").fetchone()["n"]
+        assert code_count == fts_count == paths_count
     finally:
         conn.close()
 
@@ -317,5 +321,5 @@ def test_v16_database_deduplicates_unresolved_edges(tmp_path: Path) -> None:
     finally:
         conn.close()
     assert count == 1
-    assert int(version) == 18
+    assert int(version) == 19
     assert _index_sql(db_path, "idx_edges_unique_unresolved") is not None

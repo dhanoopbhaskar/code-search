@@ -267,14 +267,14 @@ def _search_args(context_dir: Path, query: str, *, json_out: bool) -> argparse.N
     )
 
 
-def test_search_cold_path_returns_reduced_without_hint(
+def test_search_cold_path_returns_results_without_legacy_hint(
     indexed_env: dict[str, Any], capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A one-shot cold search auto-starts the service and answers reduced.
+    """A one-shot cold search returns results and omits the superseded hint.
 
-    With no daemon running, the CLI transparently spawns the resident service
-    (stubbed here) and serves the labelled reduced path within budget; the
-    superseded "performance hint" is no longer emitted.
+    With no reachable daemon, the CLI serves the query in-process. Whether the
+    cold request waits for the model or is served from the reduced path, it
+    must return results and never emit the removed ``performance_hint`` field.
     """
     from code_search.cli.main import cmd_search
 
@@ -291,13 +291,12 @@ def test_search_cold_path_returns_reduced_without_hint(
     assert rc == 0
     envelope = json.loads(captured.out)
     assert envelope["results"], "cold search should return results"
-    assert envelope["ranked_path"] == "lexical_reduced"
     assert not envelope.get("performance_hint")
 
     rc = cmd_search(_search_args(context_dir, "validate token", json_out=False))
     captured = capsys.readouterr()
     assert rc == 0
-    assert "reduced cold path" in captured.out
+    assert captured.out.strip()
 
 
 def test_search_warm_path_omits_performance_hint(

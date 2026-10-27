@@ -1,12 +1,15 @@
-"""Unit tests for non-blocking vector-arm gating and reduced cold-path labelling.
+"""Unit tests for vector-arm gating and reduced cold-path labelling.
 
-A ranked query that races warmup is served immediately from the labelled
-lexical-only reduced path; once the model is warm the unchanged hybrid path is
-used and the envelope reports ``hybrid``/``warm``.
+A cold query the lexical arm can justify is served immediately from the
+labelled lexical-only reduced path. A cold natural-language query that only
+the vector leg can admit waits for the bounded warmup budget and then uses the
+hybrid path, so it is not dropped into the lexical rescue ladder. Once the
+model is warm every query reports ``hybrid``/``warm``.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
@@ -51,9 +54,17 @@ def cold_components(tmp_path: Path) -> Iterator[dict[str, Any]]:
         _loaded_model_path = saved_path
 
 
-def test_cold_query_defers_vector_arm_and_labels_reduced(
-    cold_components: dict[str, Any],
+def test_cold_lexical_query_stays_on_reduced_path(
+    cold_components: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A query the lexical arm justifies is served without waiting for the model."""
+    # Pin the model cold: the background load races the request, so measuring
+    # the reduced path would otherwise depend on how fast the fixture warms.
+    gen = cold_components["gen"]
+    monkeypatch.setattr(gen, "is_warm", lambda: False)
+    monkeypatch.setattr(gen, "begin_warmup", lambda: None)
+    # Every concept in this query is in the fixture vocabulary, so the gate
+    # admits it on lexical evidence alone.
     envelope = cold_components["search"].search("how do comments get created", limit=5)
     assert envelope["mode"] == "ranked"
     assert envelope["ranked_path"] == "lexical_reduced"
@@ -62,6 +73,34 @@ def test_cold_query_defers_vector_arm_and_labels_reduced(
     assert envelope["vector_health"] is True
     assert envelope["model_status"]["state"] == "initializing"
     assert envelope["model_status"]["warmup_state"] == "warming"
+
+
+def test_cold_nl_query_waits_and_takes_hybrid_path(
+    cold_components: dict[str, Any],
+) -> None:
+    """A long paraphrase waits for warmup instead of falling back to lexical rescue.
+
+    Its exact-token coverage is below the gate floor, so the vector leg is the
+    only signal that can admit it; serving it from the reduced path would
+    silently return a different, worse result pool.
+    """
+    search = cold_components["search"]
+    # Force the gate to depend on the vector leg regardless of the corpus's
+    # measured coverage, and keep the ranked floor out of the way: this test
+    # exercises the cold/warm transition, not floor calibration.
+    search._settings = dataclasses.replace(
+        search._settings,
+        exact_token_coverage_min=1.01,
+        top_vector_floor=0.3,
+        ranked_score_floor=0.0,
+        warmup_wait_s=30.0,
+    )
+    envelope = search.search("save a comment on an article", limit=5)
+    assert envelope["mode"] == "ranked"
+    assert envelope["ranked_path"] == "hybrid"
+    assert envelope["warmup_state"] == "warm"
+    assert envelope["degraded_reason"] is None
+    assert envelope["results"]
 
 
 def test_warm_query_takes_hybrid_path(cold_components: dict[str, Any]) -> None:

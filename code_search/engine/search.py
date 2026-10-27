@@ -1444,6 +1444,7 @@ class HybridSearch:
                 # build files must not outrank code on shared vocabulary.
                 effective_content = "code"
 
+        vector_used = [False]
         envelope = self._search_impl(
             query,
             limit=limit,
@@ -1455,6 +1456,7 @@ class HybridSearch:
             matching=matching,
             regex=regex,
             allow_weak=allow_weak,
+            vector_used=vector_used,
         )
 
         effective = envelope.get("content") or DEFAULT_CONTENT_SCOPE
@@ -1485,7 +1487,9 @@ class HybridSearch:
         if strict and envelope.get("mode") == "ranked":
             envelope = self._strict_abstention(envelope, query)
         envelope["query_time_ms"] = round((time.monotonic() - start) * 1000, 3)
-        self._stamp_model_status(envelope, was_warm)
+        # A cold request that waited for the model and fused the vector arm is
+        # a hybrid response, even though the model was cold when it arrived.
+        self._stamp_model_status(envelope, was_warm or vector_used[0])
         return envelope
 
     def _strict_abstention(self, envelope: dict[str, Any], query: str) -> dict[str, Any]:
@@ -1681,6 +1685,7 @@ class HybridSearch:
         matching: str | None = None,
         regex: bool = False,
         allow_weak: bool = False,
+        vector_used: list[bool] | None = None,
     ) -> dict[str, Any]:
         """Run the full hybrid search pipeline for *query*.
 
@@ -1731,6 +1736,9 @@ class HybridSearch:
             regex: Exhaustive-only regular-expression mode; ignored for the
                 ranked and enumerate paths.
             allow_weak: Bypass the post-rank abstention gate.
+            vector_used: Optional one-item sink set to ``True`` when the
+                response fused the vector arm, including after a cold-start
+                wait. Used to stamp the response's ranked path honestly.
 
         Returns:
             The search envelope (see above); ``results`` is empty when the
@@ -1762,7 +1770,16 @@ class HybridSearch:
         # otherwise reject it.
         match_context = self._build_query_match_context(query)
         name_context = self._build_query_name_context(query, match_context)
-        pool = max(limit * multiplier, self._settings.search_candidate_pool_min)
+        # Rank a fixed candidate pool sized for the largest display limit, not
+        # one derived from this request's ``limit``. Fusion normalises scores
+        # over the pool and the additive passes scale against its maximum, so a
+        # limit-derived pool makes the same query rank differently at different
+        # limits. A fixed pool keeps the ordering prefix-stable: the top five
+        # hits of a limit-50 request are the limit-5 result set.
+        pool = max(
+            self._settings.max_results * multiplier,
+            self._settings.search_candidate_pool_min,
+        )
 
         # Retrieval runs on the expanded query text (recall-only): expansion
         # terms contribute candidate tokens to the BM25 query and enrich the
@@ -1787,8 +1804,10 @@ class HybridSearch:
             precheck and (precheck["annotations"] or precheck["quotes"] or precheck["literals"])
         )
         lexical_only = bool(precheck and exact_arms)
-        # Warm the model off the request path; a cold query must never block on
-        # the load, so the vector arm is deferred until the model is in memory.
+        # Warm the model off the request path, so a cold query is served from
+        # the lexical arm instead of blocking on the load. The one exception is
+        # a gate rejection that only the deferred vector leg could overturn;
+        # that case waits for the bounded warmup budget in the gate block below.
         if not self._no_model:
             begin_warmup = getattr(self._embedding_generator, "begin_warmup", None)
             if callable(begin_warmup):
@@ -1834,6 +1853,26 @@ class HybridSearch:
             accepted, vector_results = self._query_quality_gate(
                 query, len(bm25_results), informative, raw_vector_results
             )
+            if (
+                not accepted
+                and defer_vector
+                and self._cold_model_retry_worthwhile(informative, bm25_results)
+                and self._wait_for_cold_model()
+            ):
+                # The gate's vector leg was empty only because the model was
+                # still loading. Long, paraphrase-shaped queries rely on that
+                # leg (their exact-token coverage is low by construction), so
+                # re-run the vector arm and the gate once the bounded warmup
+                # budget elapses instead of dropping to the lexical rescue
+                # ladder and returning a different, worse result pool.
+                raw_vector_results = self._vector_search.search(
+                    retrieval_query, top_k=pool, content=content
+                )
+                defer_vector = False
+                model_warm = True
+                accepted, vector_results = self._query_quality_gate(
+                    query, len(bm25_results), informative, raw_vector_results
+                )
             if not accepted and match_context.symbol_resolved:
                 # A symbol-shaped partial reference that resolves to an indexed
                 # declaration is admitted; the resolved definition chunk(s) are
@@ -1859,6 +1898,8 @@ class HybridSearch:
             vector_results = [
                 (cid, sc) for cid, sc in vector_results if sc >= self._settings.min_vector_cosine
             ]
+        if vector_used is not None:
+            vector_used[0] = not defer_vector
         if symbol_name is None:
             # NL production queries: demote test-file chunks inside the
             # candidate pool (pre-fusion) so keyword-dense test classes cannot
@@ -3163,7 +3204,9 @@ class HybridSearch:
         try:
             with self._db.connect() as conn:
                 for term in terms:
-                    params: list[Any] = [f"fqn : {term}*"]
+                    # The scored index carries the repo-relative FQN, so this
+                    # matches symbol names without seeing the checkout location.
+                    params: list[Any] = [f"fqn_rel : {term}*"]
                     if content not in ("all", DEFAULT_CONTENT_SCOPE):
                         params.append(content)
                     rows = conn.execute(
@@ -3778,6 +3821,47 @@ class HybridSearch:
 
         return True, raw_vector_results
 
+    def _cold_model_retry_worthwhile(
+        self, informative: list[str], bm25_results: list[tuple[int, float]]
+    ) -> bool:
+        """Return whether a cold-vector gate rejection should be re-evaluated.
+
+        Waiting for the model only changes the verdict when the query has
+        lexical support: at least the minimum informative tokens and at least
+        one lexical hit. An out-of-domain query would still be rejected after
+        the wait, so it must not consume the bounded warmup budget.
+
+        Args:
+            informative: The query's informative tokens.
+            bm25_results: The lexical arm's hits.
+
+        Returns:
+            ``True`` when the request may wait for the deferred model.
+        """
+        if self._no_model or getattr(self._embedding_generator, "warmup_external", False):
+            return False
+        if not bm25_results or len(informative) < self._settings.informative_tokens_min:
+            return False
+        return callable(getattr(self._embedding_generator, "wait_warm", None))
+
+    def _wait_for_cold_model(self) -> bool:
+        """Wait up to ``warmup_wait_s`` for the deferred embedding model.
+
+        Returns:
+            ``True`` when the model is warm after the wait, else ``False``.
+        """
+        timeout = self._settings.warmup_wait_s
+        if timeout <= 0:
+            return False
+        wait = getattr(self._embedding_generator, "wait_warm", None)
+        if not callable(wait):
+            return False
+        try:
+            return bool(wait(timeout))
+        except Exception:
+            logger.warning("Cold-start model wait failed", exc_info=True)
+            return False
+
     @staticmethod
     def _results_saturated(informative: list[str], chunks: list[dict[str, Any]]) -> bool:
         """Require at least one candidate chunk to match an informative sub-word.
@@ -3927,7 +4011,15 @@ class HybridSearch:
         )
         bm25 = BM25Search(self._db, relaxed, filter_stopwords=self._settings.filter_stopwords)
         pool = max(limit, limit * self._settings.search_top_k_multiplier)
-        bm25_results = bm25.search(query, top_k=pool)
+        # Mirror the ranked path: expansions are recall-only, and applying the
+        # content scope inside BM25 stops out-of-scope chunks from consuming
+        # the candidate pool before the post-fetch scope filter runs.
+        retrieval_query = (
+            self._expansion_table.expanded_text(query)
+            if self._expansion_table is not None
+            else query
+        )
+        bm25_results = bm25.search(retrieval_query, top_k=pool, content=content)
         if not bm25_results:
             return None
         symbol_ids = self._rescue_symbol_ids()

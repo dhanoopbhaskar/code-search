@@ -96,7 +96,7 @@ path controls per-language parsing settings via
 | `CODE_SEARCH_BM25_CONTENT_WEIGHT` | `1.0` | Weight of the content field in the FTS5 query. |
 | `CODE_SEARCH_BM25_SUBWORDS_WEIGHT` | `0.6` | Weight of the subwords field. |
 | `CODE_SEARCH_BM25_FQN_WEIGHT` | `0.5` | Weight of the fully-qualified-name field. |
-| `CODE_SEARCH_BM25_PATH_WEIGHT` | `0.2` | Weight of the file path field. |
+| `CODE_SEARCH_BM25_PATH_WEIGHT` | `0.2` | Weight of the repo-relative file path field. |
 | `CODE_SEARCH_BM25_RULES_WEIGHT` | `0.4` | Weight of the declared-rules field. |
 | `CODE_SEARCH_RRF_K` | `60` | Reciprocal Rank Fusion constant. |
 | `CODE_SEARCH_MAX_RESULTS` | `50` | Maximum results returned per search. |

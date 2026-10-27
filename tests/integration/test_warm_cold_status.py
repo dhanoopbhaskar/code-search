@@ -1,11 +1,14 @@
-"""Integration tests for the warm/cold status contract after the reduced cold path.
+"""Integration tests for the warm/cold status contract.
 
-The first ranked request racing warmup is served from the labelled
-``lexical_reduced`` path and does not load the model inline; a later request
+A cold natural-language query waits for the bounded warmup budget and reports
+``hybrid``/``warm``. A cold query the lexical arm can justify is still served
+from the labelled ``lexical_reduced`` path without waiting. A later request
 once warmup completes reports ``hybrid``/``warm`` with no degraded reason.
 """
 
 from __future__ import annotations
+
+import dataclasses
 
 import pytest
 
@@ -52,25 +55,47 @@ def cold_search(tmp_path):
 
 
 class TestWarmColdStatus:
-    def test_first_request_is_reduced_and_not_blocked(self, cold_search) -> None:
-        """A first request racing warmup is served reduced and does not block."""
-        envelope = cold_search["search"].search("how do comments get created", limit=5)
+    def test_first_nl_request_waits_and_reports_hybrid(self, cold_search) -> None:
+        """A cold NL query waits for warmup and reports the hybrid path."""
+        search = cold_search["search"]
+        # Force the gate to depend on the vector leg regardless of the corpus's
+        # measured coverage, and keep the ranked floor out of the way: this test
+        # exercises the cold/warm transition, not floor calibration.
+        search._settings = dataclasses.replace(
+            search._settings,
+            exact_token_coverage_min=1.01,
+            top_vector_floor=0.3,
+            ranked_score_floor=0.0,
+            warmup_wait_s=30.0,
+        )
+        envelope = search.search("save a comment on an article", limit=5)
         assert envelope["mode"] == "ranked"
         assert "query_time_ms" in envelope
+        assert envelope["ranked_path"] == "hybrid"
+        assert envelope["warmup_state"] == "warm"
+        assert envelope["degraded_reason"] is None
+        model_status = envelope["model_status"]
+        assert isinstance(model_status, dict), "model_status should be a dict per contract"
+        assert model_status["state"] == "warm"
+
+    def test_cold_lexical_request_is_reduced_without_waiting(
+        self, cold_search, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A query the lexical arm justifies is served reduced without waiting."""
+        gen = cold_search["gen"]
+        monkeypatch.setattr(gen, "is_warm", lambda: False)
+        monkeypatch.setattr(gen, "begin_warmup", lambda: None)
+        envelope = cold_search["search"].search("how do comments get created", limit=5)
+        assert envelope["mode"] == "ranked"
         assert envelope["ranked_path"] == "lexical_reduced"
         assert envelope["warmup_state"] == "warming"
         assert envelope["degraded_reason"] == "warming"
-        model_status = envelope["model_status"]
-        assert isinstance(model_status, dict), "model_status should be a dict per contract"
-        assert model_status["state"] == "initializing"
-        assert model_status["is_first_request"] is True
+        assert envelope["model_status"]["state"] == "initializing"
 
     def test_warm_request_reports_warm(self, cold_search) -> None:
         """After warmup completes, a request reports ``hybrid``/``warm``."""
         search = cold_search["search"]
-        first = search.search("how do comments get created", limit=5)
-        assert first["ranked_path"] == "lexical_reduced"
-
+        search.search("how do comments get created", limit=5)
         assert cold_search["gen"].wait_warm(15.0) is True
 
         second = search.search("how do comments get created", limit=5)
@@ -82,9 +107,3 @@ class TestWarmColdStatus:
         assert second_status["is_first_request"] is False
         assert second["degraded_reason"] is None
         assert "query_time_ms" in second
-
-    def test_flag_reflects_measured_state(self, cold_search) -> None:
-        """The warm/cold label reflects measured model state, not elapsed time."""
-        envelope = cold_search["search"].search("how do comments get created", limit=5)
-        assert envelope["ranked_path"] == "lexical_reduced"
-        assert envelope["model_status"]["state"] == "initializing"

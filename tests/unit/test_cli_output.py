@@ -47,6 +47,30 @@ def test_search_table_uses_relative_paths_and_basename_symbols(
     assert str(tmp_path) not in out
 
 
+def test_search_table_renders_paths_only_rows(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--paths-only`` rows carry no score, FQN, or content; the table renders."""
+    source = tmp_path / "src" / "TokenService.java"
+    _print_search_results(
+        [
+            {
+                "file_path": str(source),
+                "line_start": 10,
+                "line_end": 12,
+                "symbol": "TokenService.generateToken",
+                "is_definition": True,
+            }
+        ],
+        Settings(context_dir=tmp_path),
+        root=tmp_path,
+    )
+
+    out = capsys.readouterr().out
+    assert "  -  src/TokenService.java:10-12" in out
+    assert "TokenService.generateToken" in out
+
+
 def test_match_breakdown_marks_hidden_tests(capsys: pytest.CaptureFixture[str]) -> None:
     """Hidden test chunks are named rather than silently folded into the total."""
     _print_match_breakdown(18, 2, include_tests=False)

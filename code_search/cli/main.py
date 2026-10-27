@@ -3144,10 +3144,13 @@ def _print_search_results(
     print(header)
     print("-" * len(header))
     for r in results:
-        score = f"{r['score']:.2f}"
+        # ``--paths-only`` (and compact payloads) omit the score; keep the
+        # table usable instead of raising on the missing field.
+        score_value = r.get("score")
+        score = f"{score_value:.2f}" if isinstance(score_value, (int, float)) else "-"
         file_path = relative_display(r.get("file_path"), root)
         file_loc = f"{file_path}:{r['line_start']}-{r['line_end']}"
-        fqn = display_symbol(r.get("fqn") or "")
+        fqn = display_symbol(r.get("fqn") or r.get("symbol") or "")
         snippet = (r.get("content") or "")[:snippet_len].replace("\n", " ")
         test_tag = " [test file]" if r.get("is_test_file") else ""
         redacted_tag = f" [{r['redacted_count']} redacted]" if r.get("redacted_count") else ""

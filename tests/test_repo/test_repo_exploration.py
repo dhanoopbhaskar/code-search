@@ -178,8 +178,10 @@ class TestSearchFilters:
             )
 
     def test_search_include_tests(self, repo_path: Path) -> None:
+        # A generic query returns production code first; tests are demoted but
+        # included, so a deeper limit is needed to observe them.
         result = _run_cs(
-            ["search", "article", "--include-tests", "--json", "--limit", "10"],
+            ["search", "article", "--include-tests", "--json", "--limit", "20"],
             cwd=repo_path,
         )
         assert result.returncode == 0
