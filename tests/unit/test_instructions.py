@@ -43,7 +43,7 @@ def test_cmd_instructions_prints_without_an_index(
 
     assert cmd_instructions(argparse.Namespace(verbose=False)) == 0
     captured = capsys.readouterr()
-    assert "# Using code-search as an AI agent" in captured.out
+    assert "# Using code-search with an AI agent" in captured.out
     assert "## Typical workflow" in captured.out
     assert captured.err == ""
 
