@@ -30,6 +30,7 @@ ranking pipeline see
   - [Coverage](#code-search-coverage)
   - [Metrics](#code-search-metrics)
   - [List languages](#code-search-list-languages)
+  - [Agent instructions](#code-search-instructions)
 - [MCP Server](#mcp-server)
   - [Starting the server](#starting-the-server)
   - [MCP client configuration](#mcp-client-configuration)
@@ -522,6 +523,18 @@ List supported programming languages with file extensions and grammar modules.
 code-search list-languages
 ```
 
+### `code-search instructions`
+
+Print the Markdown guide for an AI agent using code-search. It covers the tool
+selection table (MCP and CLI), the typical search-and-trace workflow, vector
+health checks, search modes and content scopes, and common pitfalls. The content
+is static and does not require an index.
+
+```bash
+code-search instructions
+code-search instructions >> AGENTS.md   # optional: append to an agent instruction file
+```
+
 ---
 
 ## MCP Server
@@ -798,6 +811,9 @@ Returns `{"results": [...], "freshness": {...}}` — `results` is an array of ch
 ---
 
 ## AI Agent Usage
+
+Run `code-search instructions` to print this guidance as a ready-to-paste
+Markdown block for an agent prompt or `AGENTS.md` file.
 
 When connected as an MCP tool, AI agents should prefer `code-search` over `grep`/`ripgrep` for code *understanding* when the semantic layer is verified healthy. The semantic + structural index gives better results than regex for paraphrase-style questions — but only when the vector layer is actually live (see "Verify vector health" below). For exact-string, counting, or refactor-verification lookups, `grep`/`ripgrep` remain the reliable choice.
 

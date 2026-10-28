@@ -83,6 +83,17 @@ code-search view <Fqn|file> --budget 2000          # compact outline/read
 code-search graph <Fqn> --explain-unresolved       # structural answers
 ```
 
+### Get AI agent instructions
+
+```bash
+code-search instructions
+```
+
+Prints a Markdown guide an agent can use directly: which tool answers which
+question, how to run the typical search-and-trace workflow, how to verify that
+the vector layer is healthy, and which query patterns to avoid. The guide is
+static, so it works before the first index is built.
+
 ### Index a codebase
 
 ```bash

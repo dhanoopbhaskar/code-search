@@ -3,7 +3,7 @@
 Provides subcommands:
   index, search, ask, symbol, graph, implementations, query, path, explain,
   affected, map, schema, outline, symbols, coverage, metrics, serve,
-  list-languages, download-models, daemon
+  list-languages, download-models, daemon, instructions
 """
 
 from __future__ import annotations
@@ -2869,6 +2869,26 @@ def cmd_status(args: argparse.Namespace) -> int:
     return cmd_daemon(args)
 
 
+def cmd_instructions(args: argparse.Namespace) -> int:
+    """Print usage instructions for an AI agent.
+
+    The guide is static documentation, so it works before an index exists and
+    never opens the context directory. ``args`` is accepted for the argparse
+    dispatch contract; only the global options are meaningful.
+
+    Args:
+        args: Parsed arguments.
+
+    Returns:
+        ``0`` on success.
+    """
+    _setup_logging(getattr(args, "verbose", False))
+    from code_search.cli.instructions import render_agent_instructions
+
+    print(render_agent_instructions())
+    return 0
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Report index age, model availability, daemon state, and index size."""
     _setup_logging(args.verbose)
@@ -4650,6 +4670,14 @@ def build_parser() -> argparse.ArgumentParser:
         "list-languages", parents=[global_args], help="List supported languages"
     )
     list_parser.set_defaults(func=cmd_list_languages)
+
+    instructions_parser = subparsers.add_parser(
+        "instructions",
+        parents=[global_args],
+        help="Show AI agent usage instructions",
+        description="Print a Markdown guide describing how an AI agent should use code-search.",
+    )
+    instructions_parser.set_defaults(func=cmd_instructions)
 
     start_parser = subparsers.add_parser(
         "start", parents=[global_args], help="Start the daemon (alias for 'daemon start')"
