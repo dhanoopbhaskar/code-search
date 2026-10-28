@@ -7,9 +7,17 @@ An AI code context engine for air-gapped, CPU-only enterprise environments. Comb
 - **Natural language code search** — hybrid BM25 + vector search with RRF fusion
 - **Symbol definition lookup** — resolve any symbol by fully qualified name (FQN)
 - **Call graph traversal** — navigate upstream callers and downstream callees
-- **Session-aware ranking** — recently modified files rank higher in results
+- **Session-aware ranking** — files you recently read or wrote rank higher in results
 - **MCP protocol server** — expose the full search, symbol, graph, architecture, coverage, and impact toolset to MCP-compatible AI assistants
 - **Enterprise compliance** — no outbound network calls during search or serving, secret redaction, append-only audit logging
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [QUICK_START.md](QUICK_START.md) | Complete CLI and MCP tool reference, agent guidance, runtime profiles, evaluation harness |
+| [docs/indexing-and-search-walkthrough.md](docs/indexing-and-search-walkthrough.md) | End-to-end trace of one sample repo: indexing phases, persisted schema, and every step of a ranked search |
+| [docs/knowledge/](docs/knowledge/) | Generated module/function/architecture reference |
 
 ## Requirements
 
@@ -173,8 +181,9 @@ signal clears when the run completes, so a watching server does not report a
 stale index for the whole TTL.
 
 For repeated CLI use, run `code-search daemon start` once so a resident
-process owns the model load. `--no-startup-check` skips the transparent
-daemon auto-start for a single invocation and serves it locally.
+process owns the model load. `--no-daemon` (also accepted as the deprecated
+`--no-startup-check`) skips the transparent daemon auto-start for a single
+invocation and serves it locally.
 
 Every ranked response also reports `query_time_ms`, a structured
 `model_status`, the additive `ranked_path`
@@ -290,6 +299,7 @@ code-search query "who calls ArticleRepository.save" --depth 3 --json
 | `--max-nodes N` | `120` | Maximum graph nodes (max: 200) |
 | `--edge-types LIST` | `CALLS,INHERITS` | Comma-separated edge types (`IMPORTS`, `REFERENCES`, `IMPLEMENTS`, `USAGE`, and `CALL_REFERENCE` are opt-in) |
 | `--token-budget N` | `1500` | Soft output budget; the answer is trimmed deterministically |
+| `--include-externals` | off | Include unresolved/external callee leaves; collapsed by default |
 | `--direction DIR` | `both` | `both`, `inbound` (callers/importers), or `outbound` (callees/imports) |
 | `--json` | — | Structured JSON output |
 
@@ -387,10 +397,10 @@ code-search coverage --scope src --json
 | Command | Flags | Description |
 |---|---|---|
 | `schema` | `--diagnostics`, `--limit N`, `--offset N`, `--json` | Stored labels, supported/emitted edge types, tiers, unresolved targets, coverage, generation |
-| `outline` | `--kind LIST`, `--limit N`, `--offset N`, `--include-docstring`, `--json` | One file's declarations in source order with an exact total |
-| `symbols` | `--name-pattern RE`, `--qn-pattern RE`, `--kind LIST`, `--file-pattern GLOB`, `--min-degree N`, `--max-degree N`, `--edge-types LIST`, `--include-entry-points`, `--include-connected`, `--limit N`, `--offset N`, `--json` | Structural symbol search over regex/kind/file/degree, not text similarity |
+| `outline` | `--kind LIST`, `--limit N`, `--offset N`, `--include-docstring`, `--fqn`, `--json` | One file's declarations in source order with an exact total |
+| `symbols` | `[query]`, `--name-pattern RE`, `--qn-pattern RE`, `--kind LIST`, `--file-pattern GLOB`, `--min-degree N`, `--max-degree N`, `--edge-types LIST`, `--include-entry-points`, `--include-connected`, `--limit N`, `--offset N`, `--json` | Structural symbol search over substring/regex/kind/file/degree, not text similarity |
 | `dead-code` | `--kinds LIST`, `--include-entry-points`, `--include-tests`, `--limit N`, `--offset N`, `--json` | Callables with no proven production reference, with confidence, test-only usage, and unresolved same-name evidence |
-| `coverage` | `--scope PREFIX`, `--max-rows N`, `--json` | Per-file or per-scope gaps (`partial`, `unusable`, `skipped`, `excluded`, `not_indexed`) with freshness and a recommended action |
+| `coverage` | `[paths ...]`, `--scope PREFIX`, `--max-rows N`, `--json` | Per-file or per-scope gaps (`partial`, `unusable`, `skipped`, `excluded`, `not_indexed`) with freshness and a recommended action |
 
 `schema`, `outline`, `symbols`, `dead-code`, and `coverage` have matching MCP
 tools (`get_graph_schema`, `get_file_outline`, `search_symbols`,
@@ -513,7 +523,7 @@ sqlite3 .context/audit.db \
    FROM audit_log_entries ORDER BY id DESC LIMIT 20;"
 ```
 
-Filter by query type (`search`, `get_symbol_definition`, `get_call_neighbors`, `find_related`, `get_implementations`, `query_graph`, `shortest_path`, `explain_symbol`, `get_impact`, `map`, `get_graph_schema`, `get_file_outline`, `search_symbols`, `find_dead_code`, `get_architecture`, `check_index_coverage`, `detect_changes`, `cypher_query`):
+Filter by query type (`search`, `get_symbol_definition`, `get_call_neighbors`, `find_related`, `get_implementations`, `query_graph`, `shortest_path`, `explain_symbol`, `get_impact`, `map`, `get_graph_schema`, `get_file_outline`, `search_symbols`, `view_symbol`, `find_dead_code`, `get_architecture`, `check_index_coverage`, `detect_changes`, `cypher_query`, `ask`, `doctor`):
 
 ```bash
 sqlite3 .context/audit.db \
@@ -731,4 +741,15 @@ The install script detects the `deps/` directory and uses `pip --no-index --find
 | `CODE_SEARCH_SQLITE_CACHE_KIB` | `65536` | Per-connection SQLite page cache in KiB; `0` keeps SQLite's default |
 | `CODE_SEARCH_SQLITE_MMAP_BYTES` | `268435456` | SQLite memory-mapped I/O window; `0` disables memory mapping |
 | `CODE_SEARCH_SQLITE_TEMP_STORE_MEMORY` | `true` | Keep temporary SQLite tables in memory |
+| `CODE_SEARCH_RESPECT_GITIGNORE` | `true` | Honour `.gitignore` files during discovery; `false` indexes ignored paths |
+| `CODE_SEARCH_INTENT_SCOPE_ENABLED` | `true` | Infer the `search --content` scope from the query; `false` disables inference |
+| `CODE_SEARCH_INDEX_DOC_LINKS` | `false` | Compute offline doc links at index time (local model only, no network call) |
+| `CODE_SEARCH_WARMUP_WAIT_S` | `5.0` | Seconds the daemon and MCP server wait for the shared model before the cold path |
 
+The ranking, chunking, and content-weighting knobs are documented in
+[QUICK_START.md](QUICK_START.md#configuration); the full list lives in
+`code_search/engine/config.py`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

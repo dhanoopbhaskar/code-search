@@ -1,5 +1,10 @@
 # code-search User Manual
 
+Quick start, complete CLI and MCP reference, and agent guidance. For the project
+overview see [README.md](README.md); for an end-to-end trace of the indexing and
+ranking pipeline see
+[docs/indexing-and-search-walkthrough.md](docs/indexing-and-search-walkthrough.md).
+
 ## Table of Contents
 
 - [Installation](#installation)
@@ -9,7 +14,20 @@
 - [CLI Usage](#cli-usage)
   - [Search](#code-search-search)
   - [Symbol lookup](#code-search-symbol)
+  - [Read a symbol or file](#code-search-view)
   - [Call graph traversal](#code-search-graph)
+  - [Interface implementations](#code-search-implementations)
+  - [Find related code](#code-search-find-related)
+  - [Multi-hop graph query](#code-search-query)
+  - [Shortest path](#code-search-path)
+  - [Explain a symbol](#code-search-explain)
+  - [Impact analysis](#code-search-affected)
+  - [Architecture map](#code-search-map)
+  - [Graph schema](#code-search-schema)
+  - [File outline](#code-search-outline)
+  - [Structural symbol search](#code-search-symbols)
+  - [Dead code](#code-search-dead-code)
+  - [Coverage](#code-search-coverage)
   - [Metrics](#code-search-metrics)
   - [List languages](#code-search-list-languages)
 - [MCP Server](#mcp-server)
@@ -17,6 +35,15 @@
   - [MCP client configuration](#mcp-client-configuration)
   - [Available tools](#available-tools)
   - [Example JSON-RPC calls](#example-json-rpc-calls)
+- [AI Agent Usage](#ai-agent-usage)
+  - [Verify vector health first](#verify-vector-health-first)
+  - [When to use which tool](#when-to-use-which-tool)
+  - [Typical agent workflow](#typical-agent-workflow)
+  - [Search modes and content scopes](#search-modes-and-content-scopes)
+  - [Production-only search](#production-only-search)
+  - [Pitfalls to avoid](#pitfalls-to-avoid)
+- [Runtime profiles and output controls](#runtime-profiles-and-output-controls)
+- [Evaluation harness](#evaluation-harness)
 - [Configuration](#configuration)
 - [Key points](#key-points)
 
@@ -132,7 +159,7 @@ code-search search "database connection pool" --language java --no-include-tests
 | `--content {code,config,docs,all,code_focused}` | intent inference | Content axis; code-shaped queries (including multi-word construct nouns such as `login handler`) default to `code`, documentation-shaped queries widen to `all`, and other queries use `code_focused` (code + config, docs excluded) |
 | `--matching {literal,all_tokens,any_token}` | `all_tokens` | Exact matching semantics. Supplying it implies `--mode exhaustive`, so `--matching literal` alone returns the verbatim-substring set and count |
 | `--regex` | off | Treat the query as a Python regular expression (`--mode exhaustive` only); invalid patterns return an `invalid_regex` explanation |
-| `--no-startup-check` | off | Skip transparent daemon auto-start for this invocation; repeat CLI use is fastest with an already-running `code-search daemon start` |
+| `--no-daemon` | off | Serve this invocation in-process instead of forwarding to the daemon (`--no-startup-check` is a deprecated alias); repeated CLI use is fastest with an already-running `code-search daemon start` |
 | `--no-model` | off | Skip the vector model and fuse lexical signals only; the response is labelled `lexical_degraded` |
 | `--explain-ranking` | off | Include `score_sources` for every result and print the class/content multipliers and additive boosts behind the ranking |
 | `--compact` / `--no-compact` | `--compact` | JSON keeps identifiers, locations, signatures, and short content only. `--no-compact` returns full blocks and the `score_sources` breakdown |
@@ -399,6 +426,7 @@ code-search outline src/app.py --kind method,function --include-docstring
 | `--limit N` | `200` | Maximum declarations (500 max) |
 | `--offset N` | `0` | Declaration offset |
 | `--include-docstring` | — | Include stored docstrings |
+| `--fqn` | off | Include full FQNs, columns, and parent FQNs (compact rows by default) |
 | `--json` | — | JSON output |
 
 ### `code-search symbols`
@@ -413,6 +441,7 @@ code-search symbols --min-degree 5 --include-connected --json
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `[query]` | — | Optional positional substring matched against name, FQN, and docstring |
 | `--name-pattern RE` | — | Python regex full-match on the name |
 | `--qn-pattern RE` | — | Python regex full-match on the FQN |
 | `--kind LIST` | — | Comma-separated declaration kinds |
@@ -466,6 +495,7 @@ code-search coverage --scope src --json
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `[paths ...]` | — | File paths to check (omit to check the whole index) |
 | `--scope PREFIX` | — | Index-relative directory aggregate (repeatable) |
 | `--max-rows N` | `500` | Row cap (1000 max) |
 | `--json` | — | JSON output |
@@ -551,15 +581,34 @@ Configure your MCP-compatible client to launch the server. Examples:
 
 | Tool | Description | Key parameters |
 |------|-------------|---------------|
-| `search` | Hybrid BM25 + vector semantic search | `query`, `limit`, `language`, `include_test_files`, `mode`, `content`, `no_model`, `matching`, `regex`, `compact`, `max_snippet_lines` |
-| `get_symbol_definition` | Look up a symbol by FQN (file-path or conventional dotted) | `symbol` |
-| `get_call_neighbors` | Traverse the call graph — upstream callers and downstream callees | `symbol`, `direction`, `max_depth`, `transitive` |
+| `search` | Hybrid BM25 + vector semantic search | `query`, `limit`, `language`, `include_test_files`, `mode`, `content`, `no_model`, `matching`, `regex`, `compact`, `max_snippet_lines`, `paths_only`, `strict`, `max_output_tokens`, `profile` |
+| `ask` | Route one question to the right surface and return one compact answer | `question`, `limit`, `budget`, `strict`, `include_tests`, `content`, `max_output_tokens`, `profile` |
+| `get_symbol_definition` | Look up a symbol by FQN (file-path or conventional dotted) | `symbol`, `max_output_tokens`, `profile` |
+| `get_call_neighbors` | Traverse the call graph — upstream callers and downstream callees | `symbol`, `direction`, `max_depth`, `transitive`, `limit`, `offset` |
 | `get_implementations` | Find the static implementations of an interface method or type | `symbol` |
 | `find_related` | Find semantically similar chunks by file + line number | `file_path`, `line_number`, `limit` |
-| `query_graph` | Answer a multi-hop question by bounded graph traversal | `question`, `depth`, `max_nodes`, `token_budget`, `edge_types`, `include_external` |
+| `query_graph` | Answer a multi-hop question by bounded graph traversal | `question`, `depth`, `max_nodes`, `token_budget`, `edge_types`, `include_external`, `direction` |
 | `shortest_path` | Shortest path between two symbols | `source`, `target`, `undirected`, `max_hops` |
 | `explain_symbol` | Symbol metadata, relations, rationale, and linked docs | `symbol`, `depth`, `relations` |
 | `get_impact` | Symbols impacted by changed files | `changed_paths`, `depth` |
+| `detect_changes` | Map a git diff (or explicit paths) to files, seeds, and impact | `changed_paths`, `since`, `base_branch`, `scope`, `direction`, `depth`, `fixpoint`, `edge_types`, `include_imports`, `seed_filter`, `max_nodes` |
+| `get_architecture` | Bounded static architecture report | `aspects`, `top_n`, `max_communities` |
+| `get_graph_schema` | Stored labels, edge types, tiers, unresolved targets, coverage | `diagnostics`, `limit`, `offset` |
+| `get_file_outline` | One file's declarations in source order | `file_path`, `kind`, `limit`, `offset`, `include_docstring`, `include_ids` |
+| `search_symbols` | Structural symbol search (regex/kind/file/degree) | `query`, `name_pattern`, `qn_pattern`, `kind`, `file_pattern`, `min_degree`, `max_degree`, `edge_types`, `exclude_entry_points`, `include_connected`, `limit`, `offset` |
+| `check_index_coverage` | Per-file or per-scope index gaps with freshness | `paths`, `scopes`, `max_rows` |
+| `find_dead_code` | Callables with no proven production reference | `kinds`, `include_entry_points`, `include_tests`, `limit`, `offset` |
+| `cypher_query` | Read-only Cypher subset over the indexed graph | `query`, `limit`, `offset`, `cursor`, `timeout_ms` |
+| `doctor` | Index, model, daemon, and graph health | `max_output_tokens`, `profile` |
+
+Every tool redacts secrets and attaches the additive `freshness` object. The
+high-volume tools (`search`, `ask`, `get_symbol_definition`, `doctor`) also accept
+`max_output_tokens` (soft budget) and `profile` (`compact`/`outline`/`full`).
+CLI equivalents that have no dedicated section below: `affected` ↔
+`detect_changes`, `map` ↔ `get_architecture`, `cypher` ↔ `cypher_query`,
+`outline` ↔ `get_file_outline`, `symbols` ↔ `search_symbols`, `dead-code` ↔
+`find_dead_code`, `coverage` ↔ `check_index_coverage`, `schema` ↔
+`get_graph_schema`, `ask` ↔ `ask`, `doctor` ↔ `doctor`.
 
 #### `search`
 
@@ -918,6 +967,15 @@ Configuration is environment-variable driven; language definitions can additiona
 | `CODE_SEARCH_FIND_RELATED_LIMIT` | `100` | Max candidates for find_related |
 | `CODE_SEARCH_MAX_GRAPH_DEPTH` | `5` | Max call graph traversal depth |
 | `CODE_SEARCH_WARMUP_WAIT_S` | `5.0` | Max seconds the daemon/MCP server wait for model warmup before using the cold path |
+| `CODE_SEARCH_RESPECT_GITIGNORE` | `true` | Honour `.gitignore` files during discovery |
+| `CODE_SEARCH_INTENT_SCOPE_ENABLED` | `true` | Infer the search content scope from the query |
+| `CODE_SEARCH_INDEX_DOC_LINKS` | `false` | Compute offline doc links at index time |
+| `CODE_SEARCH_GRAPH_CACHE_ENABLED` | `true` | Enable the generation-keyed in-memory adjacency cache |
+| `CODE_SEARCH_GRAPH_CACHE_MAX_BYTES` | `min(256 MB, 25% RAM)` | Cache byte budget; `0` disables the cache and forces the SQL path |
+| `CODE_SEARCH_GRAPH_CACHE_IDLE_SECONDS` | `900` | Drop snapshots unused for this long; `0` disables idle expiry |
+| `CODE_SEARCH_SQLITE_CACHE_KIB` | `65536` | Per-connection SQLite page cache in KiB; `0` keeps SQLite's default |
+| `CODE_SEARCH_SQLITE_MMAP_BYTES` | `268435456` | SQLite memory-mapped I/O window; `0` disables memory mapping |
+| `CODE_SEARCH_SQLITE_TEMP_STORE_MEMORY` | `true` | Keep temporary SQLite tables in memory |
 
 ---
 

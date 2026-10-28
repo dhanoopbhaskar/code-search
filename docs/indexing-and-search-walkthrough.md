@@ -161,7 +161,7 @@ Observed sizes for the sample:
 
 | File | Size | Meaning |
 |---|---:|---|
-| `graph.db` | 245,760 B | SQLite database (schema v16) |
+| `graph.db` | 245,760 B | SQLite database (schema v19) |
 | `session.db` | 32,768 B | SQLite database |
 | `audit.db` | 20,480 B | SQLite database |
 | `vectors.bin` | 1,920 B | `15 vectors × 32 dims × 4 bytes` |
@@ -197,7 +197,7 @@ Then the orchestrator enforces invariants **before reading a single file**:
 
 1. **Filesystem lock** (`index.lock`, `O_CREAT | O_EXCL`). Concurrent indexing
    is refused; a lock older than `lock_timeout` may be force-released.
-2. **Schema version check** (`index_version`). The sample records `16`. An older
+2. **Schema version check** (`index_version`). The sample records `19`. An older
    schema forces a full re-index.
 3. **Index status check**. `stale` forces a full re-index. A crashed run that
    left `indexing` is recovered by `cmd_index` when no live lock exists.
@@ -294,7 +294,7 @@ same transaction.
    names through the import map, local type declarations, and method receivers.
 
 Edge types allowed by the schema are `CALLS`, `IMPORTS`, `INHERITS`,
-`REFERENCES`. In the sample:
+`IMPLEMENTS`, `REFERENCES`, `USAGE`, `CALL_REFERENCE`, and `TESTS`. In the sample:
 
 - `authenticate` → `JwtService` (constructor call) resolves **exactly** (same file).
 - `login_user` → `authenticate` and `login_user` → `TokenError` stay
@@ -562,7 +562,7 @@ Then:
 
 | Key | Value |
 |---|---|
-| `index_version` | `18` |
+| `index_version` | `19` |
 | `index_format_version` | `1` |
 | `representation_scheme_version` | `1` |
 | `index_status` | `ready` |
@@ -609,7 +609,7 @@ and `.md` files do not add `properties` or `markdown` to the list.
 | Table | Purpose | Sample rows |
 |---|---|---:|
 | `symbols` | One row per definition, with FQN, kind, span, docstring, parent | 8 |
-| `graph_edges` | Symbol-to-symbol `CALLS` / `INHERITS` (the indexer routes `IMPORTS` to `module_edges`) | 11 |
+| `graph_edges` | Symbol-to-symbol `CALLS` / `INHERITS` / `IMPLEMENTS` / `REFERENCES` / `USAGE` / `CALL_REFERENCE` / `TESTS` (the indexer routes `IMPORTS` to `module_edges`) | 11 |
 | `code_chunks` | The retrieval unit: text + span + derived search columns | 15 |
 | `chunks_fts` | FTS5 external-content index over `code_chunks` | 15 |
 | `file_checksums` | Incremental baseline: SHA-256, size, mtime ns, parse failure | 5 |
@@ -617,8 +617,11 @@ and `.md` files do not add `properties` or `markdown` to the list.
 | `symbol_rationale` | NOTE/WHY/HACK/TODO/FIXME/ADR comments attached to symbols | 0 |
 | `rationale_fts` | FTS5 over rationale text | 0 |
 | `doc_links` | Offline doc/config → code links (opt-in) | 0 |
+| `index_coverage` | Per-file parse/skip/exclusion gaps for the current generation (rows only where a gap was recorded) | — |
+| `symbol_degrees` | Resolved in/out counts per symbol and edge type, used by degree filters and hotspots | — |
 | `prefix_stats` | Corpus term-prefix frequencies used by the lexical arm | 79 |
 | `subword_stats` | Corpus sub-word document frequencies for expansion | 127 |
+| `paths_fts` | FTS5 index over each chunk's file path, used for path-shaped queries | 15 |
 | `index_metadata` | Index lifecycle and statistics | 33 keys |
 
 Key constraints:
@@ -673,10 +676,13 @@ per-file weight when a fresh event exists. The sample has no events.
 
 `audit_log_entries(id, timestamp, query_type, query_summary, result_count,
 duration_ms, redacted_count)`. `BEFORE UPDATE` and `BEFORE DELETE` triggers raise
-an error, so the log is append-only at the database level. Allowed query types
-include `search`, `get_symbol_definition`, `get_call_neighbors`,
+an error, so the log is append-only at the database level. The `query_type`
+CHECK constraint accepts `search`, `get_symbol_definition`, `get_call_neighbors`,
 `find_related`, `get_implementations`, `query_graph`, `shortest_path`,
-`explain_symbol`, `get_impact`, `map`. The sample log:
+`explain_symbol`, `get_impact`, `map`, `get_graph_schema`, `get_file_outline`,
+`search_symbols`, `view_symbol`, `find_dead_code`, `get_architecture`,
+`check_index_coverage`, `detect_changes`, `cypher_query`, `ask`, and `doctor`. The
+sample log:
 
 ```
 1  2026-10-19T15:05:27Z  search  how is JWT validation implemented  3  6   0
@@ -720,6 +726,7 @@ Registered tools:
 | MCP tool | What it does |
 |---|---|
 | `search` | hybrid / exhaustive / enumerate retrieval |
+| `ask` | route one question to the right surface, one compact answer |
 | `get_symbol_definition` | exact + fuzzy symbol resolution, returns source |
 | `get_call_neighbors` | direct/transitive callers and callees |
 | `get_implementations` | static implementers of an interface method/type |
@@ -727,7 +734,16 @@ Registered tools:
 | `shortest_path` | shortest path between two symbols |
 | `explain_symbol` | metadata + relations + rationale + doc links |
 | `get_impact` | reverse traversal from changed files |
+| `detect_changes` | git diff → files, seeds, and impact |
+| `get_architecture` | bounded static architecture sections |
+| `get_graph_schema` | labels, edge types, tiers, coverage, generation |
+| `get_file_outline` | one file's declarations in source order |
+| `search_symbols` | structural symbol search (regex/kind/file/degree) |
+| `check_index_coverage` | per-file or per-scope index gaps |
+| `find_dead_code` | callables with no proven production reference |
 | `find_related` | vector neighbours of the chunk at a file/line |
+| `cypher_query` | read-only Cypher subset over the graph |
+| `doctor` | index, model, daemon, and graph health |
 
 All of them write an audit entry and attach a `freshness` object.
 
@@ -991,13 +1007,13 @@ arm, reporting `hybrid`/`warm` with no degraded reason. An out-of-domain query
 never spends that budget: it would still be rejected once the model was warm,
 so it returns its honest empty result immediately.
 
-The daemon exists to remove the cold penalty: unless `--no-startup-check` is
-given, `search` starts the resident socket daemon when none is running and
-forwards the query to it (waiting up to `CODE_SEARCH_WARMUP_WAIT_S` for the
-model), so the default CLI path is normally `hybrid`. The reduced
-`lexical_reduced` path shown in §7.3 is what a one-shot, in-process run
-produces (`--no-startup-check` with no daemon running). `--no-model` instead
-takes the explicitly labelled `lexical_degraded` path with
+The daemon exists to remove the cold penalty: unless `--no-daemon` (formerly
+`--no-startup-check`) is given, `search` starts the resident socket daemon when
+none is running and forwards the query to it (waiting up to
+`CODE_SEARCH_WARMUP_WAIT_S` for the model), so the default CLI path is normally
+`hybrid`. The reduced `lexical_reduced` path shown in §7.3 is what a one-shot,
+in-process run produces (`--no-daemon` with no daemon running). `--no-model`
+instead takes the explicitly labelled `lexical_degraded` path with
 `degraded_reason: "model_disabled"`.
 
 ---
@@ -1007,14 +1023,14 @@ takes the explicitly labelled `lexical_degraded` path with
 ### 7.1 The request
 
 ```bash
-code-search --no-startup-check search "how is JWT validation implemented" \
+code-search --no-daemon search "how is JWT validation implemented" \
   --limit 3 --include-tests --no-compact --json
 ```
 
 `--include-tests` is needed because CLI `search` excludes test files by default;
 `--no-compact` keeps the full result objects (the default compact output drops
 `score_sources`, `vector_score`, and similar fields). Paths in both forms are
-relative to the index root. `--no-startup-check` keeps the first run in-process
+relative to the index root. `--no-daemon` keeps the first run in-process
 so the cold path is observable.
 
 Scope was omitted, so the engine chose `code_focused` (`origin: "default"`,
@@ -1056,7 +1072,7 @@ third row is the config chunk (chunk 1, score 0.274) instead of the test.
 | 3 | 15 | `test_jwt.py` import statement | 0.244 | 0.388 | low |
 
 Envelope: `ranked_path = hybrid`, `semantic_contribution = "semantic"`. Run
-warm by repeating the command without `--no-startup-check` (the daemon
+warm by repeating the command without `--no-daemon` (the daemon
 answers). Each result also carries `score_normalized` (0.731, 0.392, 0.29
 here), a 0–1 rescaling of `score` for display.
 
@@ -1298,10 +1314,11 @@ sqlite3 /tmp/cs-demo/.context/graph.db \
 sqlite3 /tmp/cs-demo/.context/graph.db \
   "SELECT id, file_path, line_start, content_type FROM code_chunks ORDER BY id;"
 head -1 /tmp/cs-demo/.context/vectors.meta.json
-stat -c '%s' /tmp/cs-demo/.context/vectors.bin   # 15 * 32 * 4 = 1920
+stat -f '%z' /tmp/cs-demo/.context/vectors.bin   # 15 * 32 * 4 = 1920
+# (Linux: stat -c '%s' …; portable: wc -c < …)
 
 # 4. Search cold (in-process, no daemon), then warm (autostarts the daemon):
-code-search --no-startup-check search "how is JWT validation implemented" \
+code-search --no-daemon search "how is JWT validation implemented" \
   --limit 3 --include-tests --no-compact --json
 code-search search "how is JWT validation implemented" \
   --limit 3 --include-tests --no-compact --json
